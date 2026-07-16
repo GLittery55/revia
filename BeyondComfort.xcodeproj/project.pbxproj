@@ -8,11 +8,25 @@
 
 /* Begin PBXFileReference section */
 		3719BB94300633340012E77F /* BeyondComfort.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BeyondComfort.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BC000001300633340012E77F /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		BC000002300633340012E77F /* Exceptions for "BeyondComfort" folder in "BeyondComfort" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 3719BB93300633340012E77F /* BeyondComfort */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		3719BB96300633340012E77F /* BeyondComfort */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BC000002300633340012E77F /* Exceptions for "BeyondComfort" folder in "BeyondComfort" target */,
+			);
 			path = BeyondComfort;
 			sourceTree = "<group>";
 		};
@@ -32,6 +46,7 @@
 		3719BB8B300633340012E77F = {
 			isa = PBXGroup;
 			children = (
+				BC000001300633340012E77F /* Config.xcconfig */,
 				3719BB96300633340012E77F /* BeyondComfort */,
 				3719BB95300633340012E77F /* Products */,
 			);
@@ -177,7 +192,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -234,7 +249,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -246,13 +261,21 @@
 		};
 		3719BBA0300633350012E77F /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC000001300633340012E77F /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = BeyondComfort/BeyondComfort.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 57385BXJU8;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BeyondComfort/Info.plist;
+				INFOPLIST_KEY_DEEPSEEK_API_KEY = "$(DEEPSEEK_API_KEY)";
+				INFOPLIST_KEY_DEEPSEEK_MODEL = "$(DEEPSEEK_MODEL)";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "读取日程数量与时长，为反思提供负载线索；不会读取标题或内容。";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "读取睡眠、静息心率和 HRV，为反思提供状态线索。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -263,11 +286,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.xwbbbz.BeyondComfort;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wj.BeyondComfort;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -280,10 +302,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = BeyondComfort/BeyondComfort.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 57385BXJU8;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BeyondComfort/Info.plist;
+				INFOPLIST_KEY_DEEPSEEK_API_KEY = "$(DEEPSEEK_API_KEY)";
+				INFOPLIST_KEY_DEEPSEEK_MODEL = "$(DEEPSEEK_MODEL)";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "读取日程数量与时长，为反思提供负载线索；不会读取标题或内容。";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "读取睡眠、静息心率和 HRV，为反思提供状态线索。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -294,11 +323,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.xwbbbz.BeyondComfort;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wj.BeyondComfort;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;

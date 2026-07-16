@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Beyond Comfort</title>
+  <meta name="description" content="A card-mediated self-compassion reflection space">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header><div><p class="eyebrow">A gentle reflection space</p><h1>Beyond Comfort</h1></div><button id="settingsButton" class="quiet">连接设置</button></header>
+    <section id="settings" class="panel hidden">
+      <label>服务器访问令牌<input id="token" type="password" autocomplete="off" placeholder="只保存在当前浏览器"></label>
+      <button id="saveToken">保存到本机</button><p class="note">正式研究应改为用户登录；此令牌仅用于单人原型。</p>
+    </section>
+    <section id="status" class="context"><span class="dot"></span><span>正在读取最近一次健康与日程线索…</span></section>
+    <section id="messages" class="messages" aria-live="polite"></section>
+    <section id="panel" class="panel"></section>
+    <form id="composer" class="composer hidden"><textarea id="draft" rows="2" placeholder="写下你的回应…"></textarea><button type="submit">发送</button></form>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+

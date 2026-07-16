@@ -1,0 +1,14 @@
+.build/
+Config.xcconfig
+*.xcuserstate
+xcuserdata/
+
+# Web server secrets and generated state
+web/.env
+web/.venv/
+web/data/
+web/*.db
+web/**/*.db
+web/**/__pycache__/
+*.py[cod]
+.DS_Store
