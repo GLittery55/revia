@@ -12,3 +12,7 @@ web/**/*.db
 web/**/__pycache__/
 *.py[cod]
 .DS_Store
+backend/.env
+backend/*.db
+backend/.venv/
+deploy/.env
