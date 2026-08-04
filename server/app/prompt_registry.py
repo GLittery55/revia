@@ -160,8 +160,11 @@ _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
         "use nextPrompt none/openQuestion."
     ),
     "optionalAction": (
-        "Offer or revise one evidence-grounded practice. Complete only after the practice decision "
-        "is resolved through the exact permitted stage, action, intent, and nextPrompt."
+        "Handle the one pending practice proposal. Direct acceptance confirms the exact proposal. "
+        "A complete user revision or narrowing confirms the same proposal id with revised content, "
+        "a still-grounded basis, and source=userRevised. Rejection clears the proposal through "
+        "noActionReason=userDeclined. These paths complete with nextPrompt=none; only an unclear "
+        "request for a different offer may use revisePractice and another pending proposal."
     ),
     "complete": "Return only a brief completion acknowledgement.",
     "safetySupport": "Stay with immediate safety support and do not resume ordinary reflection.",
@@ -429,7 +432,11 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
             f"permitted structured practice. {_condition_contract(request)}"
         )
     if stage == "optionalAction":
-        return f"{shared} Present or revise one complete evidence-grounded optional practice."
+        return (
+            f"{shared} Resolve the one pending practice atomically. Accept its exact content; "
+            "confirm a user's explicit revision with source=userRevised; or clear it with typed "
+            "userDeclined. Do not preserve a selectedPractice mirror or ask why they reject."
+        )
     if stage == "complete":
         return f"{shared} Keep the acknowledgement brief."
     if stage == "safetySupport":
@@ -546,6 +553,9 @@ pending proposal with non-empty id/content/user-evidence basis and a legal kind;
 null; plus practice confirmation of that same id. Reject retired fields, generic/missing basis,
 multiple proposals, another stage, nextPrompt none/openQuestion, or target mismatch. Preserve an
 accepted/revised finalNarrative resolution. noAction requires proposal=null and a supported reason.
+When resolving a pending practice: accepted confirms the unchanged proposal; revised confirms the
+same id with source=userRevised and the user's bounded content; declined/rejected clears proposal
+with userDeclined. All three complete with nextPrompt none. Do not require a reason for rejection.
 
 Allowed reasonCodes:
 duplicate_question_function, overfilled_focus, latest_answer_ignored,

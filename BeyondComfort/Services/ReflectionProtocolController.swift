@@ -389,11 +389,82 @@ struct ReflectionProtocolController: Sendable {
         _ plan: LLMTurnResponsePlan,
         for session: ReflectionSession
     ) throws {
-        guard [.suggestPractice, .revisePractice].contains(plan.replyIntent) else {
+        let resolvesPendingPractice = plan.replyIntent == .completeConversation
+            && session.protocolStage == .optionalAction
+        guard [.suggestPractice, .revisePractice].contains(plan.replyIntent)
+                || resolvesPendingPractice else {
             return
         }
         let state = EffectivePracticeTransitionState(plan: plan, session: session)
         var missing: [TurnPracticeTransitionRequirement] = []
+
+        if resolvesPendingPractice {
+            if state.requestedStage != .complete { missing.append(.requestedStage) }
+            if plan.localAction.kind != .completeSession { missing.append(.requestedStage) }
+            if state.nextPrompt?.kind != TurnNextPromptKind.none {
+                missing.append(.confirmationPrompt)
+            }
+            guard state.resolution?.target == .practice,
+                  let decision = state.resolution?.decision,
+                  [.accepted, .revised, .declined, .rejected].contains(decision),
+                  let pending = session.semanticMemory.practiceTransition,
+                  let pendingProposal = pending.proposal,
+                  pendingProposal.status == .pendingConfirmation,
+                  let transition = state.transition,
+                  transition.transactionID == pending.transactionID,
+                  transition.narrativeReferenceID == pending.narrativeReferenceID else {
+                missing.append(.narrativeResolution)
+                throw ReflectionProtocolViolation.incompletePracticeTransition(
+                    Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+                )
+            }
+            switch decision {
+            case .accepted:
+                guard let proposal = transition.proposal,
+                      transition.noActionReason == nil,
+                      proposal.status == .confirmed,
+                      proposal.id == pendingProposal.id,
+                      proposal.kind == pendingProposal.kind,
+                      proposal.content == pendingProposal.content,
+                      proposal.basis == pendingProposal.basis,
+                      proposal.source == pendingProposal.source else {
+                    missing.append(.proposal)
+                    throw ReflectionProtocolViolation.incompletePracticeTransition(
+                        Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+                    )
+                }
+            case .revised:
+                guard let proposal = transition.proposal,
+                      transition.noActionReason == nil,
+                      proposal.status == .confirmed,
+                      proposal.source == .userRevised,
+                      proposal.id == pendingProposal.id,
+                      proposal.kind != .noAction,
+                      nonempty(proposal.content),
+                      nonempty(proposal.basis) else {
+                    missing.append(.proposal)
+                    throw ReflectionProtocolViolation.incompletePracticeTransition(
+                        Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+                    )
+                }
+            case .declined, .rejected:
+                guard transition.proposal == nil,
+                      transition.noActionReason == .userDeclined else {
+                    missing.append(.noActionReason)
+                    throw ReflectionProtocolViolation.incompletePracticeTransition(
+                        Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+                    )
+                }
+            case .related, .partlyRelated, .unrelated, .uncertain, .unclear:
+                missing.append(.narrativeResolution)
+            }
+            if !missing.isEmpty {
+                throw ReflectionProtocolViolation.incompletePracticeTransition(
+                    Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+                )
+            }
+            return
+        }
 
         if state.requestedStage != .optionalAction {
             missing.append(.requestedStage)
@@ -409,7 +480,7 @@ struct ReflectionProtocolController: Sendable {
             let allowedDecisions: Set<TurnConfirmationDecision> =
                 state.replyIntent == .suggestPractice
                     ? [.accepted, .revised]
-                    : [.revised, .rejected, .unclear]
+                    : [.unclear]
             if state.resolution?.target != expectedResolutionTarget
                 || !allowedDecisions.contains(state.resolution?.decision ?? .unclear) {
                 missing.append(.narrativeResolution)
@@ -1625,30 +1696,10 @@ struct ReflectionProtocolController: Sendable {
                     decisions: [.accepted, .revised]
                 )
             case .optionalAction:
-                guard currentPrompt?.target == .practice else {
-                    throw ReflectionProtocolViolation.invalidConfirmationResolution
-                }
-                try requireResolution(
-                    .practice,
-                    decisions: [.accepted, .revised, .declined, .rejected]
-                )
-                if let decision = plan.resolvedConfirmation?.decision,
-                   [TurnConfirmationDecision.accepted, .revised].contains(decision) {
-                    let transition = plan.memoryUpdate.practiceTransition
-                        ?? session.semanticMemory.practiceTransition
-                    guard let proposal = transition?.proposal,
-                          proposal.status == .confirmed,
-                          nonempty(proposal.content) else {
-                        throw ReflectionProtocolViolation.illegalReplyIntent
-                    }
-                    if decision == .accepted {
-                        guard let pending = session.semanticMemory.practiceTransition?.proposal,
-                              pending.id == proposal.id,
-                              pending.content == proposal.content else {
-                            throw ReflectionProtocolViolation.illegalReplyIntent
-                        }
-                    }
-                }
+                // The exact pending proposal, accepted/revised/noAction state, prompt resolution,
+                // destination, and completion action are one atomic contract validated by
+                // `validatePracticeTransition`.
+                break
             case .complete, .safetySupport:
                 break
             default:
