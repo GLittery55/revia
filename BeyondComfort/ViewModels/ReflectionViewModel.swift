@@ -10,6 +10,10 @@ private enum ReflectionResponseContext {
 /// Planning/protocol failures may request a fresh semantic plan. Writer failures must not: the
 /// already validated plan remains the single semantic decision for the user turn.
 private enum ProtocolTurnAttemptFailure: Error {
+    case incompletePracticeTransition(
+        error: Error,
+        plan: LLMTurnResponsePlan
+    )
     case writerFailedTwice(
         error: Error,
         request: LLMTurnControllerRequest,
@@ -1642,6 +1646,26 @@ final class ReflectionViewModel: ObservableObject {
             validated = response
         case .failure(let violation):
             if let attempt = violation as? ProtocolTurnAttemptFailure,
+               case .incompletePracticeTransition(let transitionError, let rejectedPlan) = attempt,
+               await commitFinalNarrativeAcceptanceForPracticeTransition(rejectedPlan) {
+                await repairAcceptedNarrativePracticeTransition(
+                    after: transitionError,
+                    expectedSessionID: expectedSessionID
+                )
+                return
+            }
+            if session.protocolStage == .optionalAction,
+               session.semanticMemory.practiceTransition?.proposal == nil,
+               session.semanticMemory.practiceTransition?.noActionReason == nil,
+               let protocolViolation = violation as? ReflectionProtocolViolation,
+               case .incompletePracticeTransition = protocolViolation {
+                await repairAcceptedNarrativePracticeTransition(
+                    after: violation,
+                    expectedSessionID: expectedSessionID
+                )
+                return
+            }
+            if let attempt = violation as? ProtocolTurnAttemptFailure,
                case .writerFailedTwice(
                    let writerError,
                    let writerRequest,
@@ -1847,6 +1871,40 @@ final class ReflectionViewModel: ObservableObject {
         guard responseContextIsCurrent(expectedSessionID: expectedSessionID),
               session.protocolStage == expectedProtocolStage else { return }
 
+        if session.protocolStage == .narrativeConfirmation,
+           validated.replyIntent == .suggestPractice {
+            let acceptedPlan = LLMTurnResponsePlan(
+                requestedStage: validated.requestedStage,
+                localAction: validated.localAction,
+                memoryUpdate: validated.memoryUpdate,
+                resolvedConfirmation: validated.resolvedConfirmation,
+                nextPrompt: validated.nextPrompt,
+                replyIntent: validated.replyIntent,
+                replyGuidance: "validated Optional Action transition"
+            )
+            if await commitFinalNarrativeAcceptanceForPracticeTransition(acceptedPlan) {
+                let successor = LLMTurnControllerResponse(
+                    requestedStage: validated.requestedStage,
+                    localAction: validated.localAction,
+                    memoryUpdate: validated.memoryUpdate,
+                    resolvedConfirmation: nil,
+                    nextPrompt: validated.nextPrompt,
+                    replyIntent: validated.replyIntent,
+                    reply: validated.reply
+                )
+                do {
+                    let revalidated = try protocolController.validate(successor, for: session)
+                    await commitValidatedProtocolResponseOrPause(revalidated)
+                } catch {
+                    await repairAcceptedNarrativePracticeTransition(
+                        after: error,
+                        expectedSessionID: expectedSessionID
+                    )
+                }
+                return
+            }
+        }
+
         let resolvesCardMapping = isCardMappingResolutionTransition(validated)
         if resolvesCardMapping {
             do {
@@ -1965,6 +2023,170 @@ final class ReflectionViewModel: ObservableObject {
         await commitValidatedProtocolResponseOrPause(validated)
     }
 
+    /// The Planner has already interpreted the pending final-narrative response. Persist that
+    /// accepted boundary before attempting to repair a malformed successor proposal, so a model
+    /// formatting failure can never reopen or re-interpret the same confirmation.
+    private func commitFinalNarrativeAcceptanceForPracticeTransition(
+        _ rejectedPlan: LLMTurnResponsePlan
+    ) async -> Bool {
+        guard isAcceptedNarrativePracticeAttempt(rejectedPlan),
+              let resolution = rejectedPlan.resolvedConfirmation else {
+            return false
+        }
+        let snapshot = session
+        let transactionID = session.semanticMemory.practiceTransition?.transactionID
+            ?? rejectedPlan.memoryUpdate.practiceTransition?.transactionID
+            ?? UUID().uuidString
+        let narrativeReferenceID = session.semanticMemory.nextPrompt?.referenceID
+        if let revised = rejectedPlan.memoryUpdate.finalNarrative?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !revised.isEmpty {
+            session.semanticMemory.finalNarrative = revised
+        }
+        session.semanticMemory.practiceTransition = TurnPracticeTransition(
+            transactionID: transactionID,
+            narrativeReferenceID: narrativeReferenceID,
+            proposal: nil,
+            noActionReason: nil
+        )
+        session.semanticMemory.nextPrompt = nil
+        session.finalNarrativeConfirmed = true
+        setProtocolStage(
+            .optionalAction,
+            action: "final_narrative_\(resolution.decision.rawValue)_committed_before_practice"
+        )
+        session.studyEvents.append(
+            .init(stage: session.stage, action: "practice_transition_awaiting_proposal")
+        )
+        do {
+            try await store.save(session)
+            scheduleCloudSync(action: "final_narrative_acceptance_committed")
+            return true
+        } catch {
+            session = snapshot
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "final_narrative_acceptance_commit_rolled_back")
+            )
+            return false
+        }
+    }
+
+    private func isAcceptedNarrativePracticeAttempt(
+        _ plan: LLMTurnResponsePlan
+    ) -> Bool {
+        guard session.protocolStage == .narrativeConfirmation,
+              session.semanticMemory.nextPrompt?.target == .finalNarrative,
+              plan.replyIntent == .suggestPractice,
+              plan.resolvedConfirmation?.target == .finalNarrative,
+              let decision = plan.resolvedConfirmation?.decision,
+              [.accepted, .revised].contains(decision),
+              session.semanticMemory.finalNarrative?.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ).isEmpty == false else {
+            return false
+        }
+        let pendingReference = session.semanticMemory.nextPrompt?.referenceID
+        return pendingReference == nil
+            || plan.resolvedConfirmation?.referenceID == pendingReference
+    }
+
+    /// Exactly one Planner call owns repair of an accepted-narrative successor. It cannot revisit
+    /// the narrative decision or choose another stage. A second failure ends through the formal
+    /// noAction transaction instead of entering the generic continuity Planner.
+    private func repairAcceptedNarrativePracticeTransition(
+        after error: Error,
+        expectedSessionID: UUID
+    ) async {
+        guard responseContextIsCurrent(expectedSessionID: expectedSessionID),
+              session.protocolStage == .optionalAction,
+              let transition = session.semanticMemory.practiceTransition,
+              transition.proposal == nil,
+              transition.noActionReason == nil else {
+            return
+        }
+        session.studyEvents.append(
+            .init(stage: session.stage, action: "practice_transition_targeted_repair_requested")
+        )
+        appendProtocolFailureDiagnostic(
+            error,
+            prefix: "practice_transition_targeted_repair_reason"
+        )
+        let base = protocolController.permissions(for: session)
+        let permissions = ReflectionProtocolPermissions(
+            currentStage: base.currentStage,
+            allowedStages: [.optionalAction],
+            allowedActions: [.none],
+            allowedReplyIntents: [.suggestPractice],
+            allowedDisclosurePurposes: [],
+            allowedDisclosureTargets: [],
+            allowedOperations: base.allowedOperations.filter {
+                $0.requestedStage == .optionalAction
+                    && $0.localAction == .none
+                    && $0.replyIntent == .suggestPractice
+            }
+        )
+        let correction = """
+        The finalNarrative confirmation is already committed and must not appear again. Repair only
+        its pending Optional Action successor. Reuse transactionID \(transition.transactionID) and
+        narrativeReferenceID \(transition.narrativeReferenceID ?? "null"). Return no
+        resolvedConfirmation, requestedStage=optionalAction, replyIntent=suggestPractice,
+        localAction=none, one complete practiceTransition whose proposal.id equals that transaction
+        ID and contains a supported kind, non-empty content, non-empty user-evidence basis,
+        status=pendingConfirmation, source=assistantProposed, noActionReason=null, and one
+        confirmationRequest nextPrompt targeting practice with the same proposal id. Do not revisit
+        the narrative, select another stage, ask an open question, or emit retired practice fields.
+        """
+        let request = makeProtocolTurnRequest(
+            trigger: .protocolCorrection,
+            correction: correction,
+            permissionsOverride: permissions
+        )
+        switch await requestValidatedProtocolTurn(request) {
+        case .success(let response):
+            await commitValidatedProtocolResponseOrPause(response)
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "practice_transition_targeted_repair_succeeded")
+            )
+        case .failure(let repairError):
+            appendProtocolFailureDiagnostic(
+                repairError,
+                prefix: "practice_transition_targeted_repair_failed"
+            )
+            await completeAcceptedNarrativeWithoutPractice()
+        }
+    }
+
+    private func completeAcceptedNarrativeWithoutPractice() async {
+        guard var transition = session.semanticMemory.practiceTransition,
+              transition.proposal == nil else { return }
+        let snapshot = session
+        transition.noActionReason = .insufficientSupportedMaterial
+        session.semanticMemory.practiceTransition = transition
+        session.semanticMemory.nextPrompt = nil
+        session.userAuthoredActionConfirmed = false
+        setProtocolStage(.complete, action: "practice_transition_completed_without_proposal")
+        appendProtocolAssistant(
+            "好，这段反思已经按你确认的内容保留下来。今天先停在这里，不必另外完成一个行动。"
+        )
+        session.studyEvents.append(
+            .init(stage: session.stage, action: "practice_transition_repair_budget_exhausted_no_action")
+        )
+        do {
+            try await store.save(session)
+            scheduleCloudSync(action: "practice_transition_no_action_completed")
+        } catch {
+            session = snapshot
+            presentRecoverableProtocolPause(
+                error: ProtocolCommitFailure.persistenceFailed,
+                action: "practice_transition_no_action_commit_failed",
+                retry: .planner(
+                    correction: "Resume the already committed Optional Action transaction without reinterpreting the final narrative.",
+                    permissions: protocolController.permissions(for: session)
+                )
+            )
+        }
+    }
+
     /// Contract and decoding defects are model-output problems that can usually be repaired with
     /// the same LLM under narrower permissions. Provider availability and persistence errors are
     /// operational failures; retrying the semantic protocol cannot repair them and would only
@@ -2073,6 +2295,17 @@ final class ReflectionViewModel: ObservableObject {
             if let proposedPlan,
                error is ReflectionProtocolViolation {
                 appendRejectedProtocolPlanDiagnostic(proposedPlan)
+            }
+            if let proposedPlan,
+               let violation = error as? ReflectionProtocolViolation,
+               case .incompletePracticeTransition = violation,
+               isAcceptedNarrativePracticeAttempt(proposedPlan) {
+                return .failure(
+                    ProtocolTurnAttemptFailure.incompletePracticeTransition(
+                        error: error,
+                        plan: proposedPlan
+                    )
+                )
             }
             return .failure(error)
         }

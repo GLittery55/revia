@@ -76,6 +76,7 @@ enum TurnPracticeTransitionRequirement: String, Codable, Equatable, Sendable {
     case requestedStage
     case proposal
     case proposalID
+    case transactionReference
     case proposalKind
     case proposalContent
     case proposalBasis
@@ -397,15 +398,22 @@ struct ReflectionProtocolController: Sendable {
         if state.requestedStage != .optionalAction {
             missing.append(.requestedStage)
         }
-        let expectedResolutionTarget: TurnConfirmationTarget =
-            state.replyIntent == .suggestPractice ? .finalNarrative : .practice
-        let allowedDecisions: Set<TurnConfirmationDecision> =
-            state.replyIntent == .suggestPractice
-                ? [.accepted, .revised]
-                : [.revised, .rejected, .unclear]
-        if state.resolution?.target != expectedResolutionTarget
-            || !allowedDecisions.contains(state.resolution?.decision ?? .unclear) {
-            missing.append(.narrativeResolution)
+        let awaitingAcceptedNarrative = session.protocolStage == .optionalAction
+            && session.semanticMemory.practiceTransition?.proposal == nil
+            && session.semanticMemory.practiceTransition?.noActionReason == nil
+        if state.replyIntent == .suggestPractice, awaitingAcceptedNarrative {
+            if state.resolution != nil { missing.append(.narrativeResolution) }
+        } else {
+            let expectedResolutionTarget: TurnConfirmationTarget =
+                state.replyIntent == .suggestPractice ? .finalNarrative : .practice
+            let allowedDecisions: Set<TurnConfirmationDecision> =
+                state.replyIntent == .suggestPractice
+                    ? [.accepted, .revised]
+                    : [.revised, .rejected, .unclear]
+            if state.resolution?.target != expectedResolutionTarget
+                || !allowedDecisions.contains(state.resolution?.decision ?? .unclear) {
+                missing.append(.narrativeResolution)
+            }
         }
         if state.nextPrompt?.kind != .confirmationRequest
             || state.nextPrompt?.target != .practice {
@@ -422,6 +430,15 @@ struct ReflectionProtocolController: Sendable {
         }
         if !nonempty(transition.transactionID) { missing.append(.proposalID) }
         if !nonempty(proposal.id) { missing.append(.proposalID) }
+        if proposal.id != transition.transactionID {
+            missing.append(.transactionReference)
+        }
+        if let awaiting = session.semanticMemory.practiceTransition,
+           awaiting.proposal == nil,
+           (transition.transactionID != awaiting.transactionID
+                || transition.narrativeReferenceID != awaiting.narrativeReferenceID) {
+            missing.append(.transactionReference)
+        }
         if proposal.kind == .noAction { missing.append(.proposalKind) }
         if !nonempty(proposal.content) { missing.append(.proposalContent) }
         if !nonempty(proposal.basis) { missing.append(.proposalBasis) }
