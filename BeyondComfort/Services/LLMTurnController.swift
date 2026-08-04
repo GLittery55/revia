@@ -417,7 +417,7 @@ struct LLMTurnCriticResponse: Codable, Equatable, Sendable {
 enum ServerTurnPrompt {
     /// Immutable server registry key. A prompt update must introduce a new value rather than
     /// changing the meaning of this version for an in-progress research session.
-    static let version = "turn-v4-server-v35"
+    static let version = "turn-v4-server-v36"
 
     static func version(for _: Int) -> String {
         version
@@ -825,25 +825,6 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                 reasonCodes: ["card_connection_question_missing"],
                 revisionGuidance: "A card-image development or image-to-life connection operation must leave one concrete open question. Keep the same stage and choose an allowed operation with nextPrompt.kind=openQuestion; do not replace it with an event recap or a questionless acknowledgement."
             )
-        }
-
-        if plan.replyIntent == .integrateTrackingAndPresentTenderSummary {
-            let pendingTarget = request.semanticMemory.nextPrompt?.target
-            let hasPendingTrackingConfirmation =
-                pendingTarget == .trackingRelationship
-                && (
-                    request.activeTrackingPresentation != nil
-                    || !request.presentedTrackingCues.isEmpty
-                )
-            let resolvesTracking =
-                plan.resolvedConfirmation?.target == .trackingRelationship
-            if !hasPendingTrackingConfirmation || !resolvesTracking {
-                return LLMTurnPlanCriticResponse(
-                    verdict: .revisePlanner,
-                    reasonCodes: ["tracking_boundary_ignored"],
-                    revisionGuidance: "Do not use integrateTrackingAndPresentTenderSummary without a pending trackingRelationship confirmation. Use an allowed ordinary context or Tender intent."
-                )
-            }
         }
 
         return nil
@@ -1331,10 +1312,6 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
              .inviteCardConnection,
              .deepenCardConnection,
              .presentTrackingContext,
-             .integrateTrackingAndPresentTenderSummary,
-             .presentTenderSummary,
-             .requestTenderConfirmation,
-             .reviseTenderSummary,
              .presentCardReading,
              .presentFinalNarrative,
              .requestNarrativeConfirmation,

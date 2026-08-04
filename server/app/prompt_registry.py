@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
-TURN_PROMPT_VERSION = "turn-v4-server-v35"
+TURN_PROMPT_VERSION = "turn-v4-server-v36"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -92,16 +92,6 @@ _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
         "Reopen a received-and-complete relation only with one typed, supported "
         "disclosureReopenReason. Do not assume a decision, awareness that it "
         "was time to stop, attempted stopping or hidden motive merely because conduct continued."
-    ),
-    "tenderConfirmation": (
-        "The visible Tender turn asked a content-forward experience question, not for approval. "
-        "Interpret an ordinary substantive continuation as natural acceptance unless it directly "
-        "corrects or contradicts the distinction. For the card condition, resolve accepted/revised "
-        "and move to the generic card invitation without another Tender confirmation. If the person "
-        "corrects what was softened, preserve that conduct or impact and revise once. Use "
-        "requestTenderConfirmation only for a genuinely ambiguous non-substantive response. "
-        "tenderUnderstanding is optional and records only a distinction the visible dialogue "
-        "actually formed from an explicit whole-person judgment."
     ),
     "cardConsent": (
         "Invite or resolve card consent. Swift selects and displays the card. When the pending "
@@ -228,7 +218,7 @@ userCorrectedPreviousFact, userWithdrewPreviousAnswer, or newContradictionDetect
 A ready card turn uses inviteCardConsent in the same visible reply. The Writer may distinguish a
 specific act from the whole self only when the person's own words explicitly contain that broad
 whole-self judgment; otherwise it uses one supported factual bridge or directly invites the card.
-Never create Tender confirmation, ask a Tender question, or fill tenderUnderstanding merely to advance.
+Tender wording is optional and never creates another stage, confirmation, or memory credential.
 
 Question functions are typed, not lexical. Treat assent, refusal, correction, uncertainty, or
 inability as an answer; commit it and change function or advance. Never demand hidden motives.
@@ -295,7 +285,7 @@ Return exactly one JSON object and nothing else:
 "selfCriticismStatus":null,
 "selfCriticalStatement":null,"selfCriticismLink":null,"episodeStructure":null,"contextRelationship":null,
 "contextCueOffered":null,
-"trackingAssessments":null,"tenderUnderstanding":null,
+"trackingAssessments":null,
 "cardRealityConnection":null,"pendingCardRealityConnection":null,
 "clearPendingCardRealityConnection":null,"clearCardRealityConnection":null,
 "cardConnectionOutcome":null,
@@ -309,7 +299,7 @@ Return exactly one JSON object and nothing else:
 cardReferenceSelection may instead be {"relationIndex":0}; the index is zero-based under the closed
 reference contract. Never return relation text there.
 resolvedConfirmation is null or exactly
-{"target":"trackingRelationship|tenderSummary|cardConsent|cardRealityConnection|cardMapping|finalNarrative|practice",
+{"target":"trackingRelationship|cardConsent|cardRealityConnection|cardMapping|finalNarrative|practice",
 "decision":"related|partlyRelated|unrelated|uncertain|accepted|revised|rejected|unclear|declined",
 "referenceID":null}; never use another shape. Copy any pending referenceID exactly. Use null for
 unchanged memory. replyGuidance is private and may be empty only for silent drawRandomCard or
@@ -349,18 +339,6 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
                 "evidence, assign responsibility, force a comparison between concerns, praise a "
                 "trait, analyze motive, or preview card content."
             )
-        if intent in {
-            "presentTenderSummary",
-            "integrateTrackingAndPresentTenderSummary",
-            "requestTenderConfirmation",
-            "reviseTenderSummary",
-        }:
-            return (
-                f"{shared} Use one brief supported fact. A conduct-versus-whole-self distinction "
-                "is allowed only when the person's own words explicitly supplied that broad "
-                "judgment. Ask only the concrete nextPrompt question; do not ask for approval, "
-                "explanation of the acknowledgement, a card, or a practice."
-            )
         return (
             f"{shared} Ask the one planned event question directly, without first acknowledging, "
             "summarizing, paraphrasing, or reporting back the person's latest words. Do not begin "
@@ -371,19 +349,6 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
             "responsibility, motive, unresolved meaning, or what matters most. Use one "
             "short, natural, situation-responsive question that can be answered "
             "from recalled events."
-        )
-    if stage == "tenderConfirmation":
-        if intent == "inviteCardConsent":
-            return (
-                f"{shared} Treat the person's substantive continuation as natural acceptance of "
-                "the Tender distinction. Briefly acknowledge only the newest meaning, then invite "
-                "one optional 一张随机反思卡. Do not repeat the distinction or ask whether it fits."
-            )
-        return (
-            f"{shared} If revising, use one confirmed fact anchor and one corrected distinction, "
-            "preserving conduct or impact the person says was softened. Ask one content-forward "
-            "question about a concrete concern, moment, impact, or experience. Never request an "
-            "approval, accuracy, fit, comparison, or explanation of the assistant's formulation."
         )
     if stage == "cardConsent":
         return f"{shared} Keep consent optional and do not interpret the image."
@@ -514,8 +479,6 @@ without enough user-grounded reality for its distinction; a condition bridge bef
 scene plus the person's participation form a coherent story; repeated or multi-part questioning; ignored correction,
 boundary, or uncertainty; supported conduct erased; contextual data detached, broadened, or made
 causal; card meaning imposed or advanced without user-grounded relations; rejected material reused;
-in tenderConfirmation, a substantive content-forward continuation is sent through another approval
-request instead of being naturally accepted, or a correction is not preserved in a revised Tender;
 unsupported Fierce content; premature practice; narrative without one condition-valid distinction;
 in current contextualDisclosure, eventDisclosureOutcome is missing, inconsistent with its patch, or
 claims readiness without a supported focal episode, user behavior/omission, and development; explicit user conduct is omitted from
@@ -643,8 +606,7 @@ motive, meaning, or change work.
 Context uses only user-grounded contextRelationship. Card language
 uses only user-grounded image/reality relations and establishes no personal fact. A candidate is
 tentative and ends with one content-forward experience question. An episode recap only organizes
-existing content; presentTenderSummary uses at most one fact anchor and adds a distinction only when
-the person authored a whole-person judgment. Never ask the
+existing content. Never ask the
 person to rate, approve, verify, or edit an assistant understanding, summary, reading, or narrative;
 ordinary answers may continue, redirect, reject, or stay uncertain. Consent/practice choice may be
 direct. Final synthesis adds one distinction; practice stays supported and optional. Questions must
@@ -719,17 +681,7 @@ motive, unresolved meaning, or what matters most. Reject finer event detail afte
 ready. Reject wording that presupposes a
 deliberate decision, awareness that the person should stop, or an attempted stop unless the dialogue
 supports that premise, and reject a premise the person denied. Preserve the validated typed function
-in a targeted rewrite; do not substitute a different topic. For presentTenderSummary, use only the
-person's own explicit whole-person judgment as evidence for a behavior-versus-whole-person
-distinction; never infer one from a status field. When that evidence exists, require exactly one
-brief confirmed-fact anchor, one new supported
-compassionate distinction, and one content-forward experience question. If it does not, reject any
-invented distinction, self-judgment, trait, fear, feeling, or motive; instead require only a light
-acknowledgement of one confirmed difficulty and the plan's one concrete content-forward question.
-In both cases reject a retelling of the event-
-process-impact-self-evaluation chain, multiple distinctions, an approval check, or a card invitation
-in that turn. Reject any request to explain, evaluate, or compare the distinction, or an abstract
-referent that makes the person interpret the assistant's formulation.
+in a targeted rewrite; do not substitute a different topic.
 
 When replyIntent is exploreContext, treat any invitation to a card, exercise, tool, technique, or
 next-stage activity as a changed question function and require a targeted rewrite that stays with

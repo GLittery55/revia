@@ -1848,8 +1848,7 @@ final class ReflectionViewModel: ObservableObject {
               session.protocolStage == expectedProtocolStage else { return }
 
         let resolvesCardMapping = isCardMappingResolutionTransition(validated)
-        let resolvesTenderSummary = isTenderSummaryResolutionTransition(validated)
-        if resolvesCardMapping || resolvesTenderSummary {
+        if resolvesCardMapping {
             do {
                 try await applyValidatedProtocolResponse(
                     validated,
@@ -1870,9 +1869,7 @@ final class ReflectionViewModel: ObservableObject {
             session.studyEvents.append(
                 .init(
                     stage: session.stage,
-                    action: resolvesCardMapping
-                        ? "card_mapping_resolution_committed_before_continuation"
-                        : "tender_summary_resolution_committed_before_continuation"
+                    action: "card_mapping_resolution_committed_before_continuation"
                 )
             )
             await processProtocolTurn(trigger: .protocolContinuation)
@@ -1996,8 +1993,7 @@ final class ReflectionViewModel: ObservableObject {
                 for: session
             )
 
-            if isCardMappingResolutionTransition(validatedPlan)
-                || isTenderSummaryResolutionTransition(validatedPlan) {
+            if isCardMappingResolutionTransition(validatedPlan) {
                 // This is a silent confirmation-only transaction. Writer generation belongs to
                 // the fresh protocolContinuation request after the new stage has committed.
                 let response = LLMTurnControllerResponse(
@@ -2485,16 +2481,6 @@ final class ReflectionViewModel: ObservableObject {
             protocolContextualLoadCue() != nil
         let committedNextPrompt = applyProtocolMemoryAndTracking(from: response)
         applyCurrentContextRelationship(from: response.memoryUpdate)
-        if session.protocolVersion < ReflectionSession.currentProtocolVersion,
-           previousStage == .tenderConfirmation,
-           let resolvedConfirmation = response.resolvedConfirmation,
-           resolvedConfirmation.target == .tenderSummary,
-           [TurnConfirmationDecision.revised, .rejected].contains(resolvedConfirmation.decision),
-           session.contextualLoadInference?.relevance == .notReviewed {
-            // The person corrected or rejected the only whole-summary presentation that carried
-            // this hypothesis. Conservatively withdraw it from the revision and later prompts.
-            session.contextualLoadInference?.relevance = .uncertain
-        }
         updateProtocolCardConnectionCapabilities(
             after: response,
             previousStage: previousStage
@@ -2524,61 +2510,22 @@ final class ReflectionViewModel: ObservableObject {
             }
         }
 
-        if previousStage == .tenderConfirmation,
+        if previousStage == .contextualDisclosure,
            [.cardConsent, .directReflection].contains(response.requestedStage) {
-            session.tenderGroundingConfirmed = true
-            session.contextSummaryConfirmed = true
-            if session.protocolVersion < ReflectionSession.currentProtocolVersion,
-               session.contextualLoadInference?.hasDialogueCue == true,
-               session.contextualLoadInference?.relevance == .notReviewed {
-                // Preserve the saved behavior of older in-progress sessions. Current sessions do
-                // not expose or confirm context during Tender.
-                session.contextualLoadInference?.relevance = .relevant
-            }
-            if let tender = session.semanticMemory.tenderUnderstanding,
-               !tender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                session.lockedBaselineNarrative = tender
-            }
-        }
-        if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
-           previousStage == .contextualDisclosure,
-           [.cardConsent, .directReflection].contains(response.requestedStage) {
-            // Tender is an internal readiness boundary in the current protocol. The visible
-            // response is a brief conversational bridge, not a summary that asks for approval.
-            session.tenderGroundingConfirmed = true
-            session.contextSummaryConfirmed = true
+            // The current disclosure boundary is complete once the event, its process, and the
+            // person's behavior are present. A brief compassionate bridge may be part of the
+            // wording, but it is not a persisted confirmation or a workflow gate.
             session.reflectionReadiness = .reflectionOpen
-            if let tender = session.semanticMemory.tenderUnderstanding,
-               !tender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                session.lockedBaselineNarrative = tender
-            }
             session.studyEvents.append(
                 .init(
                     stage: session.stage,
-                    action: "tender_grounding_established_without_summary_gate"
+                    action: "event_disclosure_core_completed"
                 )
             )
         }
         if response.requestedStage == .directReflection,
            session.reflectionReadiness == .needsTender {
             session.reflectionReadiness = .reflectionOpen
-        }
-        if previousStage == .cardReflection,
-           response.resolvedConfirmation?.target == .cardMapping,
-           let decision = response.resolvedConfirmation?.decision,
-           [.revised, .rejected].contains(decision),
-           let correctedTender = session.semanticMemory.tenderUnderstanding,
-           !correctedTender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // A correction to the candidate reading becomes the new real-world baseline before
-            // the fresh direct-reflection continuation. The superseded candidate remains only in
-            // the audit transcript and cannot organize later Tender, candid, or practice work.
-            session.lockedBaselineNarrative = correctedTender
-            session.studyEvents.append(
-                .init(
-                    stage: session.stage,
-                    action: "card_correction_replaced_reflection_baseline"
-                )
-            )
         }
         if response.replyIntent == .presentFinalNarrative {
             session.reflectionReadiness = .narrativeReady
@@ -2751,34 +2698,6 @@ final class ReflectionViewModel: ObservableObject {
             return false
         }
         return [.accepted, .revised, .rejected].contains(decision)
-    }
-
-    private func isTenderSummaryResolutionTransition(
-        _ response: LLMTurnControllerResponse
-    ) -> Bool {
-        guard !session.condition.usesCard,
-              session.semanticMemory.nextPrompt?.target == .tenderSummary,
-              response.requestedStage == .directReflection,
-              response.replyIntent == .directCandidReflection,
-              response.resolvedConfirmation?.target == .tenderSummary,
-              response.resolvedConfirmation?.decision == .accepted else {
-            return false
-        }
-        return true
-    }
-
-    private func isTenderSummaryResolutionTransition(
-        _ plan: LLMTurnResponsePlan
-    ) -> Bool {
-        guard !session.condition.usesCard,
-              session.semanticMemory.nextPrompt?.target == .tenderSummary,
-              plan.requestedStage == .directReflection,
-              plan.replyIntent == .directCandidReflection,
-              plan.resolvedConfirmation?.target == .tenderSummary,
-              plan.resolvedConfirmation?.decision == .accepted else {
-            return false
-        }
-        return true
     }
 
     /// Commits the Planner patch only after planning, protocol validation, Writer generation, and
@@ -3037,7 +2956,7 @@ final class ReflectionViewModel: ObservableObject {
     private func applyCurrentContextRelationship(
         from update: TurnSemanticMemoryUpdate
     ) {
-        guard session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
+        guard session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion,
               let relationship = update.contextRelationship,
               session.contextualLoadInference?.hasDialogueCue == true else {
             return
@@ -3080,9 +2999,6 @@ final class ReflectionViewModel: ObservableObject {
         case .contextualDisclosure:
             session.stage = .eventDisclosure
             session.workflowPhase = .structuredDisclosure
-        case .tenderConfirmation:
-            session.stage = .tenderGrounding
-            session.workflowPhase = .tenderGroundingConfirmation
         case .cardConsent:
             session.stage = session.card == nil ? .readinessCheck : .cardIntroduction
             session.workflowPhase = session.card == nil ? .contextConfirmation : .cardDisplay
@@ -3336,39 +3252,27 @@ final class ReflectionViewModel: ObservableObject {
         }
 
         if case .invalidDisclosureQuestionTarget = violation {
-            // Re-evaluate the cumulative state after the repair patch. The latest answer may
-            // legitimately fill more than the initially expected relation, so the bounded retry
-            // may either ask the remaining disclosure target or advance to the summary. It may do
-            // neither a card transition nor any later reflection operation.
+            // Re-evaluate the one canonical disclosure state. The bounded retry may ask the one
+            // remaining core relation or advance directly to card consent.
             return narrowed(
                 stages: base.allowedStages.filter {
-                    [
-                        .contextualDisclosure, .cardConsent,
-                        .tenderConfirmation, .safetySupport,
-                    ].contains($0)
+                    [.contextualDisclosure, .cardConsent, .safetySupport].contains($0)
                 },
                 actions: [.none],
                 intents: base.allowedReplyIntents.filter {
-                    [
-                        .exploreContext, .inviteCardConsent,
-                        .presentTenderSummary, .safetySupport,
-                    ].contains($0)
+                    [.exploreContext, .inviteCardConsent, .safetySupport].contains($0)
                 }
             )
         }
 
         if violation == .disclosureShouldAdvance {
-            let forwardIntent: TurnReplyIntent = session.condition.usesCard
-                ? .inviteCardConsent : .presentTenderSummary
-            let forwardStage: ReflectionProtocolStage = session.condition.usesCard
-                ? .cardConsent : .tenderConfirmation
             return narrowed(
                 stages: base.allowedStages.filter {
-                    $0 == forwardStage || $0 == .safetySupport
+                    $0 == .cardConsent || $0 == .safetySupport
                 },
                 actions: [.none],
                 intents: base.allowedReplyIntents.filter {
-                    $0 == forwardIntent || $0 == .safetySupport
+                    $0 == .inviteCardConsent || $0 == .safetySupport
                 }
             )
         }
@@ -3636,8 +3540,8 @@ final class ReflectionViewModel: ObservableObject {
                 if diagnostic.invalidConfirmationTarget != nil ||
                     diagnostic.keyPath.hasSuffix("target") {
                     return """
-                    A confirmation target must be exactly trackingRelationship, tenderSummary, \
-                    cardConsent, cardRealityConnection, cardMapping, finalNarrative, or practice.
+                    A confirmation target must be exactly trackingRelationship, cardConsent, \
+                    cardRealityConnection, cardMapping, finalNarrative, or practice.
                     """
                 }
                 if diagnostic.invalidNextPromptKind != nil ||
@@ -3739,10 +3643,8 @@ final class ReflectionViewModel: ObservableObject {
                     Put the overall decision in resolvedConfirmation using the exact current target \
                     and referenceID. Add cue-level trackingAssessments only when the person's words \
                     distinguish those cues. If more understanding is needed, use \
-                    checkTrackingRelationship and create an openQuestion nextPrompt. If the same \
-                    answer supports a Tender summary, use the exact combined tracking-to-Tender \
-                    intent and create a tenderSummary confirmationRequest. Keep all legacy pending \
-                    fields null.
+                    checkTrackingRelationship and create an openQuestion nextPrompt. Do not create \
+                    a second confirmation object or infer a later-stage transition from tracking.
                     """
                 }
                 if session.protocolStage == .optionalAction,
@@ -3872,14 +3774,6 @@ final class ReflectionViewModel: ObservableObject {
                     nextPrompt as a cardMapping confirmationRequest and do not ask another image \
                     or life-connection question.
                     """
-                case .tenderUnderstanding:
-                    return """
-                    tenderUnderstanding is optional in the current protocol and must never be \
-                    invented to satisfy a transition. Preserve it only when the person explicitly \
-                    authored a whole-person judgment and the visible turn actually formed a \
-                    supported event-versus-verdict distinction; otherwise leave it null and select \
-                    the same legal operation without adding a field-filling question.
-                    """
                 case .cardInterpretiveTension:
                     return """
                     Card guidance requires one user-authored or user-confirmed standard, tension, \
@@ -3957,7 +3851,7 @@ final class ReflectionViewModel: ObservableObject {
                 exact IDs, use replyIntent presentTrackingContext, and create a \
                 trackingRelationship confirmationRequest. Present the cues only as tentative \
                 background that the person may confirm, qualify, reject, or leave uncertain. Do \
-                not request tenderConfirmation yet and do not exhaust every candidate.
+                do not exhaust every candidate.
                 """
             case .missingNoActionReason:
                 return """

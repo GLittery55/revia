@@ -77,8 +77,6 @@ enum TurnRequiredMemoryField: String, Equatable, Sendable {
     case selfCriticismLink
     case episodeStructure
     case contextRelationship
-    /// Optional current memory; retained as a legacy repair label for older saved payloads.
-    case tenderUnderstanding
     case cardNegotiatedMeaning
     case cardInterpretiveTension
     case cardRealityMappingSource
@@ -196,85 +194,18 @@ struct ReflectionProtocolController: Sendable {
         var disclosurePurposes: [TurnDisclosureQuestionPurpose] = []
         var disclosureTargets: [TurnDisclosureQuestionTarget] = []
 
-        // Protocol-v2 sessions retain their exact saved interaction contract. The internal Tender
-        // bridge and post-mapping deepening are current-protocol capabilities only.
-        if session.protocolVersion < ReflectionSession.internalTenderProtocolVersion {
-            replyIntents.removeAll {
-                [.deepenCardConnection].contains($0)
-                    || (session.protocolStage == .contextualDisclosure
-                        && [.inviteCardConsent, .directCandidReflection].contains($0))
-            }
-        }
-
         switch session.protocolStage {
         case .contextualDisclosure:
             let disclosureState = EffectiveEventDisclosureState(
                 memory: session.semanticMemory
             )
-            if session.protocolVersion >= ReflectionSession.currentProtocolVersion {
-                disclosurePurposes = availableDisclosurePurposes(in: disclosureState)
-                disclosureTargets = Array(Set(disclosurePurposes.map(\.target))).sorted {
-                    $0.rawValue < $1.rawValue
-                }
+            disclosurePurposes = availableDisclosurePurposes(in: disclosureState)
+            disclosureTargets = Array(Set(disclosurePurposes.map(\.target))).sorted {
+                $0.rawValue < $1.rawValue
             }
-            // Context is supplied as one measurement-free hypothesis inside ordinary reflection;
-            // it no longer creates a separate local presentation or confirmation action.
-            // Keep the old tracking-resolution intents only for an actually resumed interaction
-            // that is already waiting on a previously presented cue. Advertising those intents
-            // to a current session with no pending tracking confirmation is contradictory: the
-            // Planner may select integrateTrackingAndPresentTenderSummary even though there is
-            // no trackingRelationship object it could legally resolve.
-            let currentPrompt = effectiveCurrentPrompt(for: session)
-            let isResolvingPresentedLegacyTracking =
-                currentPrompt?.kind == .confirmationRequest
-                && currentPrompt?.target == .trackingRelationship
-                && (
-                    session.activeTrackingPresentationID != nil
-                    || !session.presentedTrackingCueIDs.isEmpty
-                )
-            if isResolvingPresentedLegacyTracking {
-                replyIntents = replyIntents.filter {
-                    [
-                        .checkTrackingRelationship,
-                        .integrateTrackingAndPresentTenderSummary,
-                        .safetySupport,
-                    ].contains($0)
-                }
-            } else {
-                if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion {
-                    // A current card session does not need a separate Tender-analysis turn before
-                    // consent. Once the Planner judges the event story coherent, the card bridge
-                    // itself carries the one brief, supported grounding distinction. Resumed
-                    // tenderConfirmation sessions remain valid, but new card sessions choose only
-                    // between one more event question and the direct optional invitation.
-                    if session.protocolVersion >= ReflectionSession.currentProtocolVersion,
-                       session.condition.usesCard {
-                        replyIntents = [.exploreContext, .inviteCardConsent, .safetySupport]
-                        if isEventDisclosureCoreComplete(disclosureState) {
-                            replyIntents.removeAll { $0 == .exploreContext }
-                        }
-                    } else {
-                        replyIntents = [.exploreContext, .presentTenderSummary, .safetySupport]
-                    }
-                } else {
-                    replyIntents.removeAll {
-                        [
-                            .presentTrackingContext,
-                            .checkTrackingRelationship,
-                            .integrateTrackingAndPresentTenderSummary,
-                        ].contains($0)
-                    }
-                }
-            }
-        case .tenderConfirmation:
-            // Advertise only the forward intent that belongs to the assigned experiment
-            // condition. The validator already enforces these stage/intent pairs; applying the
-            // same boundary here prevents a Planner from seeing a contradictory permission set
-            // such as directReflection together with inviteCardConsent.
-            if session.condition.usesCard {
-                replyIntents.removeAll { $0 == .directCandidReflection }
-            } else {
-                replyIntents.removeAll { $0 == .inviteCardConsent }
+            replyIntents = [.exploreContext, .inviteCardConsent, .safetySupport]
+            if isEventDisclosureCoreComplete(disclosureState) {
+                replyIntents.removeAll { $0 == .exploreContext }
             }
         case .cardConsent:
             if session.condition.usesCard,
@@ -313,7 +244,7 @@ struct ReflectionProtocolController: Sendable {
                     }
                 }
             }
-            if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
+            if session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion,
                session.cardConnectionDeepeningUsed {
                 replyIntents.removeAll { $0 == .deepenCardConnection }
             }
@@ -705,19 +636,11 @@ struct ReflectionProtocolController: Sendable {
                 [TurnConfirmationDecision.accepted, .revised, .rejected]
                     .contains($0.decision)
             } == true
-        let resolvesTenderIntoDirectReflection =
-            !session.condition.usesCard
-            && effectiveCurrentPrompt(for: session)?.target == .tenderSummary
-            && protocolPlan.replyIntent == .directCandidReflection
-            && protocolPlan.resolvedConfirmation?.target == .tenderSummary
-            && protocolPlan.resolvedConfirmation?.decision == .accepted
-
-        if (resolvesCardMapping || resolvesTenderIntoDirectReflection),
+        if resolvesCardMapping,
            permissions(for: session).allowedStages.contains(.directReflection) {
-            // Resolving the shared Tender baseline in the direct condition, or resolving a
-            // negotiated card reading, is a protocol boundary. The confirmation-only transaction
-            // lands in directReflection; a fresh semantic plan then decides whether a supported
-            // candid question is useful or the material is already ready for final narrative.
+            // Resolving a negotiated card reading is a protocol boundary. The confirmation-only
+            // transaction lands in directReflection; a fresh semantic plan then decides whether
+            // a supported candid question is useful or the material is ready for final narrative.
             requestedStage = .directReflection
             // Do not commit semantic work for a question the user has not seen yet. A revised or
             // rejected negotiated meaning may still be saved, but Fierce understanding and
@@ -904,7 +827,6 @@ struct ReflectionProtocolController: Sendable {
         }
         if resolvesAcceptedCardConsent
             || resolvesCardMapping
-            || resolvesTenderIntoDirectReflection
             || authorizesCurrentUserAuthoredCardMapping {
             // Confirmation resolution and the next visible operation are separate atomic
             // transactions. Discard any question drafted into the transition: accepted card
@@ -972,11 +894,6 @@ struct ReflectionProtocolController: Sendable {
         switch intent {
         case .presentTrackingContext:
             return .contextualDisclosure
-        case .integrateTrackingAndPresentTenderSummary,
-             .presentTenderSummary,
-             .requestTenderConfirmation,
-             .reviseTenderSummary:
-            return .tenderConfirmation
         case .inviteCardConsent:
             return .cardConsent
         case .presentCardReading:
@@ -1000,11 +917,6 @@ struct ReflectionProtocolController: Sendable {
         switch intent {
         case .presentTrackingContext:
             return .trackingRelationship
-        case .integrateTrackingAndPresentTenderSummary,
-             .presentTenderSummary,
-             .requestTenderConfirmation,
-             .reviseTenderSummary:
-            return .tenderSummary
         case .inviteCardConsent:
             return .cardConsent
         case .presentCardReading:
@@ -1179,7 +1091,7 @@ struct ReflectionProtocolController: Sendable {
                     // A pending choice set cannot also claim that one option is already selected.
                     throw ReflectionProtocolViolation.illegalReplyIntent
                 }
-                if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion {
+                if session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion {
                     // Current sessions may not fall back to generic wellbeing advice. One active
                     // practice must name the confirmed basis that made it relevant; otherwise the
                     // Planner must use the typed insufficient-material noAction path.
@@ -1192,15 +1104,7 @@ struct ReflectionProtocolController: Sendable {
                 }
             }
         }
-        if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
-           session.protocolVersion < ReflectionSession.currentProtocolVersion,
-           session.protocolStage == .contextualDisclosure,
-           [.presentTenderSummary, .inviteCardConsent, .directCandidReflection]
-            .contains(plan.replyIntent) {
-            try validateCurrentTenderGrounding(plan, for: session)
-        }
-        if session.protocolVersion >= ReflectionSession.currentProtocolVersion,
-           session.protocolStage == .contextualDisclosure,
+        if session.protocolStage == .contextualDisclosure,
            plan.replyIntent != .safetySupport {
             try validateCurrentDisclosurePlan(plan, for: session)
         }
@@ -1284,7 +1188,7 @@ struct ReflectionProtocolController: Sendable {
             throw ReflectionProtocolViolation.illegalReplyIntent
         }
         if plan.localAction.kind == .shareCardGuidance {
-            if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
+            if session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion,
                session.protocolVersion < ReflectionSession.currentProtocolVersion {
                 let tension = plan.memoryUpdate.cardInterpretiveTension
                     ?? session.semanticMemory.cardInterpretiveTension
@@ -1299,7 +1203,7 @@ struct ReflectionProtocolController: Sendable {
            !session.cardGuidanceShared,
            plan.memoryUpdate.cardRealityConnection?.normalizedConfirmed != nil,
            plan.localAction.kind != .shareCardGuidance,
-           !(session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion
+           !(session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion
                 && plan.replyIntent == .deepenCardConnection),
            plan.replyIntent != .safetySupport {
             // When the plan itself establishes a reality mapping, the same atomic turn must
@@ -1312,7 +1216,7 @@ struct ReflectionProtocolController: Sendable {
                   effectiveCardRealityConnection(for: session) != nil else {
                 throw ReflectionProtocolViolation.illegalReplyIntent
             }
-            if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
+            if session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion,
                session.protocolVersion < ReflectionSession.currentProtocolVersion,
                !nonempty(session.semanticMemory.cardInterpretiveTension) {
                 throw ReflectionProtocolViolation.missingRequiredMemoryField(
@@ -1365,29 +1269,6 @@ struct ReflectionProtocolController: Sendable {
                   supportingIDs.contains(insightID) else { return nil }
             return cue.id
         })
-    }
-
-    /// Older internal-Tender sessions retain their typed disclosure-evidence boundary. The
-    /// optional Tender wording itself is not a stage credential: its absence cannot reject an
-    /// otherwise legal transition.
-    private func validateCurrentTenderGrounding(
-        _ plan: LLMTurnResponsePlan,
-        for session: ReflectionSession
-    ) throws {
-        if let missing = missingCurrentTenderGroundingField(
-            plan.memoryUpdate,
-            for: session
-        ) {
-            if missing == .episodeStructure {
-                throw ReflectionProtocolViolation.incompleteEpisodeStructure(
-                    missingCurrentEpisodeRequirements(
-                        plan.memoryUpdate,
-                        for: session
-                    )
-                )
-            }
-            throw ReflectionProtocolViolation.missingRequiredMemoryField(missing)
-        }
     }
 
     private func validateCurrentDisclosurePlan(
@@ -1515,114 +1396,6 @@ struct ReflectionProtocolController: Sendable {
         case .contextRelationship:
             return state.memory.contextRelationship != nil
         }
-    }
-
-    /// Returns only a missing legacy disclosure-evidence object. It never reads raw dialogue or
-    /// requires a Tender interpretation.
-    private func missingCurrentTenderGroundingField(
-        _ update: TurnSemanticMemoryUpdate?,
-        for session: ReflectionSession
-    ) -> TurnRequiredMemoryField? {
-        if let missing = missingCurrentDisclosureEvidenceField(update, for: session) {
-            return missing
-        }
-        return nil
-    }
-
-    /// Defines only the typed evidence boundary that ends contextual disclosure. Unknowns are
-    /// valid resolved statuses; the model must not keep questioning merely because a cause,
-    /// feeling, or controllable part remains unknown.
-    private func missingCurrentDisclosureEvidenceField(
-        _ update: TurnSemanticMemoryUpdate?,
-        for session: ReflectionSession
-    ) -> TurnRequiredMemoryField? {
-        let status = update?.selfCriticismStatus
-            ?? session.semanticMemory.selfCriticismStatus
-        guard status != .unresolved else { return .selfCriticismStatus }
-        if status == .present {
-            let statement = update?.selfCriticalStatement
-                ?? session.semanticMemory.selfCriticalStatement
-            guard nonempty(statement) else { return .selfCriticalStatement }
-        }
-
-        let situation = update?.situationUnderstanding
-            ?? session.semanticMemory.situationUnderstanding
-        if !(session.protocolVersion >= ReflectionSession.currentProtocolVersion
-                && status == .present) {
-            // Current self-criticism sessions use the typed episode structure below as the
-            // canonical reality representation. Requiring a second free-text situation summary
-            // duplicates the same evidence and previously caused otherwise complete card bridges
-            // to fail. Legacy or no-self-criticism paths still retain their saved contract.
-            guard nonempty(situation) else { return .situationUnderstanding }
-        }
-
-        if session.protocolVersion >= ReflectionSession.currentProtocolVersion,
-           status == .present {
-            if !missingCurrentEpisodeRequirements(update, for: session).isEmpty {
-                return .episodeStructure
-            }
-            let link = update?.selfCriticismLink
-                ?? session.semanticMemory.selfCriticismLink
-            guard nonempty(link) else { return .selfCriticismLink }
-        }
-
-        return nil
-    }
-
-    private func missingCurrentEpisodeRequirements(
-        _ update: TurnSemanticMemoryUpdate?,
-        for session: ReflectionSession
-    ) -> [TurnEpisodeRequirement] {
-        guard let episode = effectiveEpisodeStructure(update, for: session) else {
-            return [
-                .concreteFact,
-                .eventProcessStatus,
-                .impactStatus,
-            ]
-        }
-        var missing: [TurnEpisodeRequirement] = []
-        if !episode.concreteFacts.contains(where: nonempty) {
-            missing.append(.concreteFact)
-        }
-        // Behavioral evidence is optional reflective material, not a separate disclosure gate.
-        // An unresolved classification must never make an already reported focal event appear
-        // missing or force the person through another event question. Later candid reflection may
-        // use only an explicitly present/mixed status with non-empty evidence.
-        if episode.eventProcessStatus == .unresolved {
-            missing.append(.eventProcessStatus)
-        } else if [.present, .mixed].contains(episode.eventProcessStatus) {
-            let hasGroundedEventProcess =
-                episode.behaviorEvidence.contains(where: nonempty)
-                || episode.possibleContributors.contains(where: nonempty)
-                || episode.contextualConstraints.contains(where: nonempty)
-                || episode.controllableParts.contains(where: nonempty)
-            if !hasGroundedEventProcess {
-                missing.append(.eventProcessEvidence)
-            }
-        } else if episode.eventProcessStatus == .uncertain,
-                  !nonempty(episode.keyUncertainty) {
-            missing.append(.eventProcessUncertainty)
-        }
-        if episode.impactStatus == .unresolved {
-            missing.append(.impactStatus)
-        } else if [.present, .mixed].contains(episode.impactStatus),
-                  !episode.impacts.contains(where: nonempty) {
-            missing.append(.impactEvidence)
-        }
-        return missing
-    }
-
-    /// Planner episode updates are field-level patches. Validate the cumulative structure that
-    /// would exist after commit, rather than letting omitted nested keys reset prior facts to
-    /// Codable defaults during this turn.
-    private func effectiveEpisodeStructure(
-        _ update: TurnSemanticMemoryUpdate?,
-        for session: ReflectionSession
-    ) -> TurnEpisodeStructure? {
-        guard let patch = update?.episodeStructure else {
-            return session.semanticMemory.episodeStructure
-        }
-        return session.semanticMemory.episodeStructure?.merging(patch) ?? patch
     }
 
     private func validateInteractionContract(
@@ -1758,30 +1531,9 @@ struct ReflectionProtocolController: Sendable {
                 throw ReflectionProtocolViolation.invalidNextPrompt
             }
 
-        case .integrateTrackingAndPresentTenderSummary:
-            try requireResolution(
-                .trackingRelationship,
-                decisions: [.related, .partlyRelated, .unrelated, .uncertain]
-            )
-            try requireNextConfirmation(.tenderSummary)
-
-        case .presentTenderSummary, .reviseTenderSummary:
-            try requireNextConfirmation(.tenderSummary)
-
-        case .requestTenderConfirmation:
-            try requireNextConfirmation(.tenderSummary)
-
         case .inviteCardConsent:
-            if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
-               session.protocolStage == .contextualDisclosure {
-                guard plan.resolvedConfirmation == nil else {
-                    throw ReflectionProtocolViolation.invalidConfirmationResolution
-                }
-            } else {
-                try requireResolution(
-                    .tenderSummary,
-                    decisions: [.accepted, .revised]
-                )
+            guard plan.resolvedConfirmation == nil else {
+                throw ReflectionProtocolViolation.invalidConfirmationResolution
             }
             try requireNextConfirmation(.cardConsent)
 
@@ -1878,7 +1630,7 @@ struct ReflectionProtocolController: Sendable {
                let target = currentPrompt?.target {
                 let allowed: Set<TurnConfirmationDecision>
                 switch target {
-                case .tenderSummary, .cardMapping:
+                case .cardMapping:
                     allowed = [.accepted, .revised, .rejected]
                 default:
                     allowed = allowedDecisions(for: target)
@@ -1918,7 +1670,7 @@ struct ReflectionProtocolController: Sendable {
             }
 
         case .deepenCardConnection:
-            guard session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
+            guard session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion,
                   session.protocolVersion < ReflectionSession.currentProtocolVersion,
                   session.protocolStage == .cardReflection,
                   !session.cardConnectionDeepeningUsed,
@@ -1993,7 +1745,7 @@ struct ReflectionProtocolController: Sendable {
             return [.related, .partlyRelated, .unrelated, .uncertain]
         case .cardConsent:
             return [.accepted, .declined, .unclear]
-        case .tenderSummary, .cardRealityConnection, .cardMapping, .finalNarrative:
+        case .cardRealityConnection, .cardMapping, .finalNarrative:
             return [.accepted, .revised, .rejected, .unclear]
         case .practice:
             return [.accepted, .revised, .rejected, .unclear, .declined]
@@ -2037,27 +1789,12 @@ struct ReflectionProtocolController: Sendable {
         let allowed: Set<TurnReplyIntent>
         switch (currentStage, requestedStage) {
         case (.contextualDisclosure, .contextualDisclosure):
-            allowed = [.exploreContext, .presentTrackingContext, .checkTrackingRelationship]
-        case (.contextualDisclosure, .tenderConfirmation):
-            allowed = [.presentTenderSummary, .integrateTrackingAndPresentTenderSummary]
+            allowed = [.exploreContext]
         case (.contextualDisclosure, .cardConsent):
             allowed = [.inviteCardConsent]
-        case (.contextualDisclosure, .directReflection):
-            allowed = [.directCandidReflection]
-
-        case (.tenderConfirmation, .contextualDisclosure):
-            allowed = [.exploreContext]
-        case (.tenderConfirmation, .tenderConfirmation):
-            allowed = [.requestTenderConfirmation, .reviseTenderSummary]
-        case (.tenderConfirmation, .cardConsent):
-            allowed = [.inviteCardConsent]
-        case (.tenderConfirmation, .directReflection):
-            allowed = [.directCandidReflection]
 
         case (.cardConsent, .cardConsent):
             allowed = [.inviteCardConsent, .acknowledgeCardConsent]
-        case (.cardConsent, .tenderConfirmation):
-            allowed = [.reviseTenderSummary]
         case (.cardConsent, .directReflection):
             allowed = [.acknowledgeCardDecline]
 
@@ -2112,21 +1849,7 @@ struct ReflectionProtocolController: Sendable {
         case .contextualDisclosure:
             return [
                 .exploreContext,
-                .presentTrackingContext,
-                .checkTrackingRelationship,
-                .integrateTrackingAndPresentTenderSummary,
-                .presentTenderSummary,
                 .inviteCardConsent,
-                .directCandidReflection,
-                .safetySupport,
-            ]
-        case .tenderConfirmation:
-            return [
-                .exploreContext,
-                .requestTenderConfirmation,
-                .reviseTenderSummary,
-                .inviteCardConsent,
-                .directCandidReflection,
                 .safetySupport,
             ]
         case .cardConsent:
@@ -2134,7 +1857,6 @@ struct ReflectionProtocolController: Sendable {
                 .inviteCardConsent,
                 .acknowledgeCardConsent,
                 .acknowledgeCardDecline,
-                .reviseTenderSummary,
                 .safetySupport,
             ]
         case .cardReflection:
@@ -2186,15 +1908,9 @@ struct ReflectionProtocolController: Sendable {
         var values: [ReflectionProtocolStage]
         switch stage {
         case .contextualDisclosure:
-            values = condition.usesCard
-                ? [.contextualDisclosure, .tenderConfirmation, .cardConsent]
-                : [.contextualDisclosure, .tenderConfirmation, .directReflection]
-        case .tenderConfirmation:
-            values = condition.usesCard
-                ? [.contextualDisclosure, .tenderConfirmation, .cardConsent]
-                : [.contextualDisclosure, .tenderConfirmation, .directReflection]
+            values = [.contextualDisclosure, .cardConsent]
         case .cardConsent:
-            values = [.cardConsent, .tenderConfirmation, .directReflection]
+            values = [.cardConsent, .directReflection]
         case .cardReflection:
             values = [.cardReflection, .directReflection]
         case .directReflection:

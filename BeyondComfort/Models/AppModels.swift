@@ -134,7 +134,6 @@ typealias ReflectionStage = ReflectionState
 /// boundary and local capabilities are currently available.
 enum ReflectionProtocolStage: String, Codable, CaseIterable, Sendable {
     case contextualDisclosure
-    case tenderConfirmation
     case cardConsent
     case cardReflection
     case directReflection
@@ -142,6 +141,20 @@ enum ReflectionProtocolStage: String, Codable, CaseIterable, Sendable {
     case optionalAction
     case complete
     case safetySupport
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        // LEGACY_DECODE_ONLY — an old pre-card Tender checkpoint resumes at the current
+        // disclosure boundary. Canonical episode evidence then determines whether to invite the
+        // card; no Tender confirmation object is recreated.
+        if raw == "tenderConfirmation" {
+            self = .contextualDisclosure
+        } else if let value = Self(rawValue: raw) {
+            self = value
+        } else {
+            self = .contextualDisclosure
+        }
+    }
 }
 
 /// Coarse readiness is an application-owned progress lock, not a psychological judgment. The LLM
@@ -483,12 +496,6 @@ enum TurnReplyIntent: String, Codable, CaseIterable, Sendable {
     case exploreContext
     case presentTrackingContext
     case checkTrackingRelationship
-    /// Records the person's assessment of already presented tracking cues and, in the same
-    /// visible turn, presents a newly integrated Tender summary for its own confirmation.
-    case integrateTrackingAndPresentTenderSummary
-    case presentTenderSummary
-    case requestTenderConfirmation
-    case reviseTenderSummary
     case inviteCardConsent
     case acknowledgeCardConsent
     case acknowledgeCardDecline
@@ -515,7 +522,6 @@ enum TurnReplyIntent: String, Codable, CaseIterable, Sendable {
 /// Tender summary, card mapping, final narrative, or practice.
 enum TurnConfirmationTarget: String, Codable, CaseIterable, Sendable {
     case trackingRelationship
-    case tenderSummary
     case cardConsent
     /// A pre-guidance candidate that can become a complete userAccepted/userRevised connection.
     /// This is deliberately distinct from `cardMapping`, which negotiates the later card reading.
@@ -864,7 +870,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     /// The single current representation of a pending conversational interaction.
     var nextPrompt: TurnNextPrompt?
     var trackingAssessments: [TurnTrackingAssessment] = []
-    var tenderUnderstanding: String?
     var cardRealityConnection: TurnCardRealityConnection?
     var pendingCardRealityConnection: PendingCardRealityConnection?
     var cardImageRelation: String?
@@ -896,7 +901,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         contextRelationship: TurnContextRelationship? = nil,
         nextPrompt: TurnNextPrompt? = nil,
         trackingAssessments: [TurnTrackingAssessment] = [],
-        tenderUnderstanding: String? = nil,
         cardRealityConnection: TurnCardRealityConnection? = nil,
         pendingCardRealityConnection: PendingCardRealityConnection? = nil,
         cardImageRelation: String? = nil,
@@ -922,7 +926,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.contextRelationship = contextRelationship
         self.nextPrompt = nextPrompt
         self.trackingAssessments = trackingAssessments
-        self.tenderUnderstanding = tenderUnderstanding
         let canonical = cardRealityConnection?.normalizedConfirmed
         self.cardRealityConnection = canonical
         self.pendingCardRealityConnection = pendingCardRealityConnection
@@ -951,7 +954,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case contextRelationship
         case nextPrompt
         case trackingAssessments
-        case tenderUnderstanding
         case cardRealityConnection
         case pendingCardRealityConnection
         case cardImageRelation
@@ -1022,8 +1024,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         }
         trackingAssessments =
             (try? box.decode([TurnTrackingAssessment].self, forKey: .trackingAssessments)) ?? []
-        tenderUnderstanding =
-            try? box.decodeIfPresent(String.self, forKey: .tenderUnderstanding)
         let decodedCanonical = try? box.decodeIfPresent(
             TurnCardRealityConnection.self,
             forKey: .cardRealityConnection
@@ -1150,7 +1150,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             assessments.forEach { indexed[$0.cueID] = $0 }
             trackingAssessments = indexed.values.sorted { $0.cueID < $1.cueID }
         }
-        if let value = update.tenderUnderstanding { tenderUnderstanding = value }
         if update.clearPendingCardRealityConnection == true {
             pendingCardRealityConnection = nil
         }
@@ -1203,7 +1202,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     /// relevance state (`offered`), not in semantic narrative memory.
     var contextCueOffered: Bool?
     var trackingAssessments: [TurnTrackingAssessment]?
-    var tenderUnderstanding: String?
     /// Atomic current-protocol connection. Legacy scalar fields below are decode/input
     /// compatibility only and cannot independently authorize card guidance.
     var cardRealityConnection: TurnCardRealityConnection?
@@ -1240,7 +1238,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         contextRelationship: TurnContextRelationship? = nil,
         contextCueOffered: Bool? = nil,
         trackingAssessments: [TurnTrackingAssessment]? = nil,
-        tenderUnderstanding: String? = nil,
         cardRealityConnection: TurnCardRealityConnection? = nil,
         pendingCardRealityConnection: PendingCardRealityConnection? = nil,
         clearCardRealityConnection: Bool? = nil,
@@ -1269,7 +1266,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         self.contextRelationship = contextRelationship
         self.contextCueOffered = contextCueOffered
         self.trackingAssessments = trackingAssessments
-        self.tenderUnderstanding = tenderUnderstanding
         self.cardRealityConnection = cardRealityConnection
         self.pendingCardRealityConnection = pendingCardRealityConnection
         self.clearCardRealityConnection = clearCardRealityConnection
@@ -1303,7 +1299,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         case contextRelationship
         case contextCueOffered
         case trackingAssessments
-        case tenderUnderstanding
         case cardRealityConnection
         case pendingCardRealityConnection
         case clearCardRealityConnection
@@ -1379,10 +1374,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         trackingAssessments = try? box.decode(
             [TurnTrackingAssessment].self,
             forKey: .trackingAssessments
-        )
-        tenderUnderstanding = try? box.decode(
-            String.self,
-            forKey: .tenderUnderstanding
         )
         cardRealityConnection = try? box.decode(
             TurnCardRealityConnection.self,
@@ -2881,9 +2872,9 @@ struct AdaptiveDisclosureResolver {
 }
 
 struct ReflectionSession: Identifiable, Codable {
-    /// Protocol 3 introduced the internal Tender bridge. Protocol 4 adds the evidence-structured
-    /// disclosure gate without changing already-running protocol-3 sessions mid-reflection.
-    static let internalTenderProtocolVersion = 3
+    /// Protocol 3 introduced the typed interaction contract used by later card and practice
+    /// operations. Protocol 4 consolidates all TurnController sessions onto one runtime contract.
+    static let structuredTurnProtocolVersion = 3
     static let currentProtocolVersion = 4
     static let simpleGentleControlProtocolVersion = 3
 
@@ -3052,14 +3043,19 @@ struct ReflectionSession: Identifiable, Codable {
         id = (try? box.decode(UUID.self, forKey: .id)) ?? UUID()
         createdAt = (try? box.decode(Date.self, forKey: .createdAt)) ?? Date()
         stage = (try? box.decode(ReflectionState.self, forKey: .stage)) ?? .welcome
-        protocolVersion = (try? box.decode(Int.self, forKey: .protocolVersion)) ?? 1
+        let savedProtocolVersion = (try? box.decode(Int.self, forKey: .protocolVersion)) ?? 1
+        // All TurnController sessions now enter the single current runtime contract after decode.
+        // Version 1 belongs to the pre-Turn workflow and remains separately resumable.
+        protocolVersion = savedProtocolVersion >= 2
+            ? Self.currentProtocolVersion
+            : savedProtocolVersion
         protocolStage = (try? box.decode(ReflectionProtocolStage.self, forKey: .protocolStage))
             ?? Self.inferredProtocolStage(from: stage)
         reflectionReadiness =
             (try? box.decode(ReflectionReadiness.self, forKey: .reflectionReadiness))
             ?? (protocolStage == .narrativeConfirmation || protocolStage == .optionalAction
                 ? .narrativeReady
-                : (protocolStage == .contextualDisclosure || protocolStage == .tenderConfirmation
+                : (protocolStage == .contextualDisclosure
                     ? .needsTender
                     : .reflectionOpen))
         var decodedSemanticMemory =
@@ -3447,7 +3443,8 @@ struct ReflectionSession: Identifiable, Codable {
              .contextDisclosure, .trackingPermission, .trackingReview:
             return .contextualDisclosure
         case .tenderGrounding, .tenderExploration:
-            return .tenderConfirmation
+            // LEGACY_DECODE_ONLY — pre-card Tender views resume at the current disclosure gate.
+            return .contextualDisclosure
         case .readinessCheck, .cardIntroduction:
             return .cardConsent
         case .cardInterpretation:

@@ -843,7 +843,7 @@ class ProviderGateway:
                     '"selfCriticalStatement":null,"selfCriticismLink":null,'
                     '"episodeStructure":null,"contextRelationship":null,'
                     '"contextCueOffered":null,"trackingAssessments":null,'
-                    '"tenderUnderstanding":null,"cardRealityConnection":null,'
+                    '"cardRealityConnection":null,'
                     '"pendingCardRealityConnection":null,'
                     '"clearPendingCardRealityConnection":null,'
                     '"clearCardRealityConnection":null,"cardConnectionOutcome":null,'
@@ -884,8 +884,8 @@ class ProviderGateway:
                     "keys, even with null values. pendingCardRealityConnection must be "
                     "null or a complete object with id, imageRelation, and "
                     "candidateRealityMapping and a matching cardRealityConnection confirmation. "
-                    "A confirmation target must be exactly trackingRelationship, tenderSummary, "
-                    "cardConsent, cardRealityConnection, cardMapping, finalNarrative, or practice. "
+                    "A confirmation target must be exactly trackingRelationship, cardConsent, "
+                    "cardRealityConnection, cardMapping, finalNarrative, or practice. "
                     "practiceOptions must be null or an array containing exactly one object with "
                     "id, kind, title, instruction, rationale, and basis; option kind must be exactly "
                     "care, repair, protect, or change. practiceKind must be null or exactly care, "

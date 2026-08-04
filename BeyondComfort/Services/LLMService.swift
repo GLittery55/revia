@@ -1258,8 +1258,7 @@ extension ReflectionPromptFactory {
     now, do not use presentCardReading, and do not ask for the mapping again. For a revision or \
     rejection, the latest user correction replaces only the post-guidance candidate: atomically recompose \
     episodeStructure and replace situationUnderstanding without reusing the rejected cause or \
-    motive. Replace optional tenderUnderstanding only when the correction itself supports an \
-    event-versus-whole-person distinction. Preserve the confirmed cardRealityConnection unchanged; \
+    motive. Preserve the confirmed cardRealityConnection unchanged; \
     do not return or modify cardRealityConnection in this repair. A revision may replace the \
     post-guidance cardInterpretiveTension and must replace cardNegotiatedMeaning; a rejection \
     withdraws only those candidate interpretation fields. Only if the latest \
