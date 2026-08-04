@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
-TURN_PROMPT_VERSION = "turn-v4-server-v34"
+TURN_PROMPT_VERSION = "turn-v4-server-v35"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -84,8 +84,9 @@ _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
         "action or omission, and how the event developed form a coherent story. A direct result, emotion, "
         "self-evaluation, importance, motive, responsibility, agency, constraint, and solution may be saved "
         "when volunteered but are never completion gates. When sufficient, "
-        "set readyForTenderOrCard, select the compatible tenderGroundingKind, and use inviteCardConsent "
-        "directly for cards. Grounding and the optional invitation are one visible turn, with no Tender "
+        "set readyForTenderOrCard and use inviteCardConsent directly for cards. A brief bridge is a "
+        "Writer language choice, never another Planner credential. Grounding and the optional invitation "
+        "are one visible turn, with no Tender "
         "confirmation. Otherwise ask one question using one advertised typed disclosurePurpose and its "
         "canonical disclosureTarget: identifyConcreteEpisode, clarifyEventProcess, or clarifyBehavior. "
         "Reopen a received-and-complete relation only with one typed, supported "
@@ -206,7 +207,7 @@ development as uncertain plus keyUncertainty rather than reopening it.
 
 In current contextualDisclosure always set eventDisclosureOutcome. readyForTenderOrCard requires
 only a supported focal episode, user behavior/omission, and event development. impactStatus,
-selfCriticismStatus, reflectionFocusKind, reflectionFocus, emotion, importance, motive,
+selfCriticismStatus, selfCriticalStatement, emotion, importance, motive,
 responsibility, agency, constraints, and solutions may be saved when volunteered but are not gates.
 Once these three episode relations are present, do not ask another disclosure question: use the
 permitted forward operation in the same turn.
@@ -217,18 +218,17 @@ conflict without explicit self-criticism; unclearFocus means no reflection focus
 Anticipated external judgment is not automatically global. Never ask for reflection focus merely to
 complete Event Disclosure.
 
-Every disclosure question uses an advertised typed purpose and canonical target:
-identifyConcreteEpisode→focalEvent, clarifyBehavior→behavior,
-clarifyEventProcess→eventProcess. clarifyImmediateOutcome and clarifyReflectionFocus are legacy
-values and are not part of the current Event Disclosure path. Free-text purpose is non-authoritative. Do not repeat a
+Every disclosure question uses one advertised typed purpose and canonical target:
+identifyConcreteEpisode→focalEvent, clarifyBehavior→behavior, or
+clarifyEventProcess→eventProcess. No other disclosure purpose exists in the current schema.
+Free-text purpose is non-authoritative. Do not repeat a
 received-and-complete purpose without a newest-answer-supported typed reopen reason: only
 userCorrectedPreviousFact, userWithdrewPreviousAnswer, or newContradictionDetected.
 
-A ready card turn sets tenderGroundingKind and uses inviteCardConsent in the same visible reply.
-Only an explicitGlobalSelfJudgment permits globalJudgmentDistinction, without praise, excuse, or
-minimized consequence. Volunteered specific criticism, emotion, impact, or event tension may use
-specificEventGrounding; otherwise use none. Never create Tender confirmation, ask a Tender question,
-or fill tenderUnderstanding merely to advance.
+A ready card turn uses inviteCardConsent in the same visible reply. The Writer may distinguish a
+specific act from the whole self only when the person's own words explicitly contain that broad
+whole-self judgment; otherwise it uses one supported factual bridge or directly invites the card.
+Never create Tender confirmation, ask a Tender question, or fill tenderUnderstanding merely to advance.
 
 Question functions are typed, not lexical. Treat assent, refusal, correction, uncertainty, or
 inability as an answer; commit it and change function or advance. Never demand hidden motives.
@@ -292,7 +292,6 @@ Return exactly one JSON object and nothing else:
 {"requestedStage":"","localAction":{"kind":"none","trackingCueIDs":[]},"memoryUpdate":
 {"situationUnderstanding":null,"answeredQuestionPurposes":null,
 "receivedDisclosureQuestionPurposes":null,"eventDisclosureOutcome":null,
-"reflectionFocusKind":null,"reflectionFocus":null,"tenderGroundingKind":null,
 "selfCriticismStatus":null,
 "selfCriticalStatement":null,"selfCriticismLink":null,"episodeStructure":null,"contextRelationship":null,
 "contextCueOffered":null,
@@ -339,33 +338,12 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
     shared = f"Realize only replyIntent={intent}."
     if stage == "contextualDisclosure":
         if intent == "inviteCardConsent":
-            focus_kind = _effective_typed_memory_value(
-                request, plan, "reflectionFocusKind"
-            )
-            grounding_kind = _effective_typed_memory_value(
-                request, plan, "tenderGroundingKind"
-            )
-            if (
-                focus_kind == "explicitGlobalSelfJudgment"
-                and grounding_kind == "globalJudgmentDistinction"
-            ):
-                distinction = (
-                    "Use one confirmed fact and real result to distinguish this specific event "
-                    "from the person's own broad whole-self verdict. Preserve conduct and impact. "
-                )
-            elif grounding_kind == "specificEventGrounding":
-                distinction = (
-                    "Briefly carry forward one volunteered emotion, impact, specific concern, or "
-                    "event fact; do not turn it into a whole-self judgment or a favorable trait. "
-                )
-            else:
-                distinction = (
-                    "Use only one brief factual bridge; invent no psychological distinction or "
-                    "whole-self judgment. "
-                )
             return (
                 f"{shared} The event story is coherent. Use at most one confirmed fact as a brief, "
-                f"restrained bridge. {distinction}Then invite one optional 一张随机反思卡. The only "
+                "restrained bridge, or invite directly when no bridge adds value. Only when the "
+                "person's own messages explicitly contain a broad whole-self verdict may the "
+                "reply distinguish that verdict from the specific act or result; preserve conduct "
+                "and impact. Then invite one optional 一张随机反思卡. The only "
                 "question is the optional card-consent question; do not ask the person to explain "
                 "the event, emotion, importance, guilt, concern, or grounding any further. "
                 "Do not retell the event, label an action as a deliberate choice without user "
@@ -378,27 +356,11 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
             "requestTenderConfirmation",
             "reviseTenderSummary",
         }:
-            if _effective_typed_memory_value(
-                request, plan, "reflectionFocusKind"
-            ) == "explicitGlobalSelfJudgment":
-                return (
-                    f"{shared} Reality is established. Use one confirmed self-criticism-relevant "
-                    "fact as a brief anchor plus exactly one supported self-compassionate "
-                    "distinction: conduct versus identity, impact versus global verdict, or "
-                    "understandable concern versus consequential handling. Do not retell the chain, "
-                    "list evidence, reassure, or add another distinction. The nextPrompt question "
-                    "targets a concrete supported feeling, concern, moment, behavior, or choice "
-                    "answerable from experience. Never ask the person to explain, evaluate, or "
-                    "compare the distinction, and avoid abstract stand-ins for the concrete target. "
-                    "No card or practice."
-                )
             return (
-                f"{shared} Reality is established, but the person has not authored a self-"
-                "evaluation. Keep the transition light: briefly acknowledge one confirmed event "
-                "difficulty, without adding a psychological distinction, global judgment, trait, "
-                "fear, feeling, or motive. Ask only the one concrete, easy content-forward question "
-                "required by the plan. Do not retell the event chain, fill a memory field, invite a "
-                "card, or propose a practice."
+                f"{shared} Use one brief supported fact. A conduct-versus-whole-self distinction "
+                "is allowed only when the person's own words explicitly supplied that broad "
+                "judgment. Ask only the concrete nextPrompt question; do not ask for approval, "
+                "explanation of the acknowledgement, a card, or a practice."
             )
         return (
             f"{shared} Ask the one planned event question directly, without first acknowledging, "
@@ -567,12 +529,11 @@ a required disclosure relation, or any detail is pursued after the three-part st
 (`unnecessary_event_detail`); the latest answer is ignored; a question presupposes a deliberate
 decision to continue without evidence (`unsupported_decision_premise`), presupposes awareness that it
 was time to stop or an attempted stop without evidence (`unsupported_stop_awareness_premise`), or
-reuses a premise the person explicitly denied (`negated_premise_reused`); reflectionFocusKind turns
-specific criticism, external-evaluation concern, or ordinary event tension into a global self-
-judgment (`manufactured_global_self_judgment`); or a current card condition uses a separate Tender
-operation instead of one compatible grounding plus inviteCardConsent in the same visible turn;
-globalJudgmentDistinction lacks a user-authored global judgment or minimizes conduct/consequence,
-specificEventGrounding adds a trait, feeling, motive, diagnosis, or unsupported favorable reframe, or
+reuses a premise the person explicitly denied (`negated_premise_reused`); the plan manufactures a
+global self-judgment absent from the person's own words (`manufactured_global_self_judgment`); or a
+current card condition uses a separate Tender operation instead of inviteCardConsent in the same
+visible turn; the proposed bridge minimizes conduct/consequence or adds a trait, feeling, motive,
+diagnosis, or unsupported favorable reframe; or
 the plan requests Tender confirmation (`unsupported_tender_reframe`, `consequence_minimized`,
 `global_judgment_not_distinguished`, `unnecessary_tender_confirmation`);
 or bridge converts another person's observable reaction into an unreported evaluation, embarrassment,
@@ -759,9 +720,10 @@ motive, unresolved meaning, or what matters most. Reject finer event detail afte
 ready. Reject wording that presupposes a
 deliberate decision, awareness that the person should stop, or an attempted stop unless the dialogue
 supports that premise, and reject a premise the person denied. Preserve the validated typed function
-in a targeted rewrite; do not substitute a different topic. For presentTenderSummary, inspect
-reflectionFocusKind rather than inferring a whole-person judgment from selfCriticismStatus. Only
-explicitGlobalSelfJudgment permits the distinction. If it does, require exactly one brief confirmed-fact anchor, one new supported
+in a targeted rewrite; do not substitute a different topic. For presentTenderSummary, use only the
+person's own explicit whole-person judgment as evidence for a behavior-versus-whole-person
+distinction; never infer one from a status field. When that evidence exists, require exactly one
+brief confirmed-fact anchor, one new supported
 compassionate distinction, and one content-forward experience question. If it does not, reject any
 invented distinction, self-judgment, trait, fear, feeling, or motive; instead require only a light
 acknowledgement of one confirmed difficulty and the plan's one concrete content-forward question.
@@ -776,10 +738,10 @@ the validated reflection focus. When replyIntent is inviteCardConsent, require t
 “一张随机反思卡”, a brief evidence-grounded bridge, and an optional choice. Reject any invented or
 previewed card title, image, symbol, theme, or meaning because Swift has not selected the card yet.
 When that invitation comes directly from contextualDisclosure, keep its grounding light. Permit one
-event-versus-whole-person distinction only when reflectionFocusKind is
-explicitGlobalSelfJudgment and tenderGroundingKind is globalJudgmentDistinction. With
-specificEventGrounding, organize only supported intent, conduct, and result. With none, use only a
-brief factual bridge. Reject an unsupported decision or responsibility label, a forced comparison,
+event-versus-whole-person distinction only when the person's own words explicitly contain the
+whole-person judgment being distinguished. Otherwise organize only supported conduct and result,
+or use one brief factual bridge when that is all the evidence supports. Reject an unsupported decision
+or responsibility label, a forced comparison,
 an additional introspection question, an invented distinction or motive, a positive trait, a
 minimized consequence, or a recap of the full event chain.
 

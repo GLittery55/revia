@@ -200,18 +200,16 @@ enum TurnSelfCriticismStatus: String, Codable, CaseIterable, Sendable {
 enum TurnEventDisclosureOutcome: String, Codable, CaseIterable, Sendable {
     case needsConcreteEpisode
     case needsBehaviorOrProcess
-    case needsReflectionFocus
     case readyForTenderOrCard
-}
 
-/// The reflection object established before the optional card invitation. Keeping anticipated
-/// external evaluation separate from a user-authored global verdict prevents Tender from
-/// manufacturing a whole-person judgment.
-enum TurnReflectionFocusKind: String, Codable, CaseIterable, Sendable {
-    case explicitGlobalSelfJudgment
-    case specificSelfCriticism
-    case eventTension
-    case unclearFocus
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        // LEGACY_DECODE_ONLY — the retired focus gate maps to a non-authoritative summary;
+        // canonical Event Disclosure evidence still decides whether progression is legal.
+        self = raw == "needsReflectionFocus"
+            ? .readyForTenderOrCard
+            : (Self(rawValue: raw) ?? .needsConcreteEpisode)
+    }
 }
 
 enum TurnDisclosureReopenReason: String, Codable, CaseIterable, Sendable {
@@ -226,16 +224,12 @@ enum TurnDisclosureQuestionPurpose: String, Codable, CaseIterable, Sendable {
     case identifyConcreteEpisode
     case clarifyBehavior
     case clarifyEventProcess
-    case clarifyImmediateOutcome
-    case clarifyReflectionFocus
 
     var target: TurnDisclosureQuestionTarget {
         switch self {
         case .identifyConcreteEpisode: return .focalEvent
         case .clarifyBehavior: return .behavior
         case .clarifyEventProcess: return .eventProcess
-        case .clarifyImmediateOutcome: return .actualImpact
-        case .clarifyReflectionFocus: return .reflectionFocus
         }
     }
 }
@@ -569,11 +563,7 @@ enum TurnNextPromptKind: String, Codable, CaseIterable, Sendable {
 enum TurnDisclosureQuestionTarget: String, Codable, CaseIterable, Sendable {
     case focalEvent
     case behavior
-    case selfCriticism
     case eventProcess
-    case actualImpact
-    case selfCriticismLink
-    case reflectionFocus
     case contextRelationship
 }
 
@@ -859,8 +849,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     var answeredQuestionPurposes: [String] = []
     var receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose] = []
     var eventDisclosureOutcome: TurnEventDisclosureOutcome = .needsConcreteEpisode
-    var reflectionFocusKind: TurnReflectionFocusKind = .unclearFocus
-    var reflectionFocus: String?
     var selfCriticismStatus: TurnSelfCriticismStatus = .unresolved
     /// The person's proposition in compact form, not a clinician- or model-authored label.
     var selfCriticalStatement: String?
@@ -905,8 +893,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         answeredQuestionPurposes: [String] = [],
         receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose] = [],
         eventDisclosureOutcome: TurnEventDisclosureOutcome = .needsConcreteEpisode,
-        reflectionFocusKind: TurnReflectionFocusKind = .unclearFocus,
-        reflectionFocus: String? = nil,
         selfCriticismStatus: TurnSelfCriticismStatus = .unresolved,
         selfCriticalStatement: String? = nil,
         selfCriticismLink: String? = nil,
@@ -935,8 +921,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.answeredQuestionPurposes = answeredQuestionPurposes
         self.receivedDisclosureQuestionPurposes = receivedDisclosureQuestionPurposes
         self.eventDisclosureOutcome = eventDisclosureOutcome
-        self.reflectionFocusKind = reflectionFocusKind
-        self.reflectionFocus = reflectionFocus
         self.selfCriticismStatus = selfCriticismStatus
         self.selfCriticalStatement = selfCriticalStatement
         self.selfCriticismLink = selfCriticismLink
@@ -968,8 +952,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case answeredQuestionPurposes
         case receivedDisclosureQuestionPurposes
         case eventDisclosureOutcome
-        case reflectionFocusKind
-        case reflectionFocus
         case selfCriticismStatus
         case selfCriticalStatement
         case selfCriticismLink
@@ -1011,12 +993,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
                 TurnEventDisclosureOutcome.self,
                 forKey: .eventDisclosureOutcome
             )) ?? .needsConcreteEpisode
-        reflectionFocusKind =
-            (try? box.decode(
-                TurnReflectionFocusKind.self,
-                forKey: .reflectionFocusKind
-            )) ?? .unclearFocus
-        reflectionFocus = try? box.decodeIfPresent(String.self, forKey: .reflectionFocus)
         selfCriticismStatus =
             (try? box.decode(TurnSelfCriticismStatus.self, forKey: .selfCriticismStatus))
             ?? .unresolved
@@ -1163,8 +1139,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             ).sorted { $0.rawValue < $1.rawValue }
         }
         if let value = update.eventDisclosureOutcome { eventDisclosureOutcome = value }
-        if let value = update.reflectionFocusKind { reflectionFocusKind = value }
-        if let value = update.reflectionFocus { reflectionFocus = value }
         if let value = update.selfCriticismStatus { selfCriticismStatus = value }
         if let value = update.selfCriticalStatement { selfCriticalStatement = value }
         if let value = update.selfCriticismLink { selfCriticismLink = value }
@@ -1250,8 +1224,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     var answeredQuestionPurposes: [String]?
     var receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose]?
     var eventDisclosureOutcome: TurnEventDisclosureOutcome?
-    var reflectionFocusKind: TurnReflectionFocusKind?
-    var reflectionFocus: String?
     var selfCriticismStatus: TurnSelfCriticismStatus?
     var selfCriticalStatement: String?
     var selfCriticismLink: String?
@@ -1295,8 +1267,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         answeredQuestionPurposes: [String]? = nil,
         receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose]? = nil,
         eventDisclosureOutcome: TurnEventDisclosureOutcome? = nil,
-        reflectionFocusKind: TurnReflectionFocusKind? = nil,
-        reflectionFocus: String? = nil,
         selfCriticismStatus: TurnSelfCriticismStatus? = nil,
         selfCriticalStatement: String? = nil,
         selfCriticismLink: String? = nil,
@@ -1329,8 +1299,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         self.answeredQuestionPurposes = answeredQuestionPurposes
         self.receivedDisclosureQuestionPurposes = receivedDisclosureQuestionPurposes
         self.eventDisclosureOutcome = eventDisclosureOutcome
-        self.reflectionFocusKind = reflectionFocusKind
-        self.reflectionFocus = reflectionFocus
         self.selfCriticismStatus = selfCriticismStatus
         self.selfCriticalStatement = selfCriticalStatement
         self.selfCriticismLink = selfCriticismLink
@@ -1368,8 +1336,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         case answeredQuestionPurposes
         case receivedDisclosureQuestionPurposes
         case eventDisclosureOutcome
-        case reflectionFocusKind
-        case reflectionFocus
         case selfCriticismStatus
         case selfCriticalStatement
         case selfCriticismLink
@@ -1415,14 +1381,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         eventDisclosureOutcome = try? box.decode(
             TurnEventDisclosureOutcome.self,
             forKey: .eventDisclosureOutcome
-        )
-        reflectionFocusKind = try? box.decode(
-            TurnReflectionFocusKind.self,
-            forKey: .reflectionFocusKind
-        )
-        reflectionFocus = try? box.decode(
-            String.self,
-            forKey: .reflectionFocus
         )
         selfCriticismStatus = try? box.decode(
             TurnSelfCriticismStatus.self,

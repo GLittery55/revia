@@ -3496,7 +3496,6 @@ final class ReflectionViewModel: ObservableObject {
                 "nextPrompt.disclosureReopenReason":
                     TurnDisclosureReopenReason.allCases.map(\.rawValue),
                 "eventDisclosureOutcome": TurnEventDisclosureOutcome.allCases.map(\.rawValue),
-                "reflectionFocusKind": TurnReflectionFocusKind.allCases.map(\.rawValue),
                 "confirmation.target": TurnConfirmationTarget.allCases.map(\.rawValue),
                 "confirmation.decision": TurnConfirmationDecision.allCases.map(\.rawValue),
                 "practiceKind": TurnPracticeKind.allCases.map(\.rawValue),
@@ -3860,23 +3859,6 @@ final class ReflectionViewModel: ObservableObject {
                     distinction that allows 'only this event/no broader meaning'; do not reopen a \
                     generic event checklist.
                     """
-                case .reflectionFocus:
-                    if session.protocolVersion >= ReflectionSession.currentProtocolVersion {
-                        return """
-                        reflectionFocus is optional in the current Event Disclosure. Do not ask for \
-                        importance, guilt, meaning, or self-evaluation merely to fill it. Preserve \
-                        any volunteered focus; otherwise leave it unchanged. Use only the typed \
-                        focal event, event process, and behavior evidence to decide whether the \
-                        permitted forward card invitation is available.
-                        """
-                    }
-                    return """
-                    The current Event Disclosure cannot advance without one user-grounded reflection \
-                    focus. Use explicitGlobalSelfJudgment only for the person's own broad whole-self \
-                    verdict; otherwise preserve specific criticism, event tension, external-evaluation \
-                    concern, or uncertainty without inflating it. If still unclear, ask only the one \
-                    permitted clarifyReflectionFocus question.
-                    """
                 case .episodeStructure:
                     return """
                     Stay in contextualDisclosure unless the cumulative episodeStructure records \
@@ -4048,9 +4030,9 @@ final class ReflectionViewModel: ObservableObject {
                 return """
                 The cumulative disclosure evidence gate is complete and the reality account is \
                 already established. Do not ask another analytic question or retell its event \
-                chain. Preserve any volunteered reflection focus. Use globalJudgmentDistinction \
-                only for an explicit whole-person judgment; otherwise use specificEventGrounding \
-                only for supported material or none. Use one brief grounded transition in the visible \
+                chain. Preserve any volunteered concern. Add a behavior-versus-whole-person \
+                distinction only when the user's own words explicitly contain that whole-person \
+                judgment. Otherwise use one brief factual transition in the visible \
                 inviteCardConsent reply. Create only the cardConsent confirmation; do not create \
                 a Tender confirmation or another disclosure question.
                 """

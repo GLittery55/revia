@@ -34,15 +34,11 @@ def request_payload(*, condition: str = "cardMediated") -> dict:
                 "identifyConcreteEpisode",
                 "clarifyBehavior",
                 "clarifyEventProcess",
-                "clarifyImmediateOutcome",
-                "clarifyReflectionFocus",
             ],
             "allowedDisclosureTargets": [
                 "focalEvent",
                 "behavior",
                 "eventProcess",
-                "actualImpact",
-                "reflectionFocus",
             ],
             "allowedOperations": [
                 {
@@ -120,7 +116,7 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("readyForTenderOrCard", prompt.system)
         self.assertIn("impactStatus", prompt.system)
         self.assertIn("are not gates", prompt.system)
-        self.assertIn("reflectionFocusKind", prompt.system)
+        self.assertNotIn("reflectionFocusKind", prompt.system)
         self.assertIn("received-and-complete purpose", prompt.system)
         self.assertIn("contextRelationship", prompt.system)
         self.assertIn("rejected material cannot return", prompt.system)
@@ -254,92 +250,6 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("workflow-field drift", critic.system)
         self.assertIn("protective\npurpose asserted without user evidence", critic.system)
 
-    def test_tender_grounding_adds_one_distinction_without_replaying_episode(self) -> None:
-        request = request_payload()
-        request["semanticMemory"] = {
-            "selfCriticismStatus": "present",
-            "selfCriticalStatement": "用户自己表达的一项整体自我评价",
-            "reflectionFocusKind": "explicitGlobalSelfJudgment",
-            "reflectionFocus": "用户自己表达的一项整体自我评价",
-            "tenderGroundingKind": "globalJudgmentDistinction",
-        }
-        tender_plan = plan()
-        tender_plan["requestedStage"] = "tenderConfirmation"
-        tender_plan["replyIntent"] = "presentTenderSummary"
-        tender_plan["memoryUpdate"]["tenderUnderstanding"] = "one supported distinction"
-        tender_plan["nextPrompt"] = {
-            "kind": "confirmationRequest",
-            "purpose": None,
-            "focus": None,
-            "disclosureTarget": None,
-            "target": "tenderSummary",
-            "referenceID": None,
-        }
-        writer = build_turn_messages(
-            item("writer", {"request": request, "plan": tender_plan})
-        )
-        critic = build_turn_messages(
-            item(
-                "writer_critic",
-                {
-                    "request": request,
-                    "plan": tender_plan,
-                    "draft": {
-                        "realizedIntent": "presentTenderSummary",
-                        "reply": "一段候选回复",
-                    },
-                },
-            )
-        )
-
-        self.assertIn("one confirmed self-criticism-relevant fact", writer.system)
-        self.assertIn("exactly one supported self-compassionate distinction", writer.system)
-        self.assertIn("Do not retell the chain", writer.system)
-        self.assertIn(
-            "concrete supported feeling, concern, moment, behavior, or choice",
-            writer.system,
-        )
-        self.assertIn("Never ask the person to explain, evaluate, or compare", writer.system)
-        self.assertIn("retelling of the event-\nprocess-impact-self-evaluation chain", critic.system)
-        self.assertIn("distinction_meta_question", critic.system)
-
-    def test_tender_without_user_authored_self_criticism_stays_light_and_needs_no_memory(self) -> None:
-        tender_plan = plan()
-        tender_plan["requestedStage"] = "tenderConfirmation"
-        tender_plan["replyIntent"] = "presentTenderSummary"
-        tender_plan["memoryUpdate"]["tenderUnderstanding"] = None
-        tender_plan["nextPrompt"] = {
-            "kind": "confirmationRequest",
-            "purpose": None,
-            "focus": None,
-            "disclosureTarget": None,
-            "target": "tenderSummary",
-            "referenceID": None,
-        }
-
-        writer = build_turn_messages(
-            item("writer", {"request": request_payload(), "plan": tender_plan})
-        )
-        critic = build_turn_messages(
-            item(
-                "writer_critic",
-                {
-                    "request": request_payload(),
-                    "plan": tender_plan,
-                    "draft": {
-                        "realizedIntent": "presentTenderSummary",
-                        "reply": "一段候选回复",
-                    },
-                },
-            )
-        )
-
-        self.assertIn("has not authored a self-evaluation", writer.system)
-        self.assertIn("Keep the transition light", writer.system)
-        self.assertIn("without adding a psychological distinction", writer.system)
-        self.assertIn("invented distinction", critic.system)
-        self.assertIn("light\nacknowledgement", critic.system)
-
     def test_disclosure_can_bridge_directly_to_optional_card_without_tender_memory(self) -> None:
         request = request_payload()
         invitation = plan()
@@ -399,9 +309,6 @@ class PromptRegistryTests(unittest.TestCase):
         request["semanticMemory"] = {
             "selfCriticismStatus": "present",
             "selfCriticalStatement": "a user-authored whole-person verdict",
-            "reflectionFocusKind": "explicitGlobalSelfJudgment",
-            "reflectionFocus": "a user-authored whole-person verdict",
-            "tenderGroundingKind": "globalJudgmentDistinction",
         }
         invitation = plan()
         invitation["requestedStage"] = "cardConsent"
@@ -419,20 +326,17 @@ class PromptRegistryTests(unittest.TestCase):
             item("writer", {"request": request, "plan": invitation})
         )
 
-        self.assertIn("distinguish this specific event", writer.system)
-        self.assertIn("Preserve conduct and impact", writer.system)
+        self.assertIn("whole-self verdict", writer.system)
+        self.assertIn("preserve conduct and impact", writer.system)
         self.assertIn("only question is the optional card-consent question", writer.system)
 
-    def test_v34_disclosure_contract_uses_only_event_process_and_behavior_as_gates(self) -> None:
+    def test_v35_disclosure_contract_uses_only_current_core_as_gate(self) -> None:
         prompt = build_turn_messages(item("planner", {"request": request_payload()}))
 
-        self.assertEqual(TURN_PROMPT_VERSION, "turn-v4-server-v34")
+        self.assertEqual(TURN_PROMPT_VERSION, "turn-v4-server-v35")
         for field in (
             "receivedDisclosureQuestionPurposes",
             "eventDisclosureOutcome",
-            "reflectionFocusKind",
-            "reflectionFocus",
-            "tenderGroundingKind",
             "disclosurePurpose",
             "disclosureReopenReason",
         ):
@@ -443,15 +347,19 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("identifyConcreteEpisode→focalEvent", prompt.system)
         self.assertIn("clarifyBehavior→behavior", prompt.system)
         self.assertIn("clarifyEventProcess→eventProcess", prompt.system)
-        self.assertIn(
-            "clarifyImmediateOutcome and clarifyReflectionFocus are legacy",
-            prompt.system,
-        )
+        for retired in (
+            "clarifyImmediateOutcome",
+            "clarifyReflectionFocus",
+            "reflectionFocusKind",
+            "tenderGroundingKind",
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, prompt.system)
         self.assertIn("userCorrectedPreviousFact", prompt.system)
         self.assertIn("userWithdrewPreviousAnswer", prompt.system)
         self.assertIn("newContradictionDetected", prompt.system)
 
-    def test_v34_plan_critic_audits_disclosure_and_tender_semantics(self) -> None:
+    def test_v35_plan_critic_audits_disclosure_and_bridge_semantics(self) -> None:
         critic = build_turn_messages(
             item(
                 "plan_critic",
@@ -475,14 +383,11 @@ class PromptRegistryTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIn(code, critic.system)
 
-    def test_specific_focus_does_not_inherit_global_distinction_from_legacy_status(self) -> None:
+    def test_specific_concern_does_not_gain_a_whole_person_distinction(self) -> None:
         request = request_payload()
         request["semanticMemory"] = {
             "selfCriticismStatus": "present",
             "selfCriticalStatement": "a specific concern",
-            "reflectionFocusKind": "eventTension",
-            "reflectionFocus": "quality and timing conflict",
-            "tenderGroundingKind": "specificEventGrounding",
         }
         invitation = plan()
         invitation["requestedStage"] = "cardConsent"
@@ -502,8 +407,8 @@ class PromptRegistryTests(unittest.TestCase):
             item("writer", {"request": request, "plan": invitation})
         )
 
-        self.assertIn("one volunteered emotion, impact, specific concern, or event fact", writer.system)
-        self.assertNotIn("distinguish this specific event", writer.system)
+        self.assertIn("one confirmed fact", writer.system)
+        self.assertIn("Only when the person's own messages", writer.system)
         self.assertIn("only question is the optional card-consent question", writer.system)
 
     def test_failed_card_connection_uses_scaffold_then_optional_candidate(self) -> None:

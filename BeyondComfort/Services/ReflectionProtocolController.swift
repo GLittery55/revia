@@ -75,7 +75,6 @@ enum TurnRequiredMemoryField: String, Equatable, Sendable {
     case selfCriticismStatus
     case selfCriticalStatement
     case selfCriticismLink
-    case reflectionFocus
     case episodeStructure
     case contextRelationship
     /// Optional current memory; retained as a legacy repair label for older saved payloads.
@@ -1465,9 +1464,6 @@ struct ReflectionProtocolController: Sendable {
                 guard episode?.concreteFacts.contains(where: nonempty) == true else {
                     throw ReflectionProtocolViolation.incompleteEpisodeStructure([.concreteFact])
                 }
-            case .needsReflectionFocus:
-                try requireDisclosureEpisodeCore(disclosureState)
-                throw ReflectionProtocolViolation.disclosureShouldAdvance
             case .readyForTenderOrCard:
                 try requireDisclosureEpisodeCore(disclosureState)
             }
@@ -1544,8 +1540,6 @@ struct ReflectionProtocolController: Sendable {
         _ target: TurnDisclosureQuestionTarget,
         in state: EffectiveEventDisclosureState
     ) -> Bool {
-        let memory = state.memory
-        let episode = state.episode
         switch target {
         case .focalEvent:
             return state.hasConcreteFocalEvent
@@ -1553,14 +1547,8 @@ struct ReflectionProtocolController: Sendable {
             return state.hasUserBehaviorOrOmission
         case .eventProcess:
             return state.hasEventProcess
-        case .actualImpact:
-            return [.present, .mixed].contains(episode?.impactStatus ?? .unresolved)
-                && episode?.impacts.contains(where: nonempty) == true
-        case .reflectionFocus, .selfCriticism, .selfCriticismLink:
-            return memory.reflectionFocusKind != .unclearFocus
-                && nonempty(memory.reflectionFocus)
         case .contextRelationship:
-            return memory.contextRelationship != nil
+            return state.memory.contextRelationship != nil
         }
     }
 

@@ -418,7 +418,7 @@ struct LLMTurnCriticResponse: Codable, Equatable, Sendable {
 enum ServerTurnPrompt {
     /// Immutable server registry key. A prompt update must introduce a new value rather than
     /// changing the meaning of this version for an in-progress research session.
-    static let version = "turn-v4-server-v34"
+    static let version = "turn-v4-server-v35"
 
     static func version(for _: Int) -> String {
         version

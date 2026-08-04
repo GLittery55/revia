@@ -837,9 +837,12 @@ class ProviderGateway:
                     "responsibility claim, advice, or extra question. Required shape: "
                     '{"requestedStage":"","localAction":{"kind":"none","trackingCueIDs":[]},'
                     '"memoryUpdate":{"situationUnderstanding":null,'
-                    '"answeredQuestionPurposes":null,"selfCriticismStatus":null,'
+                    '"answeredQuestionPurposes":null,'
+                    '"receivedDisclosureQuestionPurposes":null,'
+                    '"eventDisclosureOutcome":null,"selfCriticismStatus":null,'
                     '"selfCriticalStatement":null,"selfCriticismLink":null,'
                     '"episodeStructure":null,"contextRelationship":null,'
+                    '"contextCueOffered":null,'
                     '"pendingQuestionPurpose":null,'
                     '"pendingConfirmationTarget":null,'
                     '"clearPendingQuestionPurpose":null,"trackingAssessments":null,'
@@ -853,7 +856,9 @@ class ProviderGateway:
                     '"practiceOptions":null,"practiceKind":null,"selectedPractice":null},'
                     '"resolvedConfirmation":null,'
                     '"nextPrompt":{"kind":"none","purpose":null,"focus":null,'
-                    '"disclosureTarget":null,"target":null,"referenceID":null},"replyIntent":"",'
+                    '"disclosurePurpose":null,"disclosureTarget":null,'
+                    '"disclosureReopenReason":null,"target":null,"referenceID":null},'
+                    '"replyIntent":"",'
                     '"noActionReason":null,"replyGuidance":""}. '
                     "resolvedConfirmation is null unless the latest user reply resolves the exact "
                     "confirmationRequest stored in semanticMemory.nextPrompt; then it must copy "

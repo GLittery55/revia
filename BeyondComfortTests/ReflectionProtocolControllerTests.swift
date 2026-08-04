@@ -139,8 +139,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "actual_result_clarified",
                 focus: "这次经历实际造成的结果",
-                disclosurePurpose: .clarifyImmediateOutcome,
-                disclosureTarget: .actualImpact
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
             ),
             replyIntent: .exploreContext,
             replyGuidance: "只询问尚未说明的实际结果"
@@ -207,8 +207,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "actual_impact_clarified",
                 focus: "事情产生的实际影响",
-                disclosurePurpose: .clarifyImmediateOutcome,
-                disclosureTarget: .actualImpact
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
             ),
             replyIntent: .exploreContext,
             replyGuidance: "只询问仍未解决的实际影响"
@@ -264,8 +264,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "actual_result_clarified",
                 focus: "这次经历实际造成的结果",
-                disclosurePurpose: .clarifyImmediateOutcome,
-                disclosureTarget: .actualImpact
+                disclosurePurpose: .clarifyBehavior,
+                disclosureTarget: .behavior
             ),
             replyIntent: .exploreContext,
             replyGuidance: "承接用户刚才对结果的描述，先询问实际影响"
@@ -317,8 +317,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "actual_result_clarified",
                 focus: "这次经历实际造成的结果",
-                disclosurePurpose: .clarifyImmediateOutcome,
-                disclosureTarget: .actualImpact
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
             ),
             replyIntent: .exploreContext,
             replyGuidance: "过程已经得到描述，不要求用户继续寻找确定原因"
@@ -343,8 +343,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             localAction: .none,
             memoryUpdate: .init(
                 eventDisclosureOutcome: .readyForTenderOrCard,
-                reflectionFocusKind: .eventTension,
-                reflectionFocus: "一个已经明确的现实张力",
                 episodeStructure: .init(
                     concreteFacts: ["一件具体事情及其直接结果"],
                     behaviorEvidenceStatus: .present,
@@ -544,7 +542,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    func testReflectionFocusMetadataNeverGatesCardConsent() throws {
+    func testOnlyCoreDisclosureMetadataGatesCardConsent() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
         session.protocolStage = .contextualDisclosure
@@ -557,14 +555,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             possibleContributors: ["事情的发展已经说明"]
         )
 
-        func bridge(focus: TurnReflectionFocusKind) -> LLMTurnResponsePlan {
+        func bridge() -> LLMTurnResponsePlan {
             LLMTurnResponsePlan(
                 requestedStage: .cardConsent,
                 localAction: .none,
                 memoryUpdate: .init(
                     eventDisclosureOutcome: .readyForTenderOrCard,
-                    reflectionFocusKind: focus,
-                    reflectionFocus: "一个有用户证据的反思焦点",
                     episodeStructure: episode
                 ),
                 nextPrompt: .confirmationRequest(target: .cardConsent),
@@ -575,13 +571,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
         XCTAssertNoThrow(
             try controller.validate(
-                bridge(focus: .explicitGlobalSelfJudgment),
-                for: session
-            )
-        )
-        XCTAssertNoThrow(
-            try controller.validate(
-                bridge(focus: .unclearFocus),
+                bridge(),
                 for: session
             )
         )
@@ -798,8 +788,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             memoryUpdate: .init(
                 situationUnderstanding: "一件具体事情及用户的主要处理已经形成连贯叙述",
                 eventDisclosureOutcome: .readyForTenderOrCard,
-                reflectionFocusKind: .eventTension,
-                reflectionFocus: "用户希望继续完善，但持续处理使事情错过了原定节点",
                 episodeStructure: .init(
                     concreteFacts: ["一件具体事情已经发生"],
                     behaviorEvidenceStatus: .present,
@@ -836,8 +824,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "concrete_impact_clarified",
             focus: "尚未明确的现实影响",
-            disclosurePurpose: .clarifyImmediateOutcome,
-            disclosureTarget: .actualImpact
+            disclosurePurpose: .clarifyEventProcess,
+            disclosureTarget: .eventProcess
         )
 
         let stalledPlan = LLMTurnResponsePlan(
@@ -964,8 +952,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "self_criticism_link_reopened_after_correction",
                 focus: "用户纠正后仍需理解的现实关系",
-                disclosurePurpose: .clarifyReflectionFocus,
-                disclosureTarget: .reflectionFocus,
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess,
                 disclosureReopenReason: .userCorrectedPreviousFact
             ),
             replyIntent: .exploreContext,
@@ -986,8 +974,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "actual_result_clarified",
             focus: "一项具体经历已经造成的现实结果",
-            disclosurePurpose: .clarifyImmediateOutcome,
-            disclosureTarget: .actualImpact
+            disclosurePurpose: .clarifyEventProcess,
+            disclosureTarget: .eventProcess
         )
 
         let completedEpisode = TurnEpisodeStructure(
@@ -1033,8 +1021,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "reality_to_self_evaluation_link_clarified",
                 focus: "具体经历如何成为整体自我评价",
-                disclosurePurpose: .clarifyReflectionFocus,
-                disclosureTarget: .reflectionFocus
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
             ),
             replyIntent: .exploreContext,
             replyGuidance: "只澄清现实结果与整体自我评价之间的关系"
@@ -1088,8 +1076,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "actual_result_clarified",
                 focus: "这项具体经历实际造成的结果",
-                disclosurePurpose: .clarifyImmediateOutcome,
-                disclosureTarget: .actualImpact
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
             ),
             replyIntent: .exploreContext,
             replyGuidance: "只询问实际结果，不再探索原因"
@@ -4910,10 +4898,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 allowedStages: [.contextualDisclosure, .cardConsent],
                 allowedActions: [.none],
                 allowedReplyIntents: [.exploreContext, .inviteCardConsent],
-                allowedDisclosurePurposes: [
-                    .clarifyEventProcess, .clarifyReflectionFocus,
-                ],
-                allowedDisclosureTargets: [.eventProcess, .reflectionFocus],
+                allowedDisclosurePurposes: [.clarifyEventProcess],
+                allowedDisclosureTargets: [.eventProcess],
                 allowedOperations: [
                     .init(
                         requestedStage: .contextualDisclosure,
@@ -7203,8 +7189,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         localAction: .none,
                         memoryUpdate: .init(
                             eventDisclosureOutcome: .readyForTenderOrCard,
-                            reflectionFocusKind: .explicitGlobalSelfJudgment,
-                            reflectionFocus: "用户把一次具体结果扩展成了对整个人的否定",
                             selfCriticismStatus: .present,
                             selfCriticalStatement: "用户由一次具体经历形成了整体自我评价",
                             selfCriticismLink:
@@ -7247,8 +7231,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "remaining_relation_clarified",
             focus: "尚未厘清的一项现实关系",
-            disclosurePurpose: .clarifyImmediateOutcome,
-            disclosureTarget: .actualImpact
+            disclosurePurpose: .clarifyEventProcess,
+            disclosureTarget: .eventProcess
         )
         model.session.messages = [
             .init(
@@ -7301,8 +7285,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         localAction: .none,
                         memoryUpdate: .init(
                             eventDisclosureOutcome: .readyForTenderOrCard,
-                            reflectionFocusKind: .eventTension,
-                            reflectionFocus: "希望继续完善与错过提交之间的现实张力",
                             episodeStructure: episode
                         ),
                         nextPrompt: .confirmationRequest(target: .cardConsent),
@@ -8214,8 +8196,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         memoryUpdate: .init(
                             situationUnderstanding: "事件及用户的主要参与已经形成连贯叙述",
                             eventDisclosureOutcome: .readyForTenderOrCard,
-                            reflectionFocusKind: .eventTension,
-                            reflectionFocus: "事件中已经存在一个值得继续反思的现实张力",
                             selfCriticismStatus: .absent,
                             episodeStructure: episode
                         ),
@@ -8295,8 +8275,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         memoryUpdate: .init(
                             answeredQuestionPurposes: ["self_criticism_scope_clarified"],
                             eventDisclosureOutcome: .readyForTenderOrCard,
-                            reflectionFocusKind: .eventTension,
-                            reflectionFocus: "用户在意未按时完成以及别人可能如何评价这件事",
                             selfCriticismStatus: .absent,
                             episodeStructure: coherentEpisode
                         ),
@@ -8328,8 +8306,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "self_criticism_scope_clarified",
             focus: "这件事怎样连接到用户对自己的评价",
-            disclosurePurpose: .clarifyReflectionFocus,
-            disclosureTarget: .reflectionFocus
+            disclosurePurpose: .clarifyEventProcess,
+            disclosureTarget: .eventProcess
         )
         model.session.messages = [
             .init(
@@ -8492,8 +8470,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         localAction: .none,
                         memoryUpdate: .init(
                             eventDisclosureOutcome: .readyForTenderOrCard,
-                            reflectionFocusKind: .explicitGlobalSelfJudgment,
-                            reflectionFocus: "用户把具体结果扩展成了对整体能力的判断",
                             episodeStructure: completedPatch
                         ),
                         nextPrompt: .openQuestion(
@@ -8512,8 +8488,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         localAction: .none,
                         memoryUpdate: .init(
                             eventDisclosureOutcome: .readyForTenderOrCard,
-                            reflectionFocusKind: .explicitGlobalSelfJudgment,
-                            reflectionFocus: "用户把具体结果扩展成了对整体能力的判断",
                             episodeStructure: completedPatch
                         ),
                         nextPrompt: .confirmationRequest(target: .cardConsent),
@@ -8556,8 +8530,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             nextPrompt: .openQuestion(
                 purpose: "self_criticism_link_clarified",
                 focus: "具体结果怎样连接到整体自我评价",
-                disclosurePurpose: .clarifyReflectionFocus,
-                disclosureTarget: .reflectionFocus
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
             )
         )
         model.session.messages = [
@@ -9058,9 +9032,7 @@ private actor RepeatedDisclosureThenBridgePlanner: LLMTurnPlanning {
             requestedStage: .cardConsent,
             localAction: .none,
             memoryUpdate: .init(
-                eventDisclosureOutcome: .readyForTenderOrCard,
-                reflectionFocusKind: .eventTension,
-                reflectionFocus: "已经得到用户支持的事件张力"
+                eventDisclosureOutcome: .readyForTenderOrCard
             ),
             nextPrompt: .confirmationRequest(target: .cardConsent),
             replyIntent: .inviteCardConsent,
