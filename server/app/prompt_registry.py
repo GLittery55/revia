@@ -435,7 +435,7 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
         return (
             f"{shared} Resolve the one pending practice atomically. Accept its exact content; "
             "confirm a user's explicit revision with source=userRevised; or clear it with typed "
-            "userDeclined. Do not preserve a selectedPractice mirror or ask why they reject."
+            "userDeclined. Keep only the canonical transition and do not ask why they reject."
         )
     if stage == "complete":
         return f"{shared} Keep the acknowledgement brief."

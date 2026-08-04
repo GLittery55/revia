@@ -3717,7 +3717,6 @@ final class ReflectionViewModel: ObservableObject {
             case .unknownTrackingCue: return "unknown_tracking_cue"
             case .duplicateTrackingCue: return "duplicate_tracking_cue"
             case .trackingReviewRequired: return "tracking_review_required"
-            case .missingNoActionReason: return "missing_no_action_reason"
             case .conflictingMemoryPatch: return "conflicting_memory_patch"
             case .invalidNextPrompt: return "invalid_next_prompt"
             case .repeatedQuestionPurpose: return "resolved_relation_reopened"
@@ -3808,8 +3807,8 @@ final class ReflectionViewModel: ObservableObject {
                     target. Do not translate or invent the value.
                     """
                 }
-                if diagnostic.invalidPracticeKind != nil ||
-                    diagnostic.keyPath.hasSuffix("practiceKind") {
+                if diagnostic.invalidPracticeProposalKind != nil ||
+                    diagnostic.keyPath.hasSuffix("practiceTransition.proposal.kind") {
                     return """
                     practiceTransition.proposal.kind must be exactly care, repair, protect, or \
                     change. Keep the current stage and do not translate or invent this enum.
@@ -3916,7 +3915,6 @@ final class ReflectionViewModel: ObservableObject {
                     Return one complete canonical practiceTransition. For an active offer, its one \
                     proposal must contain id, kind, content, basis, pendingConfirmation status, \
                     and assistantProposed source, and nextPrompt must confirm the same proposal id. \
-                    Never emit retired practiceOptions, practiceKind, or selectedPractice fields. \
                     For noAction use proposal=null and one supported typed noActionReason.
                     """
                 }
@@ -4049,20 +4047,6 @@ final class ReflectionViewModel: ObservableObject {
                     """
                 case .finalNarrative:
                     return ReflectionPromptFactory.finalNarrativeObjectProtocolCorrection
-                case .practiceKind:
-                    return """
-                    The prior practice plan omitted memoryUpdate.practiceKind. Use exactly one of \
-                    care, repair, protect, change, or noAction, consistent with the proposed \
-                    practice, and create a practice confirmationRequest.
-                    """
-                case .practiceBasis:
-                    return """
-                    The proposed practice lacks a confirmed basis. Supply exactly one structured \
-                    option whose basis names a user-confirmed need, impact, boundary, behavior, \
-                    uncertainty, or negotiated distinction and whose instruction directly addresses \
-                    it. Do not substitute generic wellbeing or productivity advice; use the typed \
-                    insufficientSupportedMaterial noAction path when nothing specific is supported.
-                    """
                 }
             case .incompleteEpisodeStructure(let requirements):
                 let names = requirements.map(\.rawValue).joined(separator: ", ")
@@ -4103,17 +4087,6 @@ final class ReflectionViewModel: ObservableObject {
                 trackingRelationship confirmationRequest. Present the cues only as tentative \
                 background that the person may confirm, qualify, reject, or leave uncertain. Do \
                 do not exhaust every candidate.
-                """
-            case .missingNoActionReason:
-                return """
-                The prior practice plan used practiceKind=noAction without the required typed \
-                exception. First prefer a small set of distinct supported care, repair, protect, \
-                or change options. Use \
-                noAction only when the person explicitly declined action, explicitly said they are \
-                not ready, or the confirmed material cannot support any non-overreaching small \
-                practice. In that exceptional plan, set noActionReason to exactly userDeclined, \
-                userNotReady, or insufficientSupportedMaterial and explain the evidence in \
-                replyGuidance. noAction is not an early-completion shortcut.
                 """
             case .conflictingMemoryPatch:
                 return """
@@ -4267,7 +4240,7 @@ final class ReflectionViewModel: ObservableObject {
             if let invalid = diagnostic.invalidConfirmationDecision {
                 action += "_invalid_confirmation_decision_\(invalid)"
             }
-            if let invalid = diagnostic.invalidPracticeKind {
+            if let invalid = diagnostic.invalidPracticeProposalKind {
                 action += "_invalid_practice_kind_\(invalid)"
             }
             if let invalid = diagnostic.invalidNoActionReason {
@@ -4296,7 +4269,6 @@ final class ReflectionViewModel: ObservableObject {
             case .unknownTrackingCue: reason = "unknown_tracking_cue"
             case .duplicateTrackingCue: reason = "duplicate_tracking_cue"
             case .trackingReviewRequired: reason = "tracking_review_required"
-            case .missingNoActionReason: reason = "missing_no_action_reason"
             case .conflictingMemoryPatch: reason = "conflicting_memory_patch"
             case .invalidNextPrompt: reason = "invalid_next_prompt"
             case .repeatedQuestionPurpose: reason = "resolved_relation_reopened"

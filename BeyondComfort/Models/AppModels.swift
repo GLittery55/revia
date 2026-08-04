@@ -1101,8 +1101,10 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
                let basis = legacyOption.basis?.trimmingCharacters(in: .whitespacesAndNewlines),
                !basis.isEmpty,
                !legacyOption.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let legacyID = legacyOption.id.trimmingCharacters(in: .whitespacesAndNewlines)
+                let migratedID = legacyID.isEmpty ? "legacy-practice-0" : legacyID
                 let proposal = TurnPracticeProposal(
-                    id: UUID().uuidString,
+                    id: migratedID,
                     kind: legacyOption.kind,
                     content: legacyOption.instruction,
                     basis: basis,

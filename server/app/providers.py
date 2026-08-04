@@ -895,8 +895,7 @@ class ProviderGateway:
                     "requestedStage=optionalAction, pendingConfirmation, noActionReason=null, and "
                     "a practice confirmation whose referenceID exactly equals proposal.id. A "
                     "formal noAction transition has proposal=null and reason exactly userDeclined, "
-                    "userNotReady, or insufficientSupportedMaterial. Never emit retired "
-                    "practiceOptions, practiceKind, or selectedPractice keys. Non-null arrays update "
+                    "userNotReady, or insufficientSupportedMaterial. Non-null arrays update "
                     "typed entries, while [] makes no "
                     "additions and does not clear stored entries."
                 ),

@@ -50,7 +50,6 @@ enum ReflectionProtocolViolation: Error, Equatable {
     case unknownTrackingCue
     case duplicateTrackingCue
     case trackingReviewRequired
-    case missingNoActionReason
     case conflictingMemoryPatch
     case invalidNextPrompt
     case repeatedQuestionPurpose(
@@ -101,8 +100,6 @@ enum TurnRequiredMemoryField: String, Equatable, Sendable {
     /// Legacy repair code retained for older persisted requests.
     case fierceUnderstanding
     case finalNarrative
-    case practiceKind
-    case practiceBasis
 }
 
 enum TurnEpisodeRequirement: String, Codable, Equatable, Sendable {
@@ -127,9 +124,6 @@ enum TurnWriterQualityIssue: String, Equatable, Sendable {
 /// turn. Capability boundaries, object references, stage transitions, and local side effects
 /// remain hard validation errors.
 enum TurnProtocolWarning: String, Equatable, Sendable {
-    case missingPracticeKind
-    case missingPracticeOptions
-    case limitedPracticeChoiceSet
     case normalizedNextPromptMetadata
     case repeatedQuestionPurpose
     case redundantConfirmedConnectionPatch = "redundant_confirmed_connection_patch"

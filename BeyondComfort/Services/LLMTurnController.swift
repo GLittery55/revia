@@ -238,7 +238,7 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
     let invalidConfirmationTarget: String?
     let invalidNextPromptKind: String?
     let invalidConfirmationDecision: String?
-    let invalidPracticeKind: String?
+    let invalidPracticeProposalKind: String?
     let invalidNoActionReason: String?
 
     init(
@@ -249,7 +249,7 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
         invalidConfirmationTarget: String? = nil,
         invalidNextPromptKind: String? = nil,
         invalidConfirmationDecision: String? = nil,
-        invalidPracticeKind: String? = nil,
+        invalidPracticeProposalKind: String? = nil,
         invalidNoActionReason: String? = nil
     ) {
         self.kind = kind
@@ -259,7 +259,7 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
         self.invalidConfirmationTarget = invalidConfirmationTarget
         self.invalidNextPromptKind = invalidNextPromptKind
         self.invalidConfirmationDecision = invalidConfirmationDecision
-        self.invalidPracticeKind = invalidPracticeKind
+        self.invalidPracticeProposalKind = invalidPracticeProposalKind
         self.invalidNoActionReason = invalidNoActionReason
     }
 
@@ -293,7 +293,7 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
             invalidConfirmationTarget: invalidConfirmationTarget(in: content),
             invalidNextPromptKind: invalidNextPromptKind(in: content),
             invalidConfirmationDecision: invalidConfirmationDecision(in: content),
-            invalidPracticeKind: invalidPracticeKind(in: content),
+            invalidPracticeProposalKind: invalidPracticeProposalKind(in: content),
             invalidNoActionReason: invalidNoActionReason(in: content)
         )
     }
@@ -359,7 +359,7 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
         return safeEnumValue(raw)
     }
 
-    private static func invalidPracticeKind(in content: String) -> String? {
+    private static func invalidPracticeProposalKind(in content: String) -> String? {
         guard let data = content.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let memory = root["memoryUpdate"] as? [String: Any],
@@ -487,7 +487,7 @@ struct RemoteLLMTurnPlanner: LLMTurnPlanning {
             let invalidConfirmation = diagnostic.invalidConfirmationTarget ?? "none"
             let invalidPromptKind = diagnostic.invalidNextPromptKind ?? "none"
             let invalidDecision = diagnostic.invalidConfirmationDecision ?? "none"
-            let invalidPractice = diagnostic.invalidPracticeKind ?? "none"
+            let invalidPractice = diagnostic.invalidPracticeProposalKind ?? "none"
             let invalidNoActionReason = diagnostic.invalidNoActionReason ?? "none"
             logger.error(
                 "TurnPlanner JSON invalid kind=\(diagnostic.kind, privacy: .public) key_path=\(diagnostic.keyPath, privacy: .public) invalid_tracking_relevance=\(invalidRelevance, privacy: .public) invalid_reply_intent=\(invalidIntent, privacy: .public) invalid_confirmation_target=\(invalidConfirmation, privacy: .public) invalid_next_prompt_kind=\(invalidPromptKind, privacy: .public) invalid_confirmation_decision=\(invalidDecision, privacy: .public) invalid_practice_kind=\(invalidPractice, privacy: .public) invalid_no_action_reason=\(invalidNoActionReason, privacy: .public)"
