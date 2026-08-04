@@ -1097,25 +1097,17 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             "manufactured_global_self_judgment",
         ]))
         var update = distrustsPatch ? TurnSemanticMemoryUpdate() : rejected.memoryUpdate
-        var effective = request.semanticMemory
-        effective.apply(update)
+        let disclosureState = EffectiveEventDisclosureState(
+            memory: request.semanticMemory,
+            update: update
+        )
+        let effective = disclosureState.memory
 
         let canInvite = request.condition.usesCard
-            && effective.eventDisclosureOutcome == .readyForTenderOrCard
-            && effective.episodeStructure?.concreteFacts.contains(where: {
-                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }) == true
-            && [.present, .mixed].contains(
-                effective.episodeStructure?.behaviorEvidenceStatus ?? .unresolved
-            )
-            && effective.episodeStructure?.behaviorEvidence.contains(where: {
-                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }) == true
-            && [.present, .mixed].contains(
-                effective.episodeStructure?.eventProcessStatus ?? .unresolved
-            )
+            && isEventDisclosureCoreComplete(disclosureState)
             && request.permissions.allowedReplyIntents.contains(.inviteCardConsent)
         if canInvite {
+            update.eventDisclosureOutcome = .readyForTenderOrCard
             switch effective.reflectionFocusKind {
             case .explicitGlobalSelfJudgment:
                 update.tenderGroundingKind = .globalJudgmentDistinction

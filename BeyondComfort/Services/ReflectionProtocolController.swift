@@ -211,8 +211,11 @@ struct ReflectionProtocolController: Sendable {
 
         switch session.protocolStage {
         case .contextualDisclosure:
+            let disclosureState = EffectiveEventDisclosureState(
+                memory: session.semanticMemory
+            )
             if session.protocolVersion >= ReflectionSession.currentProtocolVersion {
-                disclosurePurposes = availableDisclosurePurposes(in: session.semanticMemory)
+                disclosurePurposes = availableDisclosurePurposes(in: disclosureState)
                 disclosureTargets = Array(Set(disclosurePurposes.map(\.target))).sorted {
                     $0.rawValue < $1.rawValue
                 }
@@ -250,9 +253,7 @@ struct ReflectionProtocolController: Sendable {
                     if session.protocolVersion >= ReflectionSession.currentProtocolVersion,
                        session.condition.usesCard {
                         replyIntents = [.exploreContext, .inviteCardConsent, .safetySupport]
-                        if disclosureEpisodeCoreIsComplete(
-                            session.semanticMemory.episodeStructure
-                        ) {
+                        if isEventDisclosureCoreComplete(disclosureState) {
                             replyIntents.removeAll { $0 == .exploreContext }
                         }
                     } else {
@@ -416,28 +417,21 @@ struct ReflectionProtocolController: Sendable {
     }
 
     private func availableDisclosurePurposes(
-        in memory: TurnSemanticMemory
+        in state: EffectiveEventDisclosureState
     ) -> [TurnDisclosureQuestionPurpose] {
-        let episode = memory.episodeStructure
         var purposes: [TurnDisclosureQuestionPurpose] = []
-        if episode?.concreteFacts.contains(where: nonempty) != true {
+        if !state.hasConcreteFocalEvent {
             purposes.append(.identifyConcreteEpisode)
         }
-        let hasBehavior = [.present, .mixed].contains(
-            episode?.behaviorEvidenceStatus ?? .unresolved
-        ) && episode?.behaviorEvidence.contains(where: nonempty) == true
-        if !hasBehavior {
+        if !state.hasUserBehaviorOrOmission {
             purposes.append(.clarifyBehavior)
         }
-        let hasProcess = [.present, .mixed].contains(
-            episode?.eventProcessStatus ?? .unresolved
-        )
-        if !hasProcess {
+        if !state.hasEventProcess {
             purposes.append(.clarifyEventProcess)
         }
         return purposes.filter {
-            !memory.receivedDisclosureQuestionPurposes.contains($0)
-                || !disclosureTargetIsComplete($0.target, in: memory)
+            !state.memory.receivedDisclosureQuestionPurposes.contains($0)
+                || !disclosureTargetIsComplete($0.target, in: state)
         }
     }
 
@@ -660,6 +654,19 @@ struct ReflectionProtocolController: Sendable {
                         + [answeredPurpose]
                 )
             ).sorted { $0.rawValue < $1.rawValue }
+        }
+
+        if session.protocolVersion >= ReflectionSession.currentProtocolVersion,
+           session.protocolStage == .contextualDisclosure,
+           isEventDisclosureCoreComplete(
+               EffectiveEventDisclosureState(
+                   memory: session.semanticMemory,
+                   update: memoryUpdate
+               )
+           ) {
+            // Readiness is derived once from the canonical effective disclosure state. The
+            // Planner may omit or mislabel this summary value, but it cannot create a second gate.
+            memoryUpdate.eventDisclosureOutcome = .readyForTenderOrCard
         }
 
         if session.protocolVersion >= ReflectionSession.currentProtocolVersion,
@@ -1424,9 +1431,12 @@ struct ReflectionProtocolController: Sendable {
         _ plan: LLMTurnResponsePlan,
         for session: ReflectionSession
     ) throws {
-        var effectiveMemory = session.semanticMemory
-        effectiveMemory.apply(plan.memoryUpdate)
-        let episode = effectiveMemory.episodeStructure
+        let disclosureState = EffectiveEventDisclosureState(
+            memory: session.semanticMemory,
+            update: plan.memoryUpdate
+        )
+        let effectiveMemory = disclosureState.memory
+        let episode = disclosureState.episode
 
         if let episode {
             let behaviorHasContent = episode.behaviorEvidence.contains(where: nonempty)
@@ -1457,10 +1467,10 @@ struct ReflectionProtocolController: Sendable {
                     throw ReflectionProtocolViolation.incompleteEpisodeStructure([.concreteFact])
                 }
             case .needsReflectionFocus:
-                try requireDisclosureEpisodeCore(episode)
+                try requireDisclosureEpisodeCore(disclosureState)
                 throw ReflectionProtocolViolation.disclosureShouldAdvance
             case .readyForTenderOrCard:
-                try requireDisclosureEpisodeCore(episode)
+                try requireDisclosureEpisodeCore(disclosureState)
             }
         }
 
@@ -1483,35 +1493,34 @@ struct ReflectionProtocolController: Sendable {
                 .clarifyEventProcess,
             ]
             guard currentPurposes.contains(purpose) else {
-                if disclosureEpisodeCoreIsComplete(episode) {
+                if isEventDisclosureCoreComplete(disclosureState) {
                     throw ReflectionProtocolViolation.disclosureShouldAdvance
                 }
                 let expected = availableDisclosurePurposes(
-                    in: effectiveMemory
+                    in: disclosureState
                 ).first?.target ?? .focalEvent
                 throw ReflectionProtocolViolation.invalidDisclosureQuestionTarget(expected)
             }
             if prompt.disclosureReopenReason == nil,
                effectiveMemory.receivedDisclosureQuestionPurposes.contains(purpose),
-               disclosureTargetIsComplete(target, in: effectiveMemory) {
+               disclosureTargetIsComplete(target, in: disclosureState) {
                 throw ReflectionProtocolViolation.repeatedQuestionPurpose(purpose, target)
             }
             if prompt.disclosureReopenReason == nil,
-               disclosureTargetIsComplete(target, in: effectiveMemory) {
+               disclosureTargetIsComplete(target, in: disclosureState) {
                 guard let expected = availableDisclosurePurposes(
-                    in: effectiveMemory
+                    in: disclosureState
                 ).first?.target else {
                     throw ReflectionProtocolViolation.disclosureShouldAdvance
                 }
                 throw ReflectionProtocolViolation.invalidDisclosureQuestionTarget(expected)
             }
-            if disclosureEpisodeCoreIsComplete(episode),
+            if isEventDisclosureCoreComplete(disclosureState),
                prompt.disclosureReopenReason == nil {
                 throw ReflectionProtocolViolation.disclosureShouldAdvance
             }
         case .inviteCardConsent:
-            guard effectiveMemory.eventDisclosureOutcome == .readyForTenderOrCard,
-                  disclosureEpisodeCoreIsComplete(episode) else {
+            guard isEventDisclosureCoreComplete(disclosureState) else {
                 throw ReflectionProtocolViolation.disclosureShouldAdvance
             }
             switch effectiveMemory.reflectionFocusKind {
@@ -1541,49 +1550,31 @@ struct ReflectionProtocolController: Sendable {
     }
 
     private func requireDisclosureEpisodeCore(
-        _ episode: TurnEpisodeStructure?
+        _ state: EffectiveEventDisclosureState
     ) throws {
-        guard let episode,
-              episode.concreteFacts.contains(where: nonempty) else {
-            throw ReflectionProtocolViolation.incompleteEpisodeStructure([.concreteFact])
+        guard !isEventDisclosureCoreComplete(state) else { return }
+        var missing: [TurnEpisodeRequirement] = []
+        if !state.hasConcreteFocalEvent { missing.append(.concreteFact) }
+        if !state.hasUserBehaviorOrOmission {
+            missing.append(contentsOf: [.behaviorEvidenceStatus, .behaviorEvidence])
         }
-        guard [.present, .mixed].contains(episode.behaviorEvidenceStatus),
-              episode.behaviorEvidence.contains(where: nonempty) else {
-            throw ReflectionProtocolViolation.incompleteEpisodeStructure([
-                .behaviorEvidenceStatus, .behaviorEvidence,
-            ])
-        }
-        guard [.present, .mixed].contains(episode.eventProcessStatus) else {
-            throw ReflectionProtocolViolation.incompleteEpisodeStructure([.eventProcessStatus])
-        }
-    }
-
-    private func disclosureEpisodeCoreIsComplete(
-        _ episode: TurnEpisodeStructure?
-    ) -> Bool {
-        guard let episode else { return false }
-        return episode.concreteFacts.contains(where: nonempty)
-            && [.present, .mixed].contains(episode.behaviorEvidenceStatus)
-            && episode.behaviorEvidence.contains(where: nonempty)
-            && [.present, .mixed].contains(episode.eventProcessStatus)
+        if !state.hasEventProcess { missing.append(.eventProcessStatus) }
+        throw ReflectionProtocolViolation.incompleteEpisodeStructure(missing)
     }
 
     private func disclosureTargetIsComplete(
         _ target: TurnDisclosureQuestionTarget,
-        in memory: TurnSemanticMemory
+        in state: EffectiveEventDisclosureState
     ) -> Bool {
-        let episode = memory.episodeStructure
+        let memory = state.memory
+        let episode = state.episode
         switch target {
         case .focalEvent:
-            return episode?.concreteFacts.contains(where: nonempty) == true
+            return state.hasConcreteFocalEvent
         case .behavior:
-            return [.present, .mixed].contains(
-                episode?.behaviorEvidenceStatus ?? .unresolved
-            ) && episode?.behaviorEvidence.contains(where: nonempty) == true
+            return state.hasUserBehaviorOrOmission
         case .eventProcess:
-            return [.present, .mixed].contains(
-                episode?.eventProcessStatus ?? .unresolved
-            )
+            return state.hasEventProcess
         case .actualImpact:
             return [.present, .mixed].contains(episode?.impactStatus ?? .unresolved)
                 && episode?.impacts.contains(where: nonempty) == true

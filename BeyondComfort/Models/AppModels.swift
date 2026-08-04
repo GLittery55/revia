@@ -1608,6 +1608,52 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     }
 }
 
+/// The one cumulative disclosure projection used by current capabilities, validation, recovery,
+/// and bounded planning. Applying the Planner patch here prevents each reader from inventing its
+/// own `patch ?? stored` interpretation.
+struct EffectiveEventDisclosureState: Equatable, Sendable {
+    let memory: TurnSemanticMemory
+
+    init(
+        memory: TurnSemanticMemory,
+        update: TurnSemanticMemoryUpdate? = nil
+    ) {
+        var projected = memory
+        if let update {
+            projected.apply(update)
+        }
+        self.memory = projected
+    }
+
+    var episode: TurnEpisodeStructure? { memory.episodeStructure }
+
+    var hasConcreteFocalEvent: Bool {
+        episode?.concreteFacts.contains(where: Self.nonempty) == true
+    }
+
+    var hasEventProcess: Bool {
+        [.present, .mixed].contains(episode?.eventProcessStatus ?? .unresolved)
+    }
+
+    var hasUserBehaviorOrOmission: Bool {
+        [.present, .mixed].contains(episode?.behaviorEvidenceStatus ?? .unresolved)
+            && episode?.behaviorEvidence.contains(where: Self.nonempty) == true
+    }
+
+    private static func nonempty(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// The sole current-protocol completion rule for Event Disclosure.
+func isEventDisclosureCoreComplete(
+    _ state: EffectiveEventDisclosureState
+) -> Bool {
+    state.hasConcreteFocalEvent
+        && state.hasEventProcess
+        && state.hasUserBehaviorOrOmission
+}
+
 /// The semantic planner can recommend protocol movement and describe the communicative purpose
 /// of the next reply, but it does not write text shown to the person.
 struct CardReferenceSelection: Codable, Equatable, Sendable {
