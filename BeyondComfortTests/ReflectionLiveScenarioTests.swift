@@ -55,7 +55,6 @@ final class ReflectionLiveScenarioTests: XCTestCase {
             "The full matrix must exercise every tracking evidence pattern."
         )
         XCTAssertTrue(Self.syntheticTrackingCues(profile: .noUsableData).isEmpty)
-        XCTAssertTrue(Self.allScenarios.contains { $0.tenderCorrection != nil })
         XCTAssertTrue(Self.allScenarios.contains { $0.firstCardConnectionIsDifficult })
         XCTAssertTrue(Self.allScenarios.contains { $0.cardMappingResponse == .rejectOnce })
         XCTAssertTrue(Self.allScenarios.contains { $0.practiceResponse == .decline })
@@ -130,7 +129,6 @@ final class ReflectionLiveScenarioTests: XCTestCase {
             initialTrackingCues: [],
             visitedProtocolStages: [
                 ReflectionProtocolStage.contextualDisclosure.rawValue,
-                ReflectionProtocolStage.tenderConfirmation.rawValue,
                 ReflectionProtocolStage.directReflection.rawValue,
                 ReflectionProtocolStage.narrativeConfirmation.rawValue,
                 ReflectionProtocolStage.optionalAction.rawValue,
@@ -833,7 +831,6 @@ private struct LiveReflectionScenario: Codable, Sendable {
     let disclosureDetails: [String]
     let trackingProfile: LiveTrackingProfile
     let trackingResponse: String
-    let tenderCorrection: String?
     let candidDetails: [String]
     let cardRealityConnection: String
     let firstCardConnectionIsDifficult: Bool
@@ -856,7 +853,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .reducedRecovery,
                 trackingResponse: "睡得更短和活动减少与我最近没精神有一点关系，但不能说明实验为什么失败。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "需要面对的是继续用同一套调整方法却没有重新检查假设，但这不等于我整体没有能力。",
                     "我现在能做的是先记录哪组调整真正改变了结果，再决定下一次实验。",
@@ -878,7 +874,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .delayedSleepOnly,
                 trackingResponse: "最近确实睡得更晚，但总时长没有明显减少；它可能影响开始工作的节奏，却不能解释我为什么转去整理文件。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "压力和害怕被拒值得理解，但我也需要承认自己在用次要任务避开正文。",
                     "一个可控部分是只处理一个结果变量，不要求马上写出完整章节。",
@@ -900,7 +895,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .reducedRecovery,
                 trackingResponse: "最近睡得更短、更晚，活动也少了，和争吵后一直消耗精力有些贴近，但不能替我判断冲突责任。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "我需要承担的是伤人的说法，而不是把自己定义成一个糟糕的朋友。",
                     "如果联系是合适的，我愿意先为具体那句话道歉，再说明真正的感受。",
@@ -922,7 +916,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .reducedRecovery,
                 trackingResponse: "最近睡得少、走动也少，和我一直没有休息过来很贴近，也可能让我更难保持耐心。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "我可以为语气道歉，同时说明自己已经接近承受上限，而不是继续默默扛下所有手续。",
                     "更需要保护的边界是把报销任务分给其他家人，并把常见问题写下来。",
@@ -944,7 +937,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .stableRecords,
                 trackingResponse: "这些记录最近基本稳定，我认为和当时没开口没有明显关系。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "需要保护的是自己的贡献和边界，能改进的是提前准备一句现场澄清的话。",
                     "我可以整理时间线，区分自己完成的部分和共同完成的部分。",
@@ -966,7 +958,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .partialAndMissing,
                 trackingResponse: "有限的几晚记录和反复回想有些贴近，但覆盖不足，我不能据此判断整段时间或关系结束的原因。",
-                tenderCorrection: "整体方向贴近，但请不要写成只有一次沟通中断，那段时间是反复发生的。",
                 candidDetails: [
                     "我愿意面对自己停止沟通的部分，但对方的需要和关系结束的全部原因仍有未知。",
                     "现在不需要立刻修复关系，可以先写清楚未来更早表达的真实需要。",
@@ -988,7 +979,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .improvingRecovery,
                 trackingResponse: "最近睡眠和活动记录反而有所改善，但求职被拒带来的失落仍然存在；改善的数据不能否定我的感受，也不能解释招聘结果。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "可以检查的是岗位匹配和面试回答，不能确认的是招聘方所有判断。",
                     "我想先向可信任的人说出失落，而不是把拒绝藏起来。",
@@ -1010,7 +1000,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .partialAndMissing,
                 trackingResponse: "部分记录缺失，睡眠变化与治疗后的疲惫有一点贴近，但不能用来判断我的工作责任。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "需要保护的是医疗隐私和现实承受能力，需要面对的是尽早说明可交付范围。",
                     "我能提出一次任务优先级和截止时间调整，而不是独自补完所有进度。",
@@ -1032,7 +1021,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .denseSchedule,
                 trackingResponse: "日程更密和走动减少可能说明最近办事很多，但不能证明我的财务判断对不对。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "可控部分是列出必要、可延后和仍需询价的项目，不要求一次解决长期经济问题。",
                     "如果信息仍不足，我可以向专业或可信任的人确认，而不是继续完全不决定。",
@@ -1054,7 +1042,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .noUsableData,
                 trackingResponse: "当前没有足够记录可以判断背景，先只根据我说的新环境和联系减少继续理解。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "需要照顾的是初到陌生环境的不安，需要改变的是把所有求助都等同于给别人添麻烦。",
                     "我愿意先提出一个具体、容易拒绝的请求，同时接受对方可能没空。",
@@ -1076,7 +1063,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .reducedActivityOnly,
                 trackingResponse: "最近只有走动明显减少，睡眠和日程基本稳定；活动变化可能与伏案处理任务有关，但不能直接解释失约。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "当前优先是修复：承认延误、说明进度，并给出可行的新时间或缩小范围。",
                     "以后收到额外请求时，我需要先确认任务量和时间再答应。",
@@ -1098,7 +1084,6 @@ private extension ReflectionLiveScenarioTests {
                 ],
                 trackingProfile: .mixedSignals,
                 trackingResponse: "最近睡得少一些，但活动量反而增加，不能把这些方向不同的变化合成一个统一的疲惫结论；它们也不能说明回答不好的原因。",
-                tenderCorrection: nil,
                 candidDetails: [
                     "可以改进的是提前梳理论文核心问题，并在不知道时更清楚地说明。",
                     "导师公开表达的方式也让我难受，这部分不需要被解释成全部是我的问题。",
@@ -1147,7 +1132,6 @@ private struct SemanticScenarioParticipant {
     let scenario: LiveReflectionScenario
     private var disclosureIndex = 0
     private var candidIndex = 0
-    private var usedTenderCorrection = false
     private var usedCardDifficulty = false
     private var usedCardMappingRevision = false
     private var usedCardMappingRejection = false
@@ -1191,12 +1175,6 @@ private struct SemanticScenarioParticipant {
         switch target {
         case .trackingRelationship:
             return scenario.trackingResponse
-        case .tenderSummary:
-            if let correction = scenario.tenderCorrection, !usedTenderCorrection {
-                usedTenderCorrection = true
-                return correction
-            }
-            return "这段整理贴近我的情况，可以按这个理解继续。"
         case .cardConsent:
             return "我愿意抽一张随机卡片。"
         case .cardRealityConnection:
@@ -1289,8 +1267,6 @@ private struct SemanticScenarioParticipant {
         case .directReflection:
             return nextCandidAnswer()
 
-        case .tenderConfirmation:
-            return response(to: .tenderSummary, session: session)
         case .narrativeConfirmation:
             return response(to: .finalNarrative, session: session)
         case .optionalAction:
@@ -1352,8 +1328,6 @@ private struct SemanticScenarioParticipant {
         switch stage {
         case .contextualDisclosure:
             return "可以继续理解我刚才说的经历，而不是根据固定问题猜测。"
-        case .tenderConfirmation:
-            return "这段理解贴近，可以继续。"
         case .cardConsent:
             return "我愿意抽卡。"
         case .cardReflection:
@@ -1566,7 +1540,6 @@ private struct LivePairedComparison: Codable {
     let caseID: String
     let sharedContextualDisclosure: Bool
     let sharedTrackingRules: Bool
-    let sharedTenderRule: Bool
     let differentReflectionMedium: Bool
     let sharedNarrativeRule: Bool
     let sharedPracticeAndCompletionRules: Bool
@@ -1757,11 +1730,6 @@ private extension ReflectionLiveScenarioTests {
                     )
                 }
                 let tracking = card.initialTrackingCueIDs == direct.initialTrackingCueIDs
-                let tender = [card, direct].allSatisfy {
-                    $0.visitedProtocolStages.contains(
-                        ReflectionProtocolStage.tenderConfirmation.rawValue
-                    )
-                }
                 let medium =
                     card.visitedProtocolStages.contains(
                         ReflectionProtocolStage.cardReflection.rawValue
@@ -1787,7 +1755,6 @@ private extension ReflectionLiveScenarioTests {
                 var violations: [String] = []
                 if !contextual { violations.append("\(caseID): contextual disclosure missing") }
                 if !tracking { violations.append("\(caseID): paired tracking inputs differ") }
-                if !tender { violations.append("\(caseID): Tender confirmation missing") }
                 if !medium { violations.append("\(caseID): reflection medium was not the only intended branch") }
                 if !narrative { violations.append("\(caseID): final narrative confirmation missing") }
                 if !finalRules { violations.append("\(caseID): practice/no-action completion contract incomplete") }
@@ -1796,7 +1763,6 @@ private extension ReflectionLiveScenarioTests {
                     caseID: caseID,
                     sharedContextualDisclosure: contextual,
                     sharedTrackingRules: tracking,
-                    sharedTenderRule: tender,
                     differentReflectionMedium: medium,
                     sharedNarrativeRule: narrative,
                     sharedPracticeAndCompletionRules: finalRules,
@@ -1817,7 +1783,7 @@ private enum LiveScenarioReportRenderer {
             "- 运行数：\(report.runs.count)",
             "- 完成数：\(report.runs.filter(\.completed).count)",
             "",
-            "两组运行共享 contextual disclosure、tracking、Tender summary、最终叙事、Practice 与完成协议；仅反思媒介分为随机卡牌和直接 LLM 反思。",
+            "两组运行共享 contextual disclosure、tracking、最终叙事、Practice 与完成协议；仅反思媒介分为随机卡牌和直接 LLM 反思。",
             "",
         ]
 
@@ -1829,7 +1795,6 @@ private enum LiveScenarioReportRenderer {
                 "|---|---|",
                 "| Contextual disclosure | \(mark(comparison.sharedContextualDisclosure)) |",
                 "| Tracking 输入与规则 | \(mark(comparison.sharedTrackingRules)) |",
-                "| Tender summary | \(mark(comparison.sharedTenderRule)) |",
                 "| 仅反思媒介不同 | \(mark(comparison.differentReflectionMedium)) |",
                 "| 最终叙事 | \(mark(comparison.sharedNarrativeRule)) |",
                 "| Practice / complete | \(mark(comparison.sharedPracticeAndCompletionRules)) |",

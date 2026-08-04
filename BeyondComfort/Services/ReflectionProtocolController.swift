@@ -1342,6 +1342,13 @@ struct ReflectionProtocolController: Sendable {
                 ).first?.target ?? .focalEvent
                 throw ReflectionProtocolViolation.invalidDisclosureQuestionTarget(expected)
             }
+            if isEventDisclosureCoreComplete(disclosureState) {
+                // Once the projected patch completes the three canonical relations, neither a
+                // repeated purpose nor a reopen label can keep disclosure alive. Classifying this
+                // as the single forward-boundary violation lets recovery advertise Card Consent
+                // only, instead of reconstructing an obsolete question path from stored state.
+                throw ReflectionProtocolViolation.disclosureShouldAdvance
+            }
             if prompt.disclosureReopenReason == nil,
                effectiveMemory.receivedDisclosureQuestionPurposes.contains(purpose),
                disclosureTargetIsComplete(target, in: disclosureState) {
@@ -1355,10 +1362,6 @@ struct ReflectionProtocolController: Sendable {
                     throw ReflectionProtocolViolation.disclosureShouldAdvance
                 }
                 throw ReflectionProtocolViolation.invalidDisclosureQuestionTarget(expected)
-            }
-            if isEventDisclosureCoreComplete(disclosureState),
-               prompt.disclosureReopenReason == nil {
-                throw ReflectionProtocolViolation.disclosureShouldAdvance
             }
         case .inviteCardConsent:
             guard isEventDisclosureCoreComplete(disclosureState) else {

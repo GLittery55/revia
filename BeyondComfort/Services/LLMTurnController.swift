@@ -140,7 +140,7 @@ struct LLMTurnControllerRequest: Codable, Equatable {
     let trackingCandidates: [LLMTurnTrackingCandidate]
     /// One local, measurement-free hypothesis. Current sessions may use it in one ordinary
     /// functional-relationship question; only the person's typed interpretation can enter later
-    /// reflection. Legacy sessions may still fold it into their visible Tender synthesis.
+    /// reflection. It never creates a separate pre-card confirmation in the current protocol.
     let contextualLoadCue: DialogueContextCue?
     /// Cues already shown to the person. Their exact opaque IDs are the only IDs permitted in a
     /// later trackingAssessment; keeping this list separate prevents a presented cue from being
@@ -957,7 +957,7 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
         switch request.protocolStage {
         case .contextualDisclosure:
             // The Planner and semantic Critic—not Swift—decide whether another event question adds
-            // value or whether the scene-plus-behavior story is ready for Tender grounding.
+            // value or whether the three-relation disclosure core is ready for card consent.
             return plan.replyIntent != .safetySupport
         case .cardConsent:
             return true
@@ -1008,7 +1008,7 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
         let correction = """
         Semantic plan audit requested one bounded revision.
         reasonCodes=\(reasons.isEmpty ? "semantic_progression" : reasons)
-        revisionGuidance=\(guidance.isEmpty ? "Remove the duplicated function or use an allowed Tender summary when ready." : String(guidance))
+        revisionGuidance=\(guidance.isEmpty ? "Remove the duplicated function or advance to card consent when the disclosure core is ready." : String(guidance))
         Preserve permissions, confirmed relationships, tracking dispositions, and the latest answer.
         """
         return LLMTurnControllerRequest(

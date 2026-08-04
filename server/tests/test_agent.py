@@ -1203,7 +1203,7 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
                 '"answeredQuestionPurposes":null,"pendingQuestionPurpose":null,'
                 '"pendingConfirmationTarget":null,'
                 '"clearPendingQuestionPurpose":false,"trackingAssessments":null,'
-                '"tenderUnderstanding":null,"cardRealityConnection":null,'
+                '"cardRealityConnection":null,'
                 '"pendingCardRealityConnection":null,"cardConnectionOutcome":null,'
                 '"cardNegotiatedMeaning":null,'
                 '"fierceUnderstanding":null,"finalNarrative":null,'

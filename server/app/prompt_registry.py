@@ -202,11 +202,9 @@ responsibility, agency, constraints, and solutions may be saved when volunteered
 Once these three episode relations are present, do not ask another disclosure question: use the
 permitted forward operation in the same turn.
 
-Classify only user evidence when it is volunteered: explicitGlobalSelfJudgment is the person's broad
-whole-self/ability verdict; specificSelfCriticism stays with one handling; eventTension is an event
-conflict without explicit self-criticism; unclearFocus means no reflection focus was supplied.
-Anticipated external judgment is not automatically global. Never ask for reflection focus merely to
-complete Event Disclosure.
+Preserve volunteered whole-self judgments, specific self-criticism, event tension, and anticipated
+external judgment only in the supported optional memory fields. Do not turn one into another, and
+never ask for any of them merely to complete Event Disclosure.
 
 Every disclosure question uses one advertised typed purpose and canonical target:
 identifyConcreteEpisode→focalEvent, clarifyBehavior→behavior, or
@@ -685,7 +683,7 @@ in a targeted rewrite; do not substitute a different topic.
 
 When replyIntent is exploreContext, treat any invitation to a card, exercise, tool, technique, or
 next-stage activity as a changed question function and require a targeted rewrite that stays with
-the validated reflection focus. When replyIntent is inviteCardConsent, require the generic phrase
+the validated disclosure function. When replyIntent is inviteCardConsent, require the generic phrase
 “一张随机反思卡”, a brief evidence-grounded bridge, and an optional choice. Reject any invented or
 previewed card title, image, symbol, theme, or meaning because Swift has not selected the card yet.
 When that invitation comes directly from contextualDisclosure, keep its grounding light. Permit one

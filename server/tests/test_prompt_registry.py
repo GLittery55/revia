@@ -22,7 +22,6 @@ def request_payload(*, condition: str = "cardMediated") -> dict:
             "currentStage": "contextualDisclosure",
             "allowedStages": [
                 "contextualDisclosure",
-                "tenderConfirmation",
                 "cardConsent",
             ],
             "allowedActions": ["none"],
@@ -117,6 +116,7 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("impactStatus", prompt.system)
         self.assertIn("are not gates", prompt.system)
         self.assertNotIn("reflectionFocusKind", prompt.system)
+        self.assertNotIn("reflection focus", prompt.system.lower())
         self.assertIn("received-and-complete purpose", prompt.system)
         self.assertIn("contextRelationship", prompt.system)
         self.assertIn("rejected material cannot return", prompt.system)
@@ -126,7 +126,10 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("Never omit a supplied relation", prompt.system)
         self.assertIn("An observed reaction proves no one's judgment", prompt.system)
         self.assertIn("cardInterpretiveTension is optional", prompt.system)
-        self.assertIn("Never create Tender confirmation", prompt.system)
+        self.assertIn(
+            "Tender wording is optional and never creates another stage",
+            prompt.system,
+        )
         self.assertIn("uses inviteCardConsent in the same visible reply", prompt.system)
         self.assertIn("Once these three episode relations are present", prompt.system)
         self.assertIn("REPAIR CONTRACT", prompt.system)
@@ -138,6 +141,7 @@ class PromptRegistryTests(unittest.TestCase):
             item("plan_critic", {"request": request_payload(), "plan": plan()})
         )
         self.assertIn("condition bridge before one concrete", critic.system)
+        self.assertNotIn("reflection focus", critic.system.lower())
 
         chat = turn_prompt_chat(item("planner", {"request": request_payload()}))
         self.assertEqual(chat.agentMode, "fast")
@@ -250,7 +254,7 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("workflow-field drift", critic.system)
         self.assertIn("protective\npurpose asserted without user evidence", critic.system)
 
-    def test_disclosure_can_bridge_directly_to_optional_card_without_tender_memory(self) -> None:
+    def test_disclosure_can_bridge_directly_to_optional_card_without_optional_metadata(self) -> None:
         request = request_payload()
         invitation = plan()
         invitation["requestedStage"] = "cardConsent"
@@ -268,7 +272,6 @@ class PromptRegistryTests(unittest.TestCase):
                 "impacts": [],
                 "keyUncertainty": None,
             },
-            "tenderUnderstanding": None,
         }
         invitation["nextPrompt"] = {
             "kind": "confirmationRequest",
@@ -330,10 +333,10 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("preserve conduct and impact", writer.system)
         self.assertIn("only question is the optional card-consent question", writer.system)
 
-    def test_v35_disclosure_contract_uses_only_current_core_as_gate(self) -> None:
+    def test_v36_disclosure_contract_uses_only_current_core_as_gate(self) -> None:
         prompt = build_turn_messages(item("planner", {"request": request_payload()}))
 
-        self.assertEqual(TURN_PROMPT_VERSION, "turn-v4-server-v35")
+        self.assertEqual(TURN_PROMPT_VERSION, "turn-v4-server-v36")
         for field in (
             "receivedDisclosureQuestionPurposes",
             "eventDisclosureOutcome",
@@ -359,7 +362,7 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("userWithdrewPreviousAnswer", prompt.system)
         self.assertIn("newContradictionDetected", prompt.system)
 
-    def test_v35_plan_critic_audits_disclosure_and_bridge_semantics(self) -> None:
+    def test_v36_plan_critic_audits_disclosure_and_bridge_semantics(self) -> None:
         critic = build_turn_messages(
             item(
                 "plan_critic",
@@ -814,7 +817,7 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("The system proposes it", planner.system)
         self.assertIn("Never provide a menu", planner.system)
 
-    def test_post_card_candid_reflection_distinguishes_event_parts_without_replaying_tender(
+    def test_post_card_candid_reflection_distinguishes_event_parts_without_replaying_disclosure(
         self,
     ) -> None:
         request = request_payload()
@@ -841,7 +844,7 @@ class PromptRegistryTests(unittest.TestCase):
             ],
         }
         request["semanticMemory"] = {
-            "tenderUnderstanding": "已建立的温和区分",
+            "situationUnderstanding": "已建立的现实理解",
             "cardNegotiatedMeaning": "用户形成的图像与现实连接",
         }
         request["recentMessages"] = [
@@ -1000,19 +1003,8 @@ class PromptRegistryTests(unittest.TestCase):
         writer = build_turn_messages(
             item("writer", {"request": request, "plan": plan()})
         )
-        tender_plan = plan()
-        tender_plan["requestedStage"] = "tenderConfirmation"
-        tender_plan["replyIntent"] = "presentTenderSummary"
-        tender_plan["memoryUpdate"]["tenderUnderstanding"] = "one supported distinction"
-        tender_plan["nextPrompt"]["kind"] = "confirmationRequest"
-        tender_plan["nextPrompt"]["disclosureTarget"] = None
-        tender_plan["nextPrompt"]["target"] = "tenderSummary"
-        tender_writer = build_turn_messages(
-            item("writer", {"request": request, "plan": tender_plan})
-        )
         self.assertLess(len(planner.system), 13000)
         self.assertLess(len(writer.system), 5000)
-        self.assertLess(len(tender_writer.system), 5000)
         self.assertNotIn("PINNED TURN", planner.system)
         self.assertNotIn("historical protocol", planner.system)
 

@@ -3273,7 +3273,9 @@ final class ReflectionViewModel: ObservableObject {
                 actions: [.none],
                 intents: base.allowedReplyIntents.filter {
                     $0 == .inviteCardConsent || $0 == .safetySupport
-                }
+                },
+                disclosurePurposes: [],
+                disclosureTargets: []
             )
         }
         return base
