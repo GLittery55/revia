@@ -79,8 +79,9 @@ enum TurnPracticeTransitionRequirement: String, Codable, Equatable, Sendable {
     case proposalKind
     case proposalContent
     case proposalBasis
-    case proposalMetadata
+    case proposalStatus
     case confirmationPrompt
+    case confirmationReference
     case noActionReason
     case pendingSelectionMustBeEmpty
 }
@@ -368,23 +369,15 @@ struct ReflectionProtocolController: Sendable {
         let replyIntent: TurnReplyIntent
         let resolution: TurnResolvedConfirmation?
         let nextPrompt: TurnNextPrompt?
-        let options: [TurnPracticeOption]
-        let practiceKind: TurnPracticeKind?
-        let selectedPractice: String?
-        let noActionReason: TurnNoActionReason?
+        let transition: TurnPracticeTransition?
 
         init(plan: LLMTurnResponsePlan, session: ReflectionSession) {
             requestedStage = plan.requestedStage
             replyIntent = plan.replyIntent
             resolution = plan.resolvedConfirmation
             nextPrompt = plan.nextPrompt
-            options = plan.memoryUpdate.practiceOptions
-                ?? session.semanticMemory.practiceOptions
-            practiceKind = plan.memoryUpdate.practiceKind
-                ?? session.semanticMemory.practiceKind
-            selectedPractice = plan.memoryUpdate.selectedPractice
-                ?? session.semanticMemory.selectedPractice
-            noActionReason = plan.noActionReason
+            transition = plan.memoryUpdate.practiceTransition
+                ?? session.semanticMemory.practiceTransition
         }
     }
 
@@ -419,29 +412,22 @@ struct ReflectionProtocolController: Sendable {
             missing.append(.confirmationPrompt)
         }
 
-        if state.practiceKind == .noAction {
-            if !state.options.isEmpty { missing.append(.proposal) }
-            if state.noActionReason == nil { missing.append(.noActionReason) }
-            if nonempty(state.selectedPractice) {
-                missing.append(.pendingSelectionMustBeEmpty)
-            }
-        } else {
-            guard state.options.count == 1, let option = state.options.first else {
-                missing.append(.proposal)
-                throw ReflectionProtocolViolation.incompletePracticeTransition(
-                    Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
-                )
-            }
-            if !nonempty(option.id) { missing.append(.proposalID) }
-            if option.kind == .noAction { missing.append(.proposalKind) }
-            if !nonempty(option.instruction) { missing.append(.proposalContent) }
-            if !nonempty(option.basis) { missing.append(.proposalBasis) }
-            if !nonempty(option.title) || !nonempty(option.rationale) {
-                missing.append(.proposalMetadata)
-            }
-            if state.practiceKind != nil || nonempty(state.selectedPractice) {
-                missing.append(.pendingSelectionMustBeEmpty)
-            }
+        guard let transition = state.transition,
+              let proposal = transition.proposal,
+              transition.noActionReason == nil else {
+            missing.append(.proposal)
+            throw ReflectionProtocolViolation.incompletePracticeTransition(
+                Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+            )
+        }
+        if !nonempty(transition.transactionID) { missing.append(.proposalID) }
+        if !nonempty(proposal.id) { missing.append(.proposalID) }
+        if proposal.kind == .noAction { missing.append(.proposalKind) }
+        if !nonempty(proposal.content) { missing.append(.proposalContent) }
+        if !nonempty(proposal.basis) { missing.append(.proposalBasis) }
+        if proposal.status != .pendingConfirmation { missing.append(.proposalStatus) }
+        if state.nextPrompt?.referenceID != proposal.id {
+            missing.append(.confirmationReference)
         }
 
         if !missing.isEmpty {
@@ -608,23 +594,6 @@ struct ReflectionProtocolController: Sendable {
     ) -> [TurnProtocolWarning] {
         var warnings: [TurnProtocolWarning] = []
 
-        if [.suggestPractice, .revisePractice].contains(validatedPlan.replyIntent),
-           validatedPlan.memoryUpdate.practiceKind != .noAction {
-            let optionCount = validatedPlan.memoryUpdate.practiceOptions?.count ?? 0
-            if optionCount == 0 {
-                warnings.append(.missingPracticeOptions)
-            }
-        }
-
-        if validatedPlan.replyIntent == .completeConversation,
-           validatedPlan.resolvedConfirmation?.target == .practice,
-           let practiceDecision = validatedPlan.resolvedConfirmation?.decision,
-           [TurnConfirmationDecision.accepted, .revised].contains(practiceDecision),
-           validatedPlan.memoryUpdate.practiceKind == nil,
-           session.semanticMemory.practiceKind == nil {
-            warnings.append(.missingPracticeKind)
-        }
-
         if originalPlan.nextPrompt != validatedPlan.nextPrompt {
             warnings.append(.normalizedNextPromptMetadata)
         }
@@ -756,9 +725,7 @@ struct ReflectionProtocolController: Sendable {
             memoryUpdate.candidUnderstanding = nil
             memoryUpdate.fierceUnderstanding = nil
             memoryUpdate.finalNarrative = nil
-            memoryUpdate.practiceOptions = nil
-            memoryUpdate.practiceKind = nil
-            memoryUpdate.selectedPractice = nil
+            memoryUpdate.practiceTransition = nil
         }
         if resolvesCardMapping,
            protocolPlan.resolvedConfirmation?.decision == .rejected {
@@ -868,9 +835,7 @@ struct ReflectionProtocolController: Sendable {
             memoryUpdate.candidUnderstanding = nil
             memoryUpdate.fierceUnderstanding = nil
             memoryUpdate.finalNarrative = nil
-            memoryUpdate.practiceOptions = nil
-            memoryUpdate.practiceKind = nil
-            memoryUpdate.selectedPractice = nil
+            memoryUpdate.practiceTransition = nil
         }
         if protocolPlan.replyIntent == .completeConversation,
            localAction.kind == .none,
@@ -880,21 +845,6 @@ struct ReflectionProtocolController: Sendable {
             // strict confirmation, selected-practice, and persistence checks below decide whether
             // completion is legal.
             localAction = TurnLocalActionRequest(kind: .completeSession)
-        }
-
-        if protocolPlan.replyIntent == .completeConversation,
-           protocolPlan.resolvedConfirmation?.target == .practice,
-           protocolPlan.resolvedConfirmation?.decision == .accepted,
-           memoryUpdate.practiceKind == nil,
-           let selected = memoryUpdate.selectedPractice
-                ?? session.semanticMemory.selectedPractice,
-           let matched = session.semanticMemory.practiceOptions.first(where: {
-               $0.instruction == selected
-           }) {
-            // The option catalogue is application-owned once presented. Its typed kind can be
-            // restored without interpreting the user's language when the Planner copied the exact
-            // accepted instruction.
-            memoryUpdate.practiceKind = matched.kind
         }
 
         var nextPrompt = protocolPlan.nextPrompt
@@ -908,7 +858,13 @@ struct ReflectionProtocolController: Sendable {
                 // The typed intent uniquely establishes this target. Extra or missing
                 // nextPrompt metadata cannot change the conversational function, so canonicalize
                 // it instead of discarding a legal turn.
-                nextPrompt = .confirmationRequest(target: target)
+                let referenceID = target == .practice
+                    ? memoryUpdate.practiceTransition?.proposal?.id
+                    : nil
+                nextPrompt = .confirmationRequest(
+                    target: target,
+                    referenceID: referenceID
+                )
             } else {
                 switch prompt.kind {
                 case .none:
@@ -949,9 +905,7 @@ struct ReflectionProtocolController: Sendable {
             resolvedConfirmation: resolvedConfirmation,
             nextPrompt: nextPrompt,
             replyIntent: replyIntent,
-            noActionReason: memoryUpdate.practiceKind == .noAction
-                ? protocolPlan.noActionReason
-                : nil,
+            noActionReason: memoryUpdate.practiceTransition?.noActionReason,
             replyGuidance: protocolPlan.replyGuidance,
             cardReferenceSelection: protocolPlan.cardReferenceSelection
         )
@@ -979,9 +933,7 @@ struct ReflectionProtocolController: Sendable {
         evidenceOnlyMemory.candidUnderstanding = nil
         evidenceOnlyMemory.fierceUnderstanding = nil
         evidenceOnlyMemory.finalNarrative = nil
-        evidenceOnlyMemory.practiceOptions = nil
-        evidenceOnlyMemory.practiceKind = nil
-        evidenceOnlyMemory.selectedPractice = nil
+        evidenceOnlyMemory.practiceTransition = nil
 
         return LLMTurnResponsePlan(
             requestedStage: .cardReflection,
@@ -1669,16 +1621,17 @@ struct ReflectionProtocolController: Sendable {
                 )
                 if let decision = plan.resolvedConfirmation?.decision,
                    [TurnConfirmationDecision.accepted, .revised].contains(decision) {
-                    let selected = plan.memoryUpdate.selectedPractice
-                        ?? session.semanticMemory.selectedPractice
-                    guard nonempty(selected) else {
+                    let transition = plan.memoryUpdate.practiceTransition
+                        ?? session.semanticMemory.practiceTransition
+                    guard let proposal = transition?.proposal,
+                          proposal.status == .confirmed,
+                          nonempty(proposal.content) else {
                         throw ReflectionProtocolViolation.illegalReplyIntent
                     }
-                    if decision == .accepted,
-                       !session.semanticMemory.practiceOptions.isEmpty {
-                        guard session.semanticMemory.practiceOptions.contains(where: {
-                            $0.instruction == selected
-                        }) else {
+                    if decision == .accepted {
+                        guard let pending = session.semanticMemory.practiceTransition?.proposal,
+                              pending.id == proposal.id,
+                              pending.content == proposal.content else {
                             throw ReflectionProtocolViolation.illegalReplyIntent
                         }
                     }

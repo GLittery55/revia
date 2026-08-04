@@ -450,34 +450,61 @@ enum TurnPracticeKind: String, Codable, CaseIterable, Sendable {
     case noAction
 }
 
-/// One complete assistant-authored practice the person can select, revise, or decline.
-/// `noAction` remains a separate typed outcome and is never represented as a selectable option.
-struct TurnPracticeOption: Codable, Equatable, Identifiable, Sendable {
+enum TurnPracticeProposalStatus: String, Codable, Sendable {
+    case pendingConfirmation
+    case confirmed
+}
+
+enum TurnPracticeProposalSource: String, Codable, Sendable {
+    case assistantProposed
+    case userRevised
+}
+
+/// The only current representation of an actionable Optional Action proposal. Required fields
+/// are deliberately non-optional so a partial proposal cannot enter current session memory.
+struct TurnPracticeProposal: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let kind: TurnPracticeKind
+    let content: String
+    let basis: String
+    let status: TurnPracticeProposalStatus
+    let source: TurnPracticeProposalSource
+
+    init(
+        id: String,
+        kind: TurnPracticeKind,
+        content: String,
+        basis: String,
+        status: TurnPracticeProposalStatus,
+        source: TurnPracticeProposalSource = .assistantProposed
+    ) {
+        self.id = id
+        self.kind = kind
+        self.content = content
+        self.basis = basis
+        self.status = status
+        self.source = source
+    }
+}
+
+/// One application-owned transaction from accepted narrative to either one proposal or noAction.
+/// `proposal == nil && noActionReason == nil` is the durable awaiting-proposal state.
+struct TurnPracticeTransition: Codable, Equatable, Sendable {
+    let transactionID: String
+    let narrativeReferenceID: String?
+    var proposal: TurnPracticeProposal?
+    var noActionReason: TurnNoActionReason?
+}
+
+/// LEGACY_DECODE_ONLY — MUST NOT PARTICIPATE IN CURRENT PRACTICE PROTOCOL.
+/// Historical sessions stored a selectable array whose evidence basis was optional.
+struct LegacyPracticeOptionDTO: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let kind: TurnPracticeKind
     let title: String
     let instruction: String
     let rationale: String
-    /// A compact user-confirmed need, impact, boundary, behavior, uncertainty, or negotiated
-    /// distinction that makes this particular practice relevant. Optional decoding preserves
-    /// practices stored by older protocol versions; current sessions require it before display.
     let basis: String?
-
-    init(
-        id: String,
-        kind: TurnPracticeKind,
-        title: String,
-        instruction: String,
-        rationale: String,
-        basis: String? = nil
-    ) {
-        self.id = id
-        self.kind = kind
-        self.title = title
-        self.instruction = instruction
-        self.rationale = rationale
-        self.basis = basis
-    }
 }
 
 /// `noAction` is an evidence-bounded practice outcome, not a convenient way for the Planner to
@@ -885,10 +912,8 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     /// Legacy field retained for additive decoding of earlier sessions.
     var fierceUnderstanding: String?
     var finalNarrative: String?
-    /// Pending assistant-authored choices. Older sessions decode this additive field as `[]`.
-    var practiceOptions: [TurnPracticeOption] = []
-    var practiceKind: TurnPracticeKind?
-    var selectedPractice: String?
+    /// The sole current Optional Action truth source.
+    var practiceTransition: TurnPracticeTransition?
     init(
         situationUnderstanding: String = "",
         answeredQuestionPurposes: [String] = [],
@@ -911,9 +936,7 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         candidUnderstanding: String? = nil,
         fierceUnderstanding: String? = nil,
         finalNarrative: String? = nil,
-        practiceOptions: [TurnPracticeOption] = [],
-        practiceKind: TurnPracticeKind? = nil,
-        selectedPractice: String? = nil
+        practiceTransition: TurnPracticeTransition? = nil
     ) {
         self.situationUnderstanding = situationUnderstanding
         self.answeredQuestionPurposes = answeredQuestionPurposes
@@ -937,9 +960,7 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.candidUnderstanding = candidUnderstanding
         self.fierceUnderstanding = fierceUnderstanding
         self.finalNarrative = finalNarrative
-        self.practiceOptions = practiceOptions
-        self.practiceKind = practiceKind
-        self.selectedPractice = selectedPractice
+        self.practiceTransition = practiceTransition
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -964,9 +985,7 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case candidUnderstanding
         case fierceUnderstanding
         case finalNarrative
-        case practiceOptions
-        case practiceKind
-        case selectedPractice
+        case practiceTransition
     }
 
     /// LEGACY_DECODE_ONLY — MUST NOT PARTICIPATE IN CURRENT PROTOCOL.
@@ -975,6 +994,13 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     private enum LegacyInteractionCodingKeys: String, CodingKey {
         case pendingQuestionPurpose
         case pendingConfirmationTarget
+    }
+
+    /// LEGACY_DECODE_ONLY — MUST NOT PARTICIPATE IN CURRENT PRACTICE PROTOCOL.
+    private enum LegacyPracticeCodingKeys: String, CodingKey {
+        case practiceOptions
+        case practiceKind
+        case selectedPractice
     }
 
     init(from decoder: Decoder) throws {
@@ -1052,12 +1078,45 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             try? box.decodeIfPresent(String.self, forKey: .fierceUnderstanding)
         finalNarrative =
             try? box.decodeIfPresent(String.self, forKey: .finalNarrative)
-        practiceOptions =
-            (try? box.decode([TurnPracticeOption].self, forKey: .practiceOptions)) ?? []
-        practiceKind =
-            try? box.decodeIfPresent(TurnPracticeKind.self, forKey: .practiceKind)
-        selectedPractice =
-            try? box.decodeIfPresent(String.self, forKey: .selectedPractice)
+        practiceTransition = try? box.decodeIfPresent(
+            TurnPracticeTransition.self,
+            forKey: .practiceTransition
+        )
+        if practiceTransition == nil {
+            let legacy = try decoder.container(keyedBy: LegacyPracticeCodingKeys.self)
+            let options = (try? legacy.decode(
+                [LegacyPracticeOptionDTO].self,
+                forKey: .practiceOptions
+            )) ?? []
+            let selected = try? legacy.decodeIfPresent(
+                String.self,
+                forKey: .selectedPractice
+            )
+            let selectedOption = selected.flatMap { content in
+                options.first { $0.instruction == content }
+            }
+            let pendingOption = selectedOption ?? (options.count == 1 ? options.first : nil)
+            if let legacyOption = pendingOption,
+               legacyOption.kind != .noAction,
+               let basis = legacyOption.basis?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !basis.isEmpty,
+               !legacyOption.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let proposal = TurnPracticeProposal(
+                    id: UUID().uuidString,
+                    kind: legacyOption.kind,
+                    content: legacyOption.instruction,
+                    basis: basis,
+                    status: selectedOption == nil ? .pendingConfirmation : .confirmed,
+                    source: .assistantProposed
+                )
+                practiceTransition = TurnPracticeTransition(
+                    transactionID: proposal.id,
+                    narrativeReferenceID: nil,
+                    proposal: proposal,
+                    noActionReason: nil
+                )
+            }
+        }
     }
 
     /// The sole legacy scalar-to-canonical migration entry. It is called only while decoding a
@@ -1179,9 +1238,7 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         if let value = update.candidUnderstanding { candidUnderstanding = value }
         if let value = update.fierceUnderstanding { fierceUnderstanding = value }
         if let value = update.finalNarrative { finalNarrative = value }
-        if let value = update.practiceOptions { practiceOptions = value }
-        if let value = update.practiceKind { practiceKind = value }
-        if let value = update.selectedPractice { selectedPractice = value }
+        if let value = update.practiceTransition { practiceTransition = value }
     }
 }
 
@@ -1222,9 +1279,7 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     var candidUnderstanding: String?
     var fierceUnderstanding: String?
     var finalNarrative: String?
-    var practiceOptions: [TurnPracticeOption]?
-    var practiceKind: TurnPracticeKind?
-    var selectedPractice: String?
+    var practiceTransition: TurnPracticeTransition?
 
     init(
         situationUnderstanding: String? = nil,
@@ -1251,9 +1306,7 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         candidUnderstanding: String? = nil,
         fierceUnderstanding: String? = nil,
         finalNarrative: String? = nil,
-        practiceOptions: [TurnPracticeOption]? = nil,
-        practiceKind: TurnPracticeKind? = nil,
-        selectedPractice: String? = nil
+        practiceTransition: TurnPracticeTransition? = nil
     ) {
         self.situationUnderstanding = situationUnderstanding
         self.answeredQuestionPurposes = answeredQuestionPurposes
@@ -1282,9 +1335,7 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         self.candidUnderstanding = candidUnderstanding
         self.fierceUnderstanding = fierceUnderstanding
         self.finalNarrative = finalNarrative
-        self.practiceOptions = practiceOptions
-        self.practiceKind = practiceKind
-        self.selectedPractice = selectedPractice
+        self.practiceTransition = practiceTransition
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1312,9 +1363,7 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         case candidUnderstanding
         case fierceUnderstanding
         case finalNarrative
-        case practiceOptions
-        case practiceKind
-        case selectedPractice
+        case practiceTransition
     }
 
     init(from decoder: Decoder) throws {
@@ -1430,21 +1479,9 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
             String.self,
             forKey: .finalNarrative
         )
-        practiceOptions = try? box.decode(
-            [TurnPracticeOption].self,
-            forKey: .practiceOptions
-        )
-        if let rawPracticeKind = try? box.decode(
-            String.self,
-            forKey: .practiceKind
-        ) {
-            practiceKind = TurnPracticeKind(rawValue: rawPracticeKind)
-        } else {
-            practiceKind = nil
-        }
-        selectedPractice = try? box.decode(
-            String.self,
-            forKey: .selectedPractice
+        practiceTransition = try? box.decode(
+            TurnPracticeTransition.self,
+            forKey: .practiceTransition
         )
     }
 

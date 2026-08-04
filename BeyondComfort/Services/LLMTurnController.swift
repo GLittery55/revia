@@ -363,7 +363,9 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
         guard let data = content.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let memory = root["memoryUpdate"] as? [String: Any],
-              let raw = memory["practiceKind"] as? String,
+              let transition = memory["practiceTransition"] as? [String: Any],
+              let proposal = transition["proposal"] as? [String: Any],
+              let raw = proposal["kind"] as? String,
               !Set(TurnPracticeKind.allCases.map(\.rawValue)).contains(raw) else {
             return nil
         }
@@ -915,9 +917,7 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
         evidenceOnlyMemory.candidUnderstanding = nil
         evidenceOnlyMemory.fierceUnderstanding = nil
         evidenceOnlyMemory.finalNarrative = nil
-        evidenceOnlyMemory.practiceOptions = nil
-        evidenceOnlyMemory.practiceKind = nil
-        evidenceOnlyMemory.selectedPractice = nil
+        evidenceOnlyMemory.practiceTransition = nil
         return LLMTurnResponsePlan(
             requestedStage: .cardReflection,
             localAction: .init(kind: .shareCardGuidance),

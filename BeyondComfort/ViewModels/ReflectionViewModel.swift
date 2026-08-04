@@ -2576,7 +2576,7 @@ final class ReflectionViewModel: ObservableObject {
             session.finalNarrativeConfirmed =
                 session.semanticMemory.finalNarrative?.isEmpty == false
             session.userAuthoredActionConfirmed =
-                session.semanticMemory.selectedPractice?.isEmpty == false
+                session.semanticMemory.practiceTransition?.proposal?.status == .confirmed
             session.studyEvents.append(
                 .init(stage: session.stage, action: "coarse_protocol_completion_committed")
             )
@@ -2792,6 +2792,10 @@ final class ReflectionViewModel: ObservableObject {
                             ?? session.semanticMemory.pendingCardRealityConnection,
                           pending.isStructurallyComplete {
                     referenceID = pending.id.uuidString
+                } else if proposed.target == .practice,
+                          let proposal = update.practiceTransition?.proposal
+                            ?? session.semanticMemory.practiceTransition?.proposal {
+                    referenceID = proposal.id
                 } else {
                     referenceID = UUID().uuidString
                 }
