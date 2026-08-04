@@ -115,7 +115,6 @@ enum TurnProtocolWarning: String, Equatable, Sendable {
     case missingPracticeKind
     case missingPracticeOptions
     case limitedPracticeChoiceSet
-    case redundantLegacyInteractionFieldsIgnored
     case normalizedNextPromptMetadata
     case repeatedQuestionPurpose
     case redundantConfirmedConnectionPatch = "redundant_confirmed_connection_patch"
@@ -588,12 +587,6 @@ struct ReflectionProtocolController: Sendable {
             warnings.append(.missingPracticeKind)
         }
 
-        if originalPlan.nextPrompt != nil,
-           originalPlan.memoryUpdate.pendingQuestionPurpose != nil
-            || originalPlan.memoryUpdate.pendingConfirmationTarget != nil
-            || originalPlan.memoryUpdate.clearPendingQuestionPurpose != nil {
-            warnings.append(.redundantLegacyInteractionFieldsIgnored)
-        }
         if originalPlan.nextPrompt != validatedPlan.nextPrompt {
             warnings.append(.normalizedNextPromptMetadata)
         }
@@ -677,16 +670,6 @@ struct ReflectionProtocolController: Sendable {
             memoryUpdate.cardConnectionOutcome = nil
         }
 
-        // `nextPrompt` is the sole source of truth for new responses. Models sometimes echo the
-        // equivalent legacy pending fields as well. Ignoring those redundant metadata fields is
-        // safe and prevents a formatting imperfection from interrupting the person; an actual
-        // unresolved confirmation, its reference, and every stage/action boundary are still
-        // validated below.
-        if protocolPlan.nextPrompt != nil {
-            memoryUpdate.pendingQuestionPurpose = nil
-            memoryUpdate.pendingConfirmationTarget = nil
-            memoryUpdate.clearPendingQuestionPurpose = nil
-        }
         if !nonempty(memoryUpdate.candidUnderstanding),
            let legacy = memoryUpdate.fierceUnderstanding,
            !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1222,24 +1205,7 @@ struct ReflectionProtocolController: Sendable {
             try validateCurrentDisclosurePlan(plan, for: session)
         }
         try validateIntentTransition(plan, currentStage: session.protocolStage)
-        let usesNewInteractionContract =
-            plan.nextPrompt != nil || plan.resolvedConfirmation != nil
-        if usesNewInteractionContract {
-            try validateInteractionContract(plan, for: session)
-        } else {
-            try validateConfirmationContract(plan, for: session)
-        }
-        if !usesNewInteractionContract,
-           plan.memoryUpdate.clearPendingQuestionPurpose == true {
-            let replacesPurpose = plan.memoryUpdate.pendingQuestionPurpose != nil
-            let replacesTarget = plan.memoryUpdate.pendingConfirmationTarget != nil
-            // `clear + neither` is an ordinary clear. `clear + both` is an atomic replacement of
-            // one confirmation gate by another. A partial replacement would leave a yes/no reply
-            // attached to the wrong semantic target and is therefore rejected.
-            if replacesPurpose != replacesTarget {
-                throw ReflectionProtocolViolation.conflictingMemoryPatch
-            }
-        }
+        try validateInteractionContract(plan, for: session)
 
         if plan.replyIntent != .safetySupport,
            isFierceQuestion(effectiveCurrentPrompt(for: session)),
@@ -1280,8 +1246,7 @@ struct ReflectionProtocolController: Sendable {
             }) else {
                 throw ReflectionProtocolViolation.unknownTrackingCue
             }
-            if usesNewInteractionContract,
-               let activeID = session.activeTrackingPresentationID,
+            if let activeID = session.activeTrackingPresentationID,
                let presentation = session.trackingPresentations.first(where: {
                    $0.id == activeID
                }) {
@@ -1664,14 +1629,7 @@ struct ReflectionProtocolController: Sendable {
         _ plan: LLMTurnResponsePlan,
         for session: ReflectionSession
     ) throws {
-        // New responses have one source of truth for pending interaction. Legacy patch fields are
-        // accepted only on the legacy path so two representations can never disagree. An
-        // explicit `false` clear flag is a harmless no-op and is normalized like null; only
-        // `true` would mutate the legacy representation.
-        guard plan.memoryUpdate.pendingQuestionPurpose == nil,
-              plan.memoryUpdate.pendingConfirmationTarget == nil,
-              plan.memoryUpdate.clearPendingQuestionPurpose != true,
-              let nextPrompt = plan.nextPrompt else {
+        guard let nextPrompt = plan.nextPrompt else {
             throw ReflectionProtocolViolation.conflictingMemoryPatch
         }
 
@@ -2022,17 +1980,9 @@ struct ReflectionProtocolController: Sendable {
     }
 
     private func effectiveCurrentPrompt(for session: ReflectionSession) -> TurnNextPrompt? {
-        if let prompt = session.semanticMemory.nextPrompt {
-            return prompt.kind == .none ? nil : prompt
-        }
-        if let target = session.semanticMemory.pendingConfirmationTarget {
-            return .confirmationRequest(target: target)
-        }
-        if let purpose = session.semanticMemory.pendingQuestionPurpose,
-           !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .openQuestion(purpose: purpose, focus: purpose)
-        }
-        return nil
+        guard let prompt = session.semanticMemory.nextPrompt,
+              prompt.kind != .none else { return nil }
+        return prompt
     }
 
     private func allowedDecisions(
@@ -2060,89 +2010,6 @@ struct ReflectionProtocolController: Sendable {
             return false
         }
         return purpose.hasPrefix("fierce_")
-    }
-
-    private func validateConfirmationContract(
-        _ plan: LLMTurnResponsePlan,
-        for session: ReflectionSession
-    ) throws {
-        func nonempty(_ value: String?) -> Bool {
-            value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        }
-
-        switch plan.replyIntent {
-        case .presentTrackingContext:
-            guard plan.memoryUpdate.pendingConfirmationTarget == .trackingRelationship,
-                  nonempty(plan.memoryUpdate.pendingQuestionPurpose) else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .checkTrackingRelationship:
-            guard session.semanticMemory.pendingConfirmationTarget == .trackingRelationship,
-                  plan.memoryUpdate.clearPendingQuestionPurpose == true,
-                  plan.memoryUpdate.trackingAssessments?.isEmpty == false else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .integrateTrackingAndPresentTenderSummary:
-            guard session.semanticMemory.pendingConfirmationTarget == .trackingRelationship,
-                  plan.memoryUpdate.trackingAssessments?.isEmpty == false,
-                  plan.memoryUpdate.pendingConfirmationTarget == .tenderSummary,
-                  nonempty(plan.memoryUpdate.pendingQuestionPurpose) else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .presentTenderSummary, .requestTenderConfirmation, .reviseTenderSummary:
-            guard plan.memoryUpdate.pendingConfirmationTarget == .tenderSummary,
-                  nonempty(plan.memoryUpdate.pendingQuestionPurpose) else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-            if plan.replyIntent == .presentTenderSummary,
-               session.semanticMemory.pendingConfirmationTarget == .trackingRelationship,
-               plan.memoryUpdate.trackingAssessments?.isEmpty != false {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .inviteCardConsent:
-            guard session.semanticMemory.pendingConfirmationTarget == .tenderSummary,
-                  plan.memoryUpdate.clearPendingQuestionPurpose == true else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .directCandidReflection
-            where session.protocolStage == .tenderConfirmation:
-            guard session.semanticMemory.pendingConfirmationTarget == .tenderSummary,
-                  plan.memoryUpdate.clearPendingQuestionPurpose == true else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .presentCardReading:
-            guard plan.memoryUpdate.pendingConfirmationTarget == .cardMapping,
-                  nonempty(plan.memoryUpdate.pendingQuestionPurpose),
-                  nonempty(plan.memoryUpdate.cardNegotiatedMeaning) else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .presentFinalNarrative, .requestNarrativeConfirmation, .reviseFinalNarrative:
-            guard plan.memoryUpdate.pendingConfirmationTarget == .finalNarrative,
-                  nonempty(plan.memoryUpdate.pendingQuestionPurpose),
-                  nonempty(plan.memoryUpdate.finalNarrative)
-                    || nonempty(session.semanticMemory.finalNarrative) else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .suggestPractice, .revisePractice:
-            guard plan.memoryUpdate.pendingConfirmationTarget == .practice,
-                  nonempty(plan.memoryUpdate.pendingQuestionPurpose) else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-        case .completeConversation:
-            if session.protocolStage == .narrativeConfirmation {
-                guard session.semanticMemory.pendingConfirmationTarget == .finalNarrative,
-                      plan.memoryUpdate.clearPendingQuestionPurpose == true else {
-                    throw ReflectionProtocolViolation.illegalReplyIntent
-                }
-            } else if session.protocolStage == .optionalAction {
-                guard session.semanticMemory.pendingConfirmationTarget == .practice,
-                      plan.memoryUpdate.clearPendingQuestionPurpose == true else {
-                    throw ReflectionProtocolViolation.illegalReplyIntent
-                }
-            }
-        default:
-            break
-        }
     }
 
     private func validateIntentTransition(

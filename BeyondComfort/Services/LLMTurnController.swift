@@ -330,7 +330,6 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
               let raw = (
                   (root["resolvedConfirmation"] as? [String: Any])?["target"]
                   ?? (root["nextPrompt"] as? [String: Any])?["target"]
-                  ?? (root["memoryUpdate"] as? [String: Any])?["pendingConfirmationTarget"]
               ) as? String,
               !Set(TurnConfirmationTarget.allCases.map(\.rawValue)).contains(raw) else {
             return nil
@@ -829,9 +828,7 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
         }
 
         if plan.replyIntent == .integrateTrackingAndPresentTenderSummary {
-            let currentPrompt = request.semanticMemory.nextPrompt
-            let pendingTarget = currentPrompt?.target
-                ?? request.semanticMemory.pendingConfirmationTarget
+            let pendingTarget = request.semanticMemory.nextPrompt?.target
             let hasPendingTrackingConfirmation =
                 pendingTarget == .trackingRelationship
                 && (

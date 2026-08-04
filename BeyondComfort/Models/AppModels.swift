@@ -861,12 +861,8 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     var episodeStructure: TurnEpisodeStructure?
     /// The person's assessment of whether and how the optional contextual cue mattered.
     var contextRelationship: TurnContextRelationship?
-    /// New protocol representation. Nil means an older saved session still relies on the legacy
-    /// pending fields below; `.none` means the new protocol intentionally has no pending prompt.
+    /// The single current representation of a pending conversational interaction.
     var nextPrompt: TurnNextPrompt?
-    /// Legacy migration fields. New Planner responses do not write them.
-    var pendingQuestionPurpose: String?
-    var pendingConfirmationTarget: TurnConfirmationTarget?
     var trackingAssessments: [TurnTrackingAssessment] = []
     var tenderUnderstanding: String?
     var cardRealityConnection: TurnCardRealityConnection?
@@ -899,8 +895,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         episodeStructure: TurnEpisodeStructure? = nil,
         contextRelationship: TurnContextRelationship? = nil,
         nextPrompt: TurnNextPrompt? = nil,
-        pendingQuestionPurpose: String? = nil,
-        pendingConfirmationTarget: TurnConfirmationTarget? = nil,
         trackingAssessments: [TurnTrackingAssessment] = [],
         tenderUnderstanding: String? = nil,
         cardRealityConnection: TurnCardRealityConnection? = nil,
@@ -927,8 +921,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.episodeStructure = episodeStructure
         self.contextRelationship = contextRelationship
         self.nextPrompt = nextPrompt
-        self.pendingQuestionPurpose = pendingQuestionPurpose
-        self.pendingConfirmationTarget = pendingConfirmationTarget
         self.trackingAssessments = trackingAssessments
         self.tenderUnderstanding = tenderUnderstanding
         let canonical = cardRealityConnection?.normalizedConfirmed
@@ -958,8 +950,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case episodeStructure
         case contextRelationship
         case nextPrompt
-        case pendingQuestionPurpose
-        case pendingConfirmationTarget
         case trackingAssessments
         case tenderUnderstanding
         case cardRealityConnection
@@ -975,6 +965,14 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case practiceOptions
         case practiceKind
         case selectedPractice
+    }
+
+    /// LEGACY_DECODE_ONLY — MUST NOT PARTICIPATE IN CURRENT PROTOCOL.
+    /// These keys existed before `nextPrompt` became the canonical interaction object. They are
+    /// read once while restoring a saved session and are never stored in current semantic memory.
+    private enum LegacyInteractionCodingKeys: String, CodingKey {
+        case pendingQuestionPurpose
+        case pendingConfirmationTarget
     }
 
     init(from decoder: Decoder) throws {
@@ -1005,13 +1003,23 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         contextRelationship =
             try? box.decodeIfPresent(TurnContextRelationship.self, forKey: .contextRelationship)
         nextPrompt = try? box.decodeIfPresent(TurnNextPrompt.self, forKey: .nextPrompt)
-        pendingQuestionPurpose =
-            try? box.decodeIfPresent(String.self, forKey: .pendingQuestionPurpose)
-        pendingConfirmationTarget =
-            try? box.decodeIfPresent(
+        if nextPrompt == nil {
+            let legacy = try decoder.container(keyedBy: LegacyInteractionCodingKeys.self)
+            let target = try? legacy.decodeIfPresent(
                 TurnConfirmationTarget.self,
                 forKey: .pendingConfirmationTarget
             )
+            let purpose = try? legacy.decodeIfPresent(
+                String.self,
+                forKey: .pendingQuestionPurpose
+            )
+            if let target {
+                nextPrompt = .confirmationRequest(target: target)
+            } else if let purpose,
+                      !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                nextPrompt = .openQuestion(purpose: purpose, focus: purpose)
+            }
+        }
         trackingAssessments =
             (try? box.decode([TurnTrackingAssessment].self, forKey: .trackingAssessments)) ?? []
         tenderUnderstanding =
@@ -1109,18 +1117,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         return .migrated
     }
 
-    /// New Planner requests use `nextPrompt` as their only pending-interaction source. The
-    /// application still stores the legacy mirrors so an older saved session or local view can
-    /// resume safely, but exposing both representations to the model can make it answer the same
-    /// confirmation twice. Old sessions without `nextPrompt` keep their legacy migration data.
-    func plannerFacingProjection() -> TurnSemanticMemory {
-        guard nextPrompt != nil else { return self }
-        var projected = self
-        projected.pendingQuestionPurpose = nil
-        projected.pendingConfirmationTarget = nil
-        return projected
-    }
-
     mutating func apply(
         _ update: TurnSemanticMemoryUpdate,
         committedNextPrompt: TurnNextPrompt? = nil
@@ -1148,33 +1144,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         if let value = update.contextRelationship { contextRelationship = value }
         if let committedNextPrompt {
             nextPrompt = committedNextPrompt
-            // Mirror the new prompt into legacy fields so older local views and safely resumed
-            // sessions continue to understand the pending interaction during migration.
-            switch committedNextPrompt.kind {
-            case .none:
-                pendingQuestionPurpose = nil
-                pendingConfirmationTarget = nil
-            case .openQuestion:
-                pendingQuestionPurpose = committedNextPrompt.purpose
-                pendingConfirmationTarget = nil
-            case .confirmationRequest:
-                pendingQuestionPurpose = committedNextPrompt.target.map {
-                    "confirm_\($0.rawValue)"
-                }
-                pendingConfirmationTarget = committedNextPrompt.target
-            }
-        } else {
-            // Legacy Planner/session compatibility.
-            if update.clearPendingQuestionPurpose == true {
-                pendingQuestionPurpose = nil
-                pendingConfirmationTarget = nil
-            }
-            if let value = update.pendingQuestionPurpose {
-                pendingQuestionPurpose = value
-            }
-            if let value = update.pendingConfirmationTarget {
-                pendingConfirmationTarget = value
-            }
         }
         if let assessments = update.trackingAssessments {
             var indexed = Dictionary(uniqueKeysWithValues: trackingAssessments.map { ($0.cueID, $0) })
@@ -1233,9 +1202,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     /// cue after a user-authored card-to-reality mapping. Persistence lives in the local inference
     /// relevance state (`offered`), not in semantic narrative memory.
     var contextCueOffered: Bool?
-    var pendingQuestionPurpose: String?
-    var pendingConfirmationTarget: TurnConfirmationTarget?
-    var clearPendingQuestionPurpose: Bool?
     var trackingAssessments: [TurnTrackingAssessment]?
     var tenderUnderstanding: String?
     /// Atomic current-protocol connection. Legacy scalar fields below are decode/input
@@ -1273,9 +1239,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         episodeStructure: TurnEpisodeStructure? = nil,
         contextRelationship: TurnContextRelationship? = nil,
         contextCueOffered: Bool? = nil,
-        pendingQuestionPurpose: String? = nil,
-        pendingConfirmationTarget: TurnConfirmationTarget? = nil,
-        clearPendingQuestionPurpose: Bool? = nil,
         trackingAssessments: [TurnTrackingAssessment]? = nil,
         tenderUnderstanding: String? = nil,
         cardRealityConnection: TurnCardRealityConnection? = nil,
@@ -1305,9 +1268,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         self.episodeStructure = episodeStructure
         self.contextRelationship = contextRelationship
         self.contextCueOffered = contextCueOffered
-        self.pendingQuestionPurpose = pendingQuestionPurpose
-        self.pendingConfirmationTarget = pendingConfirmationTarget
-        self.clearPendingQuestionPurpose = clearPendingQuestionPurpose
         self.trackingAssessments = trackingAssessments
         self.tenderUnderstanding = tenderUnderstanding
         self.cardRealityConnection = cardRealityConnection
@@ -1342,9 +1302,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         case episodeStructure
         case contextRelationship
         case contextCueOffered
-        case pendingQuestionPurpose
-        case pendingConfirmationTarget
-        case clearPendingQuestionPurpose
         case trackingAssessments
         case tenderUnderstanding
         case cardRealityConnection
@@ -1419,18 +1376,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         } else {
             answeredQuestionPurposes = nil
         }
-        pendingQuestionPurpose = try? box.decode(
-            String.self,
-            forKey: .pendingQuestionPurpose
-        )
-        pendingConfirmationTarget = try? box.decode(
-            TurnConfirmationTarget.self,
-            forKey: .pendingConfirmationTarget
-        )
-        clearPendingQuestionPurpose = try? Self.decodeOptionalProtocolBool(
-            from: box,
-            forKey: .clearPendingQuestionPurpose
-        )
         trackingAssessments = try? box.decode(
             [TurnTrackingAssessment].self,
             forKey: .trackingAssessments

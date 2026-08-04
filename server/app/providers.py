@@ -842,10 +842,7 @@ class ProviderGateway:
                     '"eventDisclosureOutcome":null,"selfCriticismStatus":null,'
                     '"selfCriticalStatement":null,"selfCriticismLink":null,'
                     '"episodeStructure":null,"contextRelationship":null,'
-                    '"contextCueOffered":null,'
-                    '"pendingQuestionPurpose":null,'
-                    '"pendingConfirmationTarget":null,'
-                    '"clearPendingQuestionPurpose":null,"trackingAssessments":null,'
+                    '"contextCueOffered":null,"trackingAssessments":null,'
                     '"tenderUnderstanding":null,"cardRealityConnection":null,'
                     '"pendingCardRealityConnection":null,'
                     '"clearPendingCardRealityConnection":null,'
@@ -867,8 +864,6 @@ class ProviderGateway:
                     "non-empty purpose and focus and the contextual disclosureTarget required by "
                     "ORIGINAL_REQUEST; or confirmationRequest with target only. "
                     "The new nextPrompt.referenceID is always null because Swift assigns it. "
-                    "pendingQuestionPurpose, pendingConfirmationTarget, and "
-                    "clearPendingQuestionPurpose are legacy fields and must all be null. "
                     "trackingAssessments must be null or an array of objects whose relevance is "
                     "exactly related, partlyRelated, unrelated, or uncertain. Every assessment "
                     "cueID must be copied exactly and unchanged from presentedTrackingCues in "

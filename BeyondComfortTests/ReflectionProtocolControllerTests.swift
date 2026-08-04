@@ -1480,13 +1480,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     func testConditionControlsPostTenderStageWithoutSemanticFieldChecks() throws {
         var cardSession = protocolSession(stage: .tenderConfirmation)
         cardSession.condition = .cardMediated
-        cardSession.semanticMemory.pendingConfirmationTarget = .tenderSummary
+        cardSession.semanticMemory.nextPrompt = .confirmationRequest(target: .tenderSummary)
         XCTAssertNoThrow(
             try controller.validate(
                 plan(
                     stage: .cardConsent,
-                    intent: .inviteCardConsent,
-                    memory: .init(clearPendingQuestionPurpose: true)
+                    intent: .inviteCardConsent
                 ),
                 for: cardSession
             )
@@ -1500,13 +1499,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
         var directSession = protocolSession(stage: .tenderConfirmation)
         directSession.condition = .directLLM
-        directSession.semanticMemory.pendingConfirmationTarget = .tenderSummary
+        directSession.semanticMemory.nextPrompt = .confirmationRequest(target: .tenderSummary)
         XCTAssertNoThrow(
             try controller.validate(
                 plan(
                     stage: .directReflection,
-                    intent: .directCandidReflection,
-                    memory: .init(clearPendingQuestionPurpose: true)
+                    intent: .directCandidReflection
                 ),
                 for: directSession
             )
@@ -1618,21 +1616,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             replyGuidance: "承接当前回答，只问一个与现实影响有关的开放问题"
         )
         XCTAssertNoThrow(try controller.validate(valid, for: session))
-
-        let harmlessLegacyNoOp = LLMTurnResponsePlan(
-            requestedStage: .contextualDisclosure,
-            localAction: .none,
-            memoryUpdate: .init(clearPendingQuestionPurpose: false),
-            nextPrompt: .openQuestion(
-                purpose: "continue_user_led_understanding",
-                focus: "由LLM决定的下一语义焦点"
-            ),
-            replyIntent: .exploreContext,
-            replyGuidance: "保持相同语义计划；false不构成旧状态写入"
-        )
-        XCTAssertNoThrow(
-            try controller.validate(harmlessLegacyNoOp, for: session)
-        )
 
         let llmLedInvitationWithoutForcedQuestion = LLMTurnResponsePlan(
             requestedStage: .contextualDisclosure,
@@ -2219,39 +2202,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    func testNewContractIgnoresRedundantLegacyInteractionMetadata() throws {
-        let session = protocolSession(stage: .contextualDisclosure)
-        let plan = LLMTurnResponsePlan(
-            requestedStage: .contextualDisclosure,
-            localAction: .none,
-            memoryUpdate: .init(
-                pendingQuestionPurpose: "legacy_duplicate",
-                pendingConfirmationTarget: .tenderSummary,
-                clearPendingQuestionPurpose: true
-            ),
-            nextPrompt: .openQuestion(
-                purpose: "clarify_current_effect",
-                focus: "这件事目前怎样影响用户"
-            ),
-            replyIntent: .exploreContext,
-            replyGuidance: "继续理解当前影响"
-        )
-
-        let validated = try controller.validate(plan, for: session)
-
-        XCTAssertNil(validated.memoryUpdate.pendingQuestionPurpose)
-        XCTAssertNil(validated.memoryUpdate.pendingConfirmationTarget)
-        XCTAssertNil(validated.memoryUpdate.clearPendingQuestionPurpose)
-        XCTAssertEqual(
-            controller.nonBlockingWarnings(
-                originalPlan: plan,
-                validatedPlan: validated,
-                for: session
-            ),
-            [.redundantLegacyInteractionFieldsIgnored]
-        )
-    }
-
     func testOpenQuestionMetadataIsCompletedWithoutRejectingTheTurn() throws {
         let controller = ReflectionProtocolController()
         let session = protocolSession(stage: .contextualDisclosure)
@@ -2442,26 +2392,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertNoThrow(try controller.validate(declined, for: practice))
     }
 
-    func testMemoryUpdateNormalizesBooleanStringsAndDropsInvalidOptionalFlag() throws {
-        let falseUpdate = try JSONDecoder().decode(
-            TurnSemanticMemoryUpdate.self,
-            from: Data(#"{"clearPendingQuestionPurpose":"false"}"#.utf8)
-        )
-        XCTAssertEqual(falseUpdate.clearPendingQuestionPurpose, false)
-
-        let trueUpdate = try JSONDecoder().decode(
-            TurnSemanticMemoryUpdate.self,
-            from: Data(#"{"clearPendingQuestionPurpose":"true"}"#.utf8)
-        )
-        XCTAssertEqual(trueUpdate.clearPendingQuestionPurpose, true)
-
-        let invalidUpdate = try JSONDecoder().decode(
-            TurnSemanticMemoryUpdate.self,
-            from: Data(#"{"clearPendingQuestionPurpose":"sometimes"}"#.utf8)
-        )
-        XCTAssertNil(invalidUpdate.clearPendingQuestionPurpose)
-    }
-
     func testCompletePlannerMemoryContractDecodesEverySwiftFieldType() throws {
         let content = """
         {
@@ -2474,9 +2404,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             "situationUnderstanding": "具体处境理解",
             "answeredQuestionPurposes": ["event_clarified", "personal_meaning_clarified"],
             "contextCueOffered": true,
-            "pendingQuestionPurpose": "tracking_relation_check",
-            "pendingConfirmationTarget": "trackingRelationship",
-            "clearPendingQuestionPurpose": false,
             "trackingAssessments": [
               {
                 "cueID": "sleep",
@@ -2527,12 +2454,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             ["event_clarified", "personal_meaning_clarified"]
         )
         XCTAssertEqual(plan.memoryUpdate.contextCueOffered, true)
-        XCTAssertEqual(plan.memoryUpdate.pendingQuestionPurpose, "tracking_relation_check")
-        XCTAssertEqual(
-            plan.memoryUpdate.pendingConfirmationTarget,
-            .trackingRelationship
-        )
-        XCTAssertEqual(plan.memoryUpdate.clearPendingQuestionPurpose, false)
         XCTAssertEqual(plan.memoryUpdate.trackingAssessments?.first?.cueID, "sleep")
         XCTAssertEqual(
             plan.memoryUpdate.trackingAssessments?.first?.relevance,
@@ -2569,9 +2490,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     func testPlannerMemoryContractDropsMalformedOptionalPatchFields() throws {
         let wrongValues: [(String, Any)] = [
             ("situationUnderstanding", []),
-            ("pendingQuestionPurpose", 1),
-            ("pendingConfirmationTarget", 1),
-            ("clearPendingQuestionPurpose", []),
             ("contextCueOffered", []),
             ("trackingAssessments", [:]),
             ("tenderUnderstanding", []),
@@ -2708,8 +2626,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         var memory = TurnSemanticMemory(
             situationUnderstanding: "已有处境理解",
             answeredQuestionPurposes: ["event_clarified"],
-            pendingQuestionPurpose: "personal_meaning_check",
-            pendingConfirmationTarget: .trackingRelationship,
+            nextPrompt: .confirmationRequest(target: .trackingRelationship),
             trackingAssessments: [
                 .init(
                     cueID: "sleep",
@@ -2729,9 +2646,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         {
           "situationUnderstanding": null,
           "answeredQuestionPurposes": null,
-          "pendingQuestionPurpose": null,
-          "pendingConfirmationTarget": null,
-          "clearPendingQuestionPurpose": null,
           "trackingAssessments": null,
           "tenderUnderstanding": null,
           "cardRealityConnection": null,
@@ -2762,35 +2676,14 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
         memory.apply(
             .init(
-                pendingQuestionPurpose: nil,
-                pendingConfirmationTarget: nil,
-                clearPendingQuestionPurpose: true,
                 cardNegotiatedMeaning: "",
                 selectedPractice: ""
             )
         )
-        XCTAssertNil(memory.pendingQuestionPurpose)
-        XCTAssertNil(memory.pendingConfirmationTarget)
+        XCTAssertEqual(memory.nextPrompt?.target, .trackingRelationship)
         XCTAssertEqual(memory.cardNegotiatedMeaning, "")
         XCTAssertEqual(memory.selectedPractice, "")
         XCTAssertEqual(memory.situationUnderstanding, "已有处境理解")
-    }
-
-    func testConflictingPendingQuestionSetAndClearIsRejected() throws {
-        let session = protocolSession(stage: .contextualDisclosure)
-        let conflicting = plan(
-            stage: .contextualDisclosure,
-            memory: .init(
-                pendingQuestionPurpose: "new_question",
-                clearPendingQuestionPurpose: true
-            )
-        )
-        XCTAssertThrowsError(try controller.validate(conflicting, for: session)) { error in
-            XCTAssertEqual(
-                error as? ReflectionProtocolViolation,
-                .conflictingMemoryPatch
-            )
-        }
     }
 
     func testCardDrawAndGuidanceRemainLocalPermissionedActions() throws {
@@ -2999,15 +2892,11 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     func testTenderStageRejectsPrematurePracticeAndCompletionIntents() throws {
         var session = protocolSession(stage: .tenderConfirmation)
         session.condition = .cardMediated
-        session.semanticMemory.pendingConfirmationTarget = .tenderSummary
+        session.semanticMemory.nextPrompt = .confirmationRequest(target: .tenderSummary)
 
         let practice = plan(
             stage: .tenderConfirmation,
-            intent: .suggestPractice,
-            memory: .init(
-                pendingQuestionPurpose: "practice_check",
-                pendingConfirmationTarget: .practice
-            )
+            intent: .suggestPractice
         )
         XCTAssertThrowsError(try controller.validate(practice, for: session)) { error in
             XCTAssertEqual(error as? ReflectionProtocolViolation, .illegalReplyIntent)
@@ -3016,8 +2905,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let completion = plan(
             stage: .tenderConfirmation,
             intent: .completeConversation,
-            action: .init(kind: .completeSession),
-            memory: .init(clearPendingQuestionPurpose: true)
+            action: .init(kind: .completeSession)
         )
         XCTAssertThrowsError(try controller.validate(completion, for: session))
     }
@@ -3028,8 +2916,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             stage: .contextualDisclosure,
             intent: .presentTenderSummary,
             memory: .init(
-                pendingQuestionPurpose: "confirm_tender_summary",
-                pendingConfirmationTarget: .tenderSummary,
                 tenderUnderstanding: "一段待确认的理解"
             )
         )
@@ -3044,8 +2930,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             stage: .narrativeConfirmation,
             intent: .suggestPractice,
             memory: .init(
-                pendingQuestionPurpose: "confirm_practice",
-                pendingConfirmationTarget: .practice,
                 practiceOptions: protocolPracticeOptions()
             )
         )
@@ -3106,14 +2990,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let sleep = trackingCue(id: "sleep")
         session.trackingCues = [sleep]
         session.presentedTrackingCueIDs = [sleep.id]
-        session.semanticMemory.pendingQuestionPurpose = "tracking_relation_check"
-        session.semanticMemory.pendingConfirmationTarget = .trackingRelationship
+        session.semanticMemory.nextPrompt = .confirmationRequest(target: .trackingRelationship)
 
         let assessment = plan(
             stage: .contextualDisclosure,
             intent: .checkTrackingRelationship,
             memory: .init(
-                clearPendingQuestionPurpose: true,
                 trackingAssessments: [
                     .init(
                         cueID: sleep.id,
@@ -3127,8 +3009,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
         let prematureTenderTransition = plan(
             stage: .tenderConfirmation,
-            intent: .presentTenderSummary,
-            memory: .init(clearPendingQuestionPurpose: true)
+            intent: .presentTenderSummary
         )
         XCTAssertThrowsError(
             try controller.validate(prematureTenderTransition, for: session)
@@ -3140,15 +3021,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let sleep = trackingCue(id: "sleep")
         session.trackingCues = [sleep]
         session.presentedTrackingCueIDs = [sleep.id]
-        session.semanticMemory.pendingQuestionPurpose = "tracking_relation_check"
-        session.semanticMemory.pendingConfirmationTarget = .trackingRelationship
+        session.semanticMemory.nextPrompt = .confirmationRequest(target: .trackingRelationship)
 
         let integrated = plan(
             stage: .tenderConfirmation,
             intent: .integrateTrackingAndPresentTenderSummary,
             memory: .init(
-                pendingQuestionPurpose: "confirm_tender_summary",
-                pendingConfirmationTarget: .tenderSummary,
                 trackingAssessments: [
                     .init(
                         cueID: sleep.id,
@@ -3165,8 +3043,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             stage: .tenderConfirmation,
             intent: .presentTenderSummary,
             memory: .init(
-                pendingQuestionPurpose: "confirm_tender_summary",
-                pendingConfirmationTarget: .tenderSummary,
                 tenderUnderstanding: "忽略了用户刚才对 tracking 的回答"
             )
         )
@@ -3178,9 +3054,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             stage: .tenderConfirmation,
             intent: .integrateTrackingAndPresentTenderSummary,
             memory: .init(
-                pendingQuestionPurpose: "confirm_tender_summary",
-                pendingConfirmationTarget: .tenderSummary,
-                clearPendingQuestionPurpose: true,
                 trackingAssessments: [
                     .init(cueID: sleep.id, relevance: .related, userInterpretation: nil),
                 ],
@@ -3190,9 +3063,11 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertNoThrow(try controller.validate(atomicReplacement, for: session))
 
         var memory = session.semanticMemory
-        memory.apply(atomicReplacement.memoryUpdate)
-        XCTAssertEqual(memory.pendingQuestionPurpose, "confirm_tender_summary")
-        XCTAssertEqual(memory.pendingConfirmationTarget, .tenderSummary)
+        memory.apply(
+            atomicReplacement.memoryUpdate,
+            committedNextPrompt: atomicReplacement.nextPrompt
+        )
+        XCTAssertEqual(memory.nextPrompt?.target, .tenderSummary)
     }
 
     func testTenderSummaryCreatesItsOwnConfirmationBeforeCardConsent() throws {
@@ -3202,33 +3077,29 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             stage: .tenderConfirmation,
             intent: .presentTenderSummary,
             memory: .init(
-                pendingQuestionPurpose: "confirm_tender_summary",
-                pendingConfirmationTarget: .tenderSummary,
                 tenderUnderstanding: "工作堆积和休息不足让人更容易慌乱，但不能概括整个人的能力"
             )
         )
         XCTAssertNoThrow(try controller.validate(summary, for: session))
 
         session.protocolStage = .tenderConfirmation
-        session.semanticMemory.pendingQuestionPurpose = "confirm_tender_summary"
-        session.semanticMemory.pendingConfirmationTarget = .tenderSummary
+        session.semanticMemory.nextPrompt = .confirmationRequest(target: .tenderSummary)
         session.semanticMemory.tenderUnderstanding =
             "工作堆积和休息不足让人更容易慌乱，但不能概括整个人的能力"
         let consent = plan(
             stage: .cardConsent,
-            intent: .inviteCardConsent,
-            memory: .init(clearPendingQuestionPurpose: true)
+            intent: .inviteCardConsent
         )
         XCTAssertNoThrow(try controller.validate(consent, for: session))
     }
 
     func testCurrentTurnPromptsUseImmutableServerRegistryVersion() {
-        XCTAssertEqual(ServerTurnPrompt.version, "turn-v4-server-v34")
-        XCTAssertEqual(ServerTurnPrompt.version(for: 2), "turn-v4-server-v34")
-        XCTAssertEqual(ServerTurnPrompt.version(for: 3), "turn-v4-server-v34")
+        XCTAssertEqual(ServerTurnPrompt.version, "turn-v4-server-v35")
+        XCTAssertEqual(ServerTurnPrompt.version(for: 2), "turn-v4-server-v35")
+        XCTAssertEqual(ServerTurnPrompt.version(for: 3), "turn-v4-server-v35")
         XCTAssertEqual(
             ServerTurnPrompt.version(for: ReflectionSession.currentProtocolVersion),
-            "turn-v4-server-v34"
+            "turn-v4-server-v35"
         )
         XCTAssertEqual(ServerTurnPrompt.Task.planner.rawValue, "planner")
         XCTAssertEqual(ServerTurnPrompt.Task.planCritic.rawValue, "plan_critic")
@@ -3268,9 +3139,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
           "memoryUpdate": {
             "situationUnderstanding": "\(privateReflection)",
             "answeredQuestionPurposes": ["tracking_relation_checked"],
-            "pendingQuestionPurpose": null,
-            "pendingConfirmationTarget": null,
-            "clearPendingQuestionPurpose": null,
             "trackingAssessments": [
               {
                 "cueID": "sleep",
@@ -4806,26 +4674,19 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertNoThrow(try controller.validate(clarification, for: session))
     }
 
-    func testPlannerFacingMemoryUsesOnlyNextPromptAfterMigration() {
-        var memory = TurnSemanticMemory(
-            nextPrompt: .confirmationRequest(
-                target: .cardMapping,
-                referenceID: "new-source-of-truth"
-            ),
-            pendingQuestionPurpose: "confirm_cardMapping",
-            pendingConfirmationTarget: .cardMapping,
-            cardNegotiatedMeaning: "等待确认的解读"
+    func testLegacyPendingInteractionMigratesToCanonicalNextPrompt() throws {
+        let data = Data(
+            #"{"pendingQuestionPurpose":"confirm_cardMapping","pendingConfirmationTarget":"cardMapping","cardNegotiatedMeaning":"等待确认的解读"}"#.utf8
         )
 
-        let projected = memory.plannerFacingProjection()
+        let memory = try JSONDecoder().decode(TurnSemanticMemory.self, from: data)
 
-        XCTAssertEqual(projected.nextPrompt, memory.nextPrompt)
-        XCTAssertNil(projected.pendingQuestionPurpose)
-        XCTAssertNil(projected.pendingConfirmationTarget)
-        XCTAssertEqual(projected.cardNegotiatedMeaning, memory.cardNegotiatedMeaning)
-
-        memory.nextPrompt = nil
-        XCTAssertEqual(memory.plannerFacingProjection(), memory)
+        XCTAssertEqual(memory.nextPrompt?.kind, .confirmationRequest)
+        XCTAssertEqual(memory.nextPrompt?.target, .cardMapping)
+        XCTAssertEqual(memory.cardNegotiatedMeaning, "等待确认的解读")
+        let encoded = String(decoding: try JSONEncoder().encode(memory), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("pendingQuestionPurpose"))
+        XCTAssertFalse(encoded.contains("pendingConfirmationTarget"))
     }
 
     private func trackingCue(id: String) -> TrackingCue {
@@ -5806,9 +5667,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         requestedStage: .tenderConfirmation,
                         localAction: .none,
                         memoryUpdate: .init(
-                            pendingQuestionPurpose: "confirm_tender_summary",
-                            pendingConfirmationTarget: .tenderSummary,
-                            clearPendingQuestionPurpose: true,
                             trackingAssessments: [
                                 .init(
                                     cueID: sleep.id,
@@ -5818,6 +5676,11 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                             ],
                             tenderUnderstanding: "工作积压和休息不足可能增加了慌乱，但不能概括整体能力"
                         ),
+                        resolvedConfirmation: .init(
+                            target: .trackingRelationship,
+                            decision: .related
+                        ),
+                        nextPrompt: .confirmationRequest(target: .tenderSummary),
                         replyIntent: .integrateTrackingAndPresentTenderSummary,
                         replyGuidance: "把用户确认的 tracking 关系和现实经历整合成简短 Tender 理解，并以内容问题自然承接"
                     )
@@ -5861,8 +5724,9 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         prepareVersionTwoDisclosure(model)
         model.session.trackingCues = [sleep]
         model.session.presentedTrackingCueIDs = [sleep.id]
-        model.session.semanticMemory.pendingQuestionPurpose = "tracking_relation_check"
-        model.session.semanticMemory.pendingConfirmationTarget = .trackingRelationship
+        model.session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .trackingRelationship
+        )
 
         model.draft = "我觉得对得上，最近确实没休息好，更容易着急。"
         model.send()
@@ -5871,7 +5735,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(model.session.protocolStage, .tenderConfirmation)
         XCTAssertEqual(model.session.messages.last?.content, tenderReply)
         XCTAssertEqual(
-            model.session.semanticMemory.pendingConfirmationTarget,
+            model.session.semanticMemory.nextPrompt?.target,
             .tenderSummary
         )
         let firstRequests = await controller.receivedRequests()
@@ -7924,8 +7788,11 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         requestedStage: .contextualDisclosure,
                         localAction: .none,
                         memoryUpdate: .init(
-                            situationUnderstanding: "实验失败触发了对研究能力的整体怀疑",
-                            pendingQuestionPurpose: "clarify_personal_meaning"
+                            situationUnderstanding: "实验失败触发了对研究能力的整体怀疑"
+                        ),
+                        nextPrompt: .openQuestion(
+                            purpose: "clarify_personal_meaning",
+                            focus: "能力怀疑牵动的现实担心"
                         ),
                         replyIntent: .exploreContext,
                         replyGuidance: "承接实验失败后的能力怀疑，只澄清它牵动的现实担心"
@@ -7952,7 +7819,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(model.session.messages.last?.content, expected)
         XCTAssertEqual(model.session.protocolStage, .contextualDisclosure)
         XCTAssertEqual(
-            model.session.semanticMemory.pendingQuestionPurpose,
+            model.session.semanticMemory.nextPrompt?.purpose,
             "clarify_personal_meaning"
         )
         XCTAssertFalse(
@@ -8012,8 +7879,10 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         let plan = LLMTurnResponsePlan(
             requestedStage: .contextualDisclosure,
             localAction: .none,
-            memoryUpdate: .init(
-                pendingQuestionPurpose: "clarify_effect"
+            memoryUpdate: .init(),
+            nextPrompt: .openQuestion(
+                purpose: "clarify_effect",
+                focus: "工作压力对日常状态的具体影响"
             ),
             replyIntent: .exploreContext,
             replyGuidance: "继续理解工作压力对日常状态的具体影响"

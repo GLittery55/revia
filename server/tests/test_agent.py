@@ -1251,10 +1251,9 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
             "null always means leave stored memory unchanged",
             repair_system,
         )
-        self.assertIn(
-            "legacy fields and must all be null",
-            repair_system,
-        )
+        self.assertNotIn("pendingQuestionPurpose", repair_system)
+        self.assertNotIn("pendingConfirmationTarget", repair_system)
+        self.assertNotIn("clearPendingQuestionPurpose", repair_system)
         self.assertIn("A confirmation target must be exactly", repair_system)
         self.assertIn("cardRealityConnection must be null or one complete object", repair_system)
         self.assertIn("Never emit a source-only, relation-only, or mapping-only connection", repair_system)

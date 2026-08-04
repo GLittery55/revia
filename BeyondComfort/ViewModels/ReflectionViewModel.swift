@@ -2239,20 +2239,12 @@ final class ReflectionViewModel: ObservableObject {
     /// Stores only protocol-shape metadata. It deliberately excludes dialogue, tracking values,
     /// semantic memory text, and Writer output so production diagnostics remain non-sensitive.
     private func appendRejectedProtocolPlanDiagnostic(_ plan: LLMTurnResponsePlan) {
-        let target = plan.nextPrompt?.target?.rawValue
-            ?? plan.memoryUpdate.pendingConfirmationTarget?.rawValue
-            ?? "none"
+        let target = plan.nextPrompt?.target?.rawValue ?? "none"
         let disclosureTarget = plan.nextPrompt?.disclosureTarget?.rawValue ?? "none"
         let episodeFields = plan.memoryUpdate.episodeStructure?
             .explicitlyProvidedFieldNames.joined(separator: ",") ?? "none"
-        let nextKind = plan.nextPrompt?.kind.rawValue ?? "legacy"
+        let nextKind = plan.nextPrompt?.kind.rawValue ?? "none"
         let resolvedTarget = plan.resolvedConfirmation?.target.rawValue ?? "none"
-        let clear: String
-        switch plan.memoryUpdate.clearPendingQuestionPurpose {
-        case .some(true): clear = "true"
-        case .some(false): clear = "false"
-        case .none: clear = "null"
-        }
         let assessmentCount = plan.memoryUpdate.trackingAssessments?.count ?? 0
         let action = [
             "rejected_plan",
@@ -2263,7 +2255,6 @@ final class ReflectionViewModel: ObservableObject {
             "disclosure_\(disclosureTarget)",
             "target_\(target)",
             "resolved_\(resolvedTarget)",
-            "clear_\(clear)",
             "assessments_\(assessmentCount)",
             "episode_fields_\(episodeFields)",
         ].joined(separator: "_")
@@ -2369,7 +2360,7 @@ final class ReflectionViewModel: ObservableObject {
                 .map {
                 LLMTurnTranscriptItem(role: $0.role, content: $0.content)
             },
-            semanticMemory: session.semanticMemory.plannerFacingProjection(),
+            semanticMemory: session.semanticMemory,
             trackingCandidates: trackingCandidates,
             contextualLoadCue: protocolContextualLoadCue(),
             presentedTrackingCues: presentedTrackingCues,
@@ -3612,7 +3603,6 @@ final class ReflectionViewModel: ObservableObject {
 
     private func protocolCorrectionDescription(_ error: Error) -> String {
         let currentTarget = session.semanticMemory.nextPrompt?.target
-            ?? session.semanticMemory.pendingConfirmationTarget
         if let clientError = error as? LLMTurnControllerClientError {
             switch clientError {
             case .plannerDecoding(let diagnostic):
@@ -3624,14 +3614,6 @@ final class ReflectionViewModel: ObservableObject {
                     \(diagnostic.keyPath). Repair the complete confirmation transaction, not only \
                     that one field. \
                     \(ReflectionPromptFactory.pendingCardMappingProtocolCorrection)
-                    """
-                }
-                if diagnostic.keyPath.hasSuffix("clearPendingQuestionPurpose") {
-                    return """
-                    The prior Planner JSON could not be decoded at \
-                    memoryUpdate.clearPendingQuestionPurpose. Use the JSON boolean true or false, \
-                    or null—never a quoted string or another JSON type. null means unchanged. To \
-                    clear the pending purpose, use true with pendingQuestionPurpose=null.
                     """
                 }
                 if diagnostic.invalidTrackingRelevance != nil ||
@@ -3652,7 +3634,6 @@ final class ReflectionViewModel: ObservableObject {
                     """
                 }
                 if diagnostic.invalidConfirmationTarget != nil ||
-                    diagnostic.keyPath.hasSuffix("pendingConfirmationTarget") ||
                     diagnostic.keyPath.hasSuffix("target") {
                     return """
                     A confirmation target must be exactly trackingRelationship, tenderSummary, \
@@ -3991,10 +3972,9 @@ final class ReflectionViewModel: ObservableObject {
                 """
             case .conflictingMemoryPatch:
                 return """
-                Use the new interaction contract only: leave all legacy pending fields and \
-                clearPendingQuestionPurpose null. Put what the latest user reply resolved in \
-                resolvedConfirmation, and put only the prompt created by the next visible reply in \
-                nextPrompt.
+                Use the current interaction contract: put what the latest user reply resolved in \
+                resolvedConfirmation, and put only the interaction created by the next visible \
+                reply in nextPrompt.
                 """
             case .invalidNextPrompt:
                 return """
