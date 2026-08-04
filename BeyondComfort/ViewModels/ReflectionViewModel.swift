@@ -3497,7 +3497,6 @@ final class ReflectionViewModel: ObservableObject {
                     TurnDisclosureReopenReason.allCases.map(\.rawValue),
                 "eventDisclosureOutcome": TurnEventDisclosureOutcome.allCases.map(\.rawValue),
                 "reflectionFocusKind": TurnReflectionFocusKind.allCases.map(\.rawValue),
-                "tenderGroundingKind": TurnTenderGroundingKind.allCases.map(\.rawValue),
                 "confirmation.target": TurnConfirmationTarget.allCases.map(\.rawValue),
                 "confirmation.decision": TurnConfirmationDecision.allCases.map(\.rawValue),
                 "practiceKind": TurnPracticeKind.allCases.map(\.rawValue),
@@ -3877,13 +3876,6 @@ final class ReflectionViewModel: ObservableObject {
                     verdict; otherwise preserve specific criticism, event tension, external-evaluation \
                     concern, or uncertainty without inflating it. If still unclear, ask only the one \
                     permitted clarifyReflectionFocus question.
-                    """
-                case .tenderGroundingKind:
-                    return """
-                    Choose the pre-card grounding kind from the typed reflection focus. A global \
-                    judgment requires globalJudgmentDistinction; specific criticism or event tension \
-                    may use specificEventGrounding or none. Keep the grounding and card invitation in \
-                    one visible turn and do not create a Tender confirmation.
                     """
                 case .episodeStructure:
                     return """

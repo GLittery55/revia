@@ -214,14 +214,6 @@ enum TurnReflectionFocusKind: String, Codable, CaseIterable, Sendable {
     case unclearFocus
 }
 
-/// The one pre-card grounding function selected from the typed reflection focus. This is not a
-/// new workflow stage and never creates a separate confirmation turn.
-enum TurnTenderGroundingKind: String, Codable, CaseIterable, Sendable {
-    case globalJudgmentDistinction
-    case specificEventGrounding
-    case none
-}
-
 enum TurnDisclosureReopenReason: String, Codable, CaseIterable, Sendable {
     case userCorrectedPreviousFact
     case userWithdrewPreviousAnswer
@@ -869,7 +861,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     var eventDisclosureOutcome: TurnEventDisclosureOutcome = .needsConcreteEpisode
     var reflectionFocusKind: TurnReflectionFocusKind = .unclearFocus
     var reflectionFocus: String?
-    var tenderGroundingKind: TurnTenderGroundingKind = .none
     var selfCriticismStatus: TurnSelfCriticismStatus = .unresolved
     /// The person's proposition in compact form, not a clinician- or model-authored label.
     var selfCriticalStatement: String?
@@ -916,7 +907,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         eventDisclosureOutcome: TurnEventDisclosureOutcome = .needsConcreteEpisode,
         reflectionFocusKind: TurnReflectionFocusKind = .unclearFocus,
         reflectionFocus: String? = nil,
-        tenderGroundingKind: TurnTenderGroundingKind = .none,
         selfCriticismStatus: TurnSelfCriticismStatus = .unresolved,
         selfCriticalStatement: String? = nil,
         selfCriticismLink: String? = nil,
@@ -947,7 +937,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.eventDisclosureOutcome = eventDisclosureOutcome
         self.reflectionFocusKind = reflectionFocusKind
         self.reflectionFocus = reflectionFocus
-        self.tenderGroundingKind = tenderGroundingKind
         self.selfCriticismStatus = selfCriticismStatus
         self.selfCriticalStatement = selfCriticalStatement
         self.selfCriticismLink = selfCriticismLink
@@ -981,7 +970,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case eventDisclosureOutcome
         case reflectionFocusKind
         case reflectionFocus
-        case tenderGroundingKind
         case selfCriticismStatus
         case selfCriticalStatement
         case selfCriticismLink
@@ -1029,11 +1017,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
                 forKey: .reflectionFocusKind
             )) ?? .unclearFocus
         reflectionFocus = try? box.decodeIfPresent(String.self, forKey: .reflectionFocus)
-        tenderGroundingKind =
-            (try? box.decode(
-                TurnTenderGroundingKind.self,
-                forKey: .tenderGroundingKind
-            )) ?? .none
         selfCriticismStatus =
             (try? box.decode(TurnSelfCriticismStatus.self, forKey: .selfCriticismStatus))
             ?? .unresolved
@@ -1182,7 +1165,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         if let value = update.eventDisclosureOutcome { eventDisclosureOutcome = value }
         if let value = update.reflectionFocusKind { reflectionFocusKind = value }
         if let value = update.reflectionFocus { reflectionFocus = value }
-        if let value = update.tenderGroundingKind { tenderGroundingKind = value }
         if let value = update.selfCriticismStatus { selfCriticismStatus = value }
         if let value = update.selfCriticalStatement { selfCriticalStatement = value }
         if let value = update.selfCriticismLink { selfCriticismLink = value }
@@ -1270,7 +1252,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     var eventDisclosureOutcome: TurnEventDisclosureOutcome?
     var reflectionFocusKind: TurnReflectionFocusKind?
     var reflectionFocus: String?
-    var tenderGroundingKind: TurnTenderGroundingKind?
     var selfCriticismStatus: TurnSelfCriticismStatus?
     var selfCriticalStatement: String?
     var selfCriticismLink: String?
@@ -1316,7 +1297,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         eventDisclosureOutcome: TurnEventDisclosureOutcome? = nil,
         reflectionFocusKind: TurnReflectionFocusKind? = nil,
         reflectionFocus: String? = nil,
-        tenderGroundingKind: TurnTenderGroundingKind? = nil,
         selfCriticismStatus: TurnSelfCriticismStatus? = nil,
         selfCriticalStatement: String? = nil,
         selfCriticismLink: String? = nil,
@@ -1351,7 +1331,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         self.eventDisclosureOutcome = eventDisclosureOutcome
         self.reflectionFocusKind = reflectionFocusKind
         self.reflectionFocus = reflectionFocus
-        self.tenderGroundingKind = tenderGroundingKind
         self.selfCriticismStatus = selfCriticismStatus
         self.selfCriticalStatement = selfCriticalStatement
         self.selfCriticismLink = selfCriticismLink
@@ -1391,7 +1370,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         case eventDisclosureOutcome
         case reflectionFocusKind
         case reflectionFocus
-        case tenderGroundingKind
         case selfCriticismStatus
         case selfCriticalStatement
         case selfCriticismLink
@@ -1445,10 +1423,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         reflectionFocus = try? box.decode(
             String.self,
             forKey: .reflectionFocus
-        )
-        tenderGroundingKind = try? box.decode(
-            TurnTenderGroundingKind.self,
-            forKey: .tenderGroundingKind
         )
         selfCriticismStatus = try? box.decode(
             TurnSelfCriticismStatus.self,

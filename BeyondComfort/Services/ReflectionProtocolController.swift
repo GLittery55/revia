@@ -76,7 +76,6 @@ enum TurnRequiredMemoryField: String, Equatable, Sendable {
     case selfCriticalStatement
     case selfCriticismLink
     case reflectionFocus
-    case tenderGroundingKind
     case episodeStructure
     case contextRelationship
     /// Optional current memory; retained as a legacy repair label for older saved payloads.
@@ -1522,27 +1521,6 @@ struct ReflectionProtocolController: Sendable {
         case .inviteCardConsent:
             guard isEventDisclosureCoreComplete(disclosureState) else {
                 throw ReflectionProtocolViolation.disclosureShouldAdvance
-            }
-            switch effectiveMemory.reflectionFocusKind {
-            case .explicitGlobalSelfJudgment:
-                guard effectiveMemory.tenderGroundingKind == .globalJudgmentDistinction else {
-                    throw ReflectionProtocolViolation.missingRequiredMemoryField(
-                        .tenderGroundingKind
-                    )
-                }
-            case .specificSelfCriticism, .eventTension:
-                guard [.specificEventGrounding, .none]
-                    .contains(effectiveMemory.tenderGroundingKind) else {
-                    throw ReflectionProtocolViolation.missingRequiredMemoryField(
-                        .tenderGroundingKind
-                    )
-                }
-            case .unclearFocus:
-                guard effectiveMemory.tenderGroundingKind == .none else {
-                    throw ReflectionProtocolViolation.missingRequiredMemoryField(
-                        .tenderGroundingKind
-                    )
-                }
             }
         default:
             break

@@ -1101,28 +1101,19 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             memory: request.semanticMemory,
             update: update
         )
-        let effective = disclosureState.memory
 
         let canInvite = request.condition.usesCard
             && isEventDisclosureCoreComplete(disclosureState)
             && request.permissions.allowedReplyIntents.contains(.inviteCardConsent)
         if canInvite {
             update.eventDisclosureOutcome = .readyForTenderOrCard
-            switch effective.reflectionFocusKind {
-            case .explicitGlobalSelfJudgment:
-                update.tenderGroundingKind = .globalJudgmentDistinction
-            case .specificSelfCriticism, .eventTension:
-                update.tenderGroundingKind = .specificEventGrounding
-            case .unclearFocus:
-                update.tenderGroundingKind = TurnTenderGroundingKind.none
-            }
             return LLMTurnResponsePlan(
                 requestedStage: .cardConsent,
                 localAction: .none,
                 memoryUpdate: update,
                 nextPrompt: .confirmationRequest(target: .cardConsent),
                 replyIntent: .inviteCardConsent,
-                replyGuidance: "Use only the confirmed typed episode and reflection focus for one brief grounding, then invite one optional random reflection card."
+                replyGuidance: "Use only the confirmed typed episode for one brief factual bridge, then invite one optional random reflection card."
             )
         }
 

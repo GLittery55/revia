@@ -345,7 +345,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 eventDisclosureOutcome: .readyForTenderOrCard,
                 reflectionFocusKind: .eventTension,
                 reflectionFocus: "一个已经明确的现实张力",
-                tenderGroundingKind: .specificEventGrounding,
                 episodeStructure: .init(
                     concreteFacts: ["一件具体事情及其直接结果"],
                     behaviorEvidenceStatus: .present,
@@ -374,7 +373,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             localAction: .none,
             memoryUpdate: .init(
                 eventDisclosureOutcome: .readyForTenderOrCard,
-                tenderGroundingKind: TurnTenderGroundingKind.none,
                 episodeStructure: .init(
                     concreteFacts: ["用户答应去接家人但最后没有去"],
                     behaviorEvidenceStatus: .present,
@@ -526,7 +524,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             localAction: .none,
             memoryUpdate: .init(
                 eventDisclosureOutcome: .readyForTenderOrCard,
-                tenderGroundingKind: TurnTenderGroundingKind.none,
                 episodeStructure: .init(
                     concreteFacts: ["一件具体事情"],
                     behaviorEvidenceStatus: .present,
@@ -547,7 +544,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    func testTenderGroundingKindMustMatchTypedReflectionFocus() throws {
+    func testReflectionFocusMetadataNeverGatesCardConsent() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
         session.protocolStage = .contextualDisclosure
@@ -560,10 +557,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             possibleContributors: ["事情的发展已经说明"]
         )
 
-        func bridge(
-            focus: TurnReflectionFocusKind,
-            grounding: TurnTenderGroundingKind
-        ) -> LLMTurnResponsePlan {
+        func bridge(focus: TurnReflectionFocusKind) -> LLMTurnResponsePlan {
             LLMTurnResponsePlan(
                 requestedStage: .cardConsent,
                 localAction: .none,
@@ -571,7 +565,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                     eventDisclosureOutcome: .readyForTenderOrCard,
                     reflectionFocusKind: focus,
                     reflectionFocus: "一个有用户证据的反思焦点",
-                    tenderGroundingKind: grounding,
                     episodeStructure: episode
                 ),
                 nextPrompt: .confirmationRequest(target: .cardConsent),
@@ -580,21 +573,15 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             )
         }
 
-        XCTAssertThrowsError(
+        XCTAssertNoThrow(
             try controller.validate(
-                bridge(focus: .explicitGlobalSelfJudgment, grounding: .specificEventGrounding),
+                bridge(focus: .explicitGlobalSelfJudgment),
                 for: session
             )
         )
         XCTAssertNoThrow(
             try controller.validate(
-                bridge(focus: .explicitGlobalSelfJudgment, grounding: .globalJudgmentDistinction),
-                for: session
-            )
-        )
-        XCTAssertNoThrow(
-            try controller.validate(
-                bridge(focus: .eventTension, grounding: .specificEventGrounding),
+                bridge(focus: .unclearFocus),
                 for: session
             )
         )
@@ -813,7 +800,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 eventDisclosureOutcome: .readyForTenderOrCard,
                 reflectionFocusKind: .eventTension,
                 reflectionFocus: "用户希望继续完善，但持续处理使事情错过了原定节点",
-                tenderGroundingKind: .specificEventGrounding,
                 episodeStructure: .init(
                     concreteFacts: ["一件具体事情已经发生"],
                     behaviorEvidenceStatus: .present,
@@ -7219,7 +7205,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                             eventDisclosureOutcome: .readyForTenderOrCard,
                             reflectionFocusKind: .explicitGlobalSelfJudgment,
                             reflectionFocus: "用户把一次具体结果扩展成了对整个人的否定",
-                            tenderGroundingKind: .globalJudgmentDistinction,
                             selfCriticismStatus: .present,
                             selfCriticalStatement: "用户由一次具体经历形成了整体自我评价",
                             selfCriticismLink:
@@ -7318,7 +7303,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                             eventDisclosureOutcome: .readyForTenderOrCard,
                             reflectionFocusKind: .eventTension,
                             reflectionFocus: "希望继续完善与错过提交之间的现实张力",
-                            tenderGroundingKind: .specificEventGrounding,
                             episodeStructure: episode
                         ),
                         nextPrompt: .confirmationRequest(target: .cardConsent),
@@ -8232,7 +8216,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                             eventDisclosureOutcome: .readyForTenderOrCard,
                             reflectionFocusKind: .eventTension,
                             reflectionFocus: "事件中已经存在一个值得继续反思的现实张力",
-                            tenderGroundingKind: TurnTenderGroundingKind.none,
                             selfCriticismStatus: .absent,
                             episodeStructure: episode
                         ),
@@ -8314,7 +8297,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                             eventDisclosureOutcome: .readyForTenderOrCard,
                             reflectionFocusKind: .eventTension,
                             reflectionFocus: "用户在意未按时完成以及别人可能如何评价这件事",
-                            tenderGroundingKind: .specificEventGrounding,
                             selfCriticismStatus: .absent,
                             episodeStructure: coherentEpisode
                         ),
@@ -8512,7 +8494,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                             eventDisclosureOutcome: .readyForTenderOrCard,
                             reflectionFocusKind: .explicitGlobalSelfJudgment,
                             reflectionFocus: "用户把具体结果扩展成了对整体能力的判断",
-                            tenderGroundingKind: .globalJudgmentDistinction,
                             episodeStructure: completedPatch
                         ),
                         nextPrompt: .openQuestion(
@@ -8533,7 +8514,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                             eventDisclosureOutcome: .readyForTenderOrCard,
                             reflectionFocusKind: .explicitGlobalSelfJudgment,
                             reflectionFocus: "用户把具体结果扩展成了对整体能力的判断",
-                            tenderGroundingKind: .globalJudgmentDistinction,
                             episodeStructure: completedPatch
                         ),
                         nextPrompt: .confirmationRequest(target: .cardConsent),
@@ -9080,8 +9060,7 @@ private actor RepeatedDisclosureThenBridgePlanner: LLMTurnPlanning {
             memoryUpdate: .init(
                 eventDisclosureOutcome: .readyForTenderOrCard,
                 reflectionFocusKind: .eventTension,
-                reflectionFocus: "已经得到用户支持的事件张力",
-                tenderGroundingKind: .specificEventGrounding
+                reflectionFocus: "已经得到用户支持的事件张力"
             ),
             nextPrompt: .confirmationRequest(target: .cardConsent),
             replyIntent: .inviteCardConsent,
