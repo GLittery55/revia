@@ -68,6 +68,21 @@ enum ReflectionProtocolViolation: Error, Equatable {
     case invalidPreGuidanceConnectionConfirmation
     case legacyCardConnectionPatchNotAllowed
     case confirmedCardConnectionIsImmutable
+    case incompletePracticeTransition([TurnPracticeTransitionRequirement])
+}
+
+enum TurnPracticeTransitionRequirement: String, Codable, Equatable, Sendable {
+    case narrativeResolution
+    case requestedStage
+    case proposal
+    case proposalID
+    case proposalKind
+    case proposalContent
+    case proposalBasis
+    case proposalMetadata
+    case confirmationPrompt
+    case noActionReason
+    case pendingSelectionMustBeEmpty
 }
 
 enum TurnRequiredMemoryField: String, Equatable, Sendable {
@@ -342,6 +357,98 @@ struct ReflectionProtocolController: Sendable {
                 intents: replyIntents
             )
         )
+    }
+
+    /// The single cumulative projection for a practice-creation operation before the retired
+    /// option-array storage is replaced by the canonical transaction object. Every current
+    /// practice reader goes through this projection during consolidation; no caller recombines
+    /// patch and stored values independently.
+    private struct EffectivePracticeTransitionState {
+        let requestedStage: ReflectionProtocolStage
+        let replyIntent: TurnReplyIntent
+        let resolution: TurnResolvedConfirmation?
+        let nextPrompt: TurnNextPrompt?
+        let options: [TurnPracticeOption]
+        let practiceKind: TurnPracticeKind?
+        let selectedPractice: String?
+        let noActionReason: TurnNoActionReason?
+
+        init(plan: LLMTurnResponsePlan, session: ReflectionSession) {
+            requestedStage = plan.requestedStage
+            replyIntent = plan.replyIntent
+            resolution = plan.resolvedConfirmation
+            nextPrompt = plan.nextPrompt
+            options = plan.memoryUpdate.practiceOptions
+                ?? session.semanticMemory.practiceOptions
+            practiceKind = plan.memoryUpdate.practiceKind
+                ?? session.semanticMemory.practiceKind
+            selectedPractice = plan.memoryUpdate.selectedPractice
+                ?? session.semanticMemory.selectedPractice
+            noActionReason = plan.noActionReason
+        }
+    }
+
+    /// The sole current validation entry for creating or replacing a practice proposal. It
+    /// reports the whole invalid cross-field object at once instead of exposing whichever
+    /// independent guard happened to run first.
+    private func validatePracticeTransition(
+        _ plan: LLMTurnResponsePlan,
+        for session: ReflectionSession
+    ) throws {
+        guard [.suggestPractice, .revisePractice].contains(plan.replyIntent) else {
+            return
+        }
+        let state = EffectivePracticeTransitionState(plan: plan, session: session)
+        var missing: [TurnPracticeTransitionRequirement] = []
+
+        if state.requestedStage != .optionalAction {
+            missing.append(.requestedStage)
+        }
+        let expectedResolutionTarget: TurnConfirmationTarget =
+            state.replyIntent == .suggestPractice ? .finalNarrative : .practice
+        let allowedDecisions: Set<TurnConfirmationDecision> =
+            state.replyIntent == .suggestPractice
+                ? [.accepted, .revised]
+                : [.revised, .rejected, .unclear]
+        if state.resolution?.target != expectedResolutionTarget
+            || !allowedDecisions.contains(state.resolution?.decision ?? .unclear) {
+            missing.append(.narrativeResolution)
+        }
+        if state.nextPrompt?.kind != .confirmationRequest
+            || state.nextPrompt?.target != .practice {
+            missing.append(.confirmationPrompt)
+        }
+
+        if state.practiceKind == .noAction {
+            if !state.options.isEmpty { missing.append(.proposal) }
+            if state.noActionReason == nil { missing.append(.noActionReason) }
+            if nonempty(state.selectedPractice) {
+                missing.append(.pendingSelectionMustBeEmpty)
+            }
+        } else {
+            guard state.options.count == 1, let option = state.options.first else {
+                missing.append(.proposal)
+                throw ReflectionProtocolViolation.incompletePracticeTransition(
+                    Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+                )
+            }
+            if !nonempty(option.id) { missing.append(.proposalID) }
+            if option.kind == .noAction { missing.append(.proposalKind) }
+            if !nonempty(option.instruction) { missing.append(.proposalContent) }
+            if !nonempty(option.basis) { missing.append(.proposalBasis) }
+            if !nonempty(option.title) || !nonempty(option.rationale) {
+                missing.append(.proposalMetadata)
+            }
+            if state.practiceKind != nil || nonempty(state.selectedPractice) {
+                missing.append(.pendingSelectionMustBeEmpty)
+            }
+        }
+
+        if !missing.isEmpty {
+            throw ReflectionProtocolViolation.incompletePracticeTransition(
+                Array(Set(missing)).sorted { $0.rawValue < $1.rawValue }
+            )
+        }
     }
 
     private func availableDisclosurePurposes(
@@ -1060,50 +1167,7 @@ struct ReflectionProtocolController: Sendable {
                 throw ReflectionProtocolViolation.illegalReplyIntent
             }
         }
-        if [.suggestPractice, .revisePractice].contains(plan.replyIntent),
-           plan.memoryUpdate.practiceKind == .noAction,
-           plan.noActionReason == nil {
-            // Swift does not decide whether the person is ready or whether an active practice is
-            // therapeutically appropriate. It only requires the Planner to choose one closed,
-            // auditable exception instead of using `noAction` as an unqualified shortcut.
-            throw ReflectionProtocolViolation.missingNoActionReason
-        }
-        if [.suggestPractice, .revisePractice].contains(plan.replyIntent) {
-            let options = plan.memoryUpdate.practiceOptions ?? []
-            let hasDuplicateIDs = Set(options.map(\.id)).count != options.count
-            let hasInvalidOption = options.contains { option in
-                option.kind == .noAction
-                    || option.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || option.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || option.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || option.rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            guard options.count <= 1, !hasDuplicateIDs, !hasInvalidOption else {
-                throw ReflectionProtocolViolation.illegalReplyIntent
-            }
-            if plan.memoryUpdate.practiceKind == .noAction {
-                guard options.isEmpty else {
-                    throw ReflectionProtocolViolation.illegalReplyIntent
-                }
-            } else {
-                guard plan.memoryUpdate.practiceKind == nil,
-                      plan.memoryUpdate.selectedPractice == nil else {
-                    // A pending choice set cannot also claim that one option is already selected.
-                    throw ReflectionProtocolViolation.illegalReplyIntent
-                }
-                if session.protocolVersion >= ReflectionSession.structuredTurnProtocolVersion {
-                    // Current sessions may not fall back to generic wellbeing advice. One active
-                    // practice must name the confirmed basis that made it relevant; otherwise the
-                    // Planner must use the typed insufficient-material noAction path.
-                    guard options.count == 1,
-                          options.allSatisfy({ nonempty($0.basis) }) else {
-                        throw ReflectionProtocolViolation.missingRequiredMemoryField(
-                            .practiceBasis
-                        )
-                    }
-                }
-            }
-        }
+        try validatePracticeTransition(plan, for: session)
         if session.protocolStage == .contextualDisclosure,
            plan.replyIntent != .safetySupport {
             try validateCurrentDisclosurePlan(plan, for: session)
@@ -1576,13 +1640,10 @@ struct ReflectionProtocolController: Sendable {
                 )
             }
 
-        case .suggestPractice:
-            try requireResolution(.finalNarrative, decisions: [.accepted, .revised])
-            try requireNextConfirmation(.practice)
-
-        case .revisePractice:
-            try requireResolution(.practice, decisions: [.revised, .rejected, .unclear])
-            try requireNextConfirmation(.practice)
+        case .suggestPractice, .revisePractice:
+            // The complete proposal, resolution, destination stage, and confirmation prompt are
+            // validated atomically by `validatePracticeTransition`.
+            break
 
         case .completeConversation:
             guard nextPrompt.kind == .none else {

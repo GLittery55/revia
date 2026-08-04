@@ -3284,6 +3284,8 @@ final class ReflectionViewModel: ObservableObject {
     private func protocolMissingConditions(for error: Error) -> [String] {
         guard let violation = error as? ReflectionProtocolViolation else { return [] }
         switch violation {
+        case .incompletePracticeTransition(let requirements):
+            return requirements.map { "practiceTransition.\($0.rawValue)" }
         case .incompleteEpisodeStructure(let requirements):
             return requirements.map { "episodeStructure.\($0.rawValue)" }
         case .missingRequiredMemoryField(let field):
@@ -3476,6 +3478,8 @@ final class ReflectionViewModel: ObservableObject {
                 return "missing_required_memory_\(field.rawValue)"
             case .incompleteEpisodeStructure(let requirements):
                 return "incomplete_episode_structure_\(requirements.map(\.rawValue).joined(separator: "_"))"
+            case .incompletePracticeTransition(let requirements):
+                return "incomplete_practice_transition_\(requirements.map(\.rawValue).joined(separator: "_"))"
             case .writerIntentMismatch: return "writer_intent_mismatch"
             case .unknownTrackingCue: return "unknown_tracking_cue"
             case .duplicateTrackingCue: return "duplicate_tracking_cue"
@@ -3632,6 +3636,17 @@ final class ReflectionViewModel: ObservableObject {
             }
 
             switch violation {
+            case .incompletePracticeTransition(let requirements):
+                let fields = requirements.map(\.rawValue).joined(separator: ", ")
+                return """
+                Repair only the complete Optional Action transition. The invalid transaction is \
+                missing or conflicts on: \(fields). Preserve the accepted finalNarrative \
+                resolution. Return requestedStage=optionalAction, replyIntent=suggestPractice or \
+                revisePractice as appropriate, exactly one complete grounded practice option, and \
+                a confirmationRequest nextPrompt targeting that same practice. For an active \
+                proposal its id, kind, instruction, rationale, title, and basis must all be \
+                non-empty. Do not return narrativeConfirmation, an openQuestion, or nextPrompt=none.
+                """
             case .emptyReply:
                 return "The prior reply was empty. Keep the current stage and regenerate one reply."
             case .illegalStageTransition:
@@ -4041,6 +4056,8 @@ final class ReflectionViewModel: ObservableObject {
                 reason = "missing_required_memory_\(field.rawValue)"
             case .incompleteEpisodeStructure(let requirements):
                 reason = "incomplete_episode_structure_\(requirements.map(\.rawValue).joined(separator: "_"))"
+            case .incompletePracticeTransition(let requirements):
+                reason = "incomplete_practice_transition_\(requirements.map(\.rawValue).joined(separator: "_"))"
             case .writerIntentMismatch: reason = "writer_intent_mismatch"
             case .unknownTrackingCue: reason = "unknown_tracking_cue"
             case .duplicateTrackingCue: reason = "duplicate_tracking_cue"
