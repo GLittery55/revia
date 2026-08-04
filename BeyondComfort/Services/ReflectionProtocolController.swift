@@ -355,10 +355,9 @@ struct ReflectionProtocolController: Sendable {
         )
     }
 
-    /// The single cumulative projection for a practice-creation operation before the retired
-    /// option-array storage is replaced by the canonical transaction object. Every current
-    /// practice reader goes through this projection during consolidation; no caller recombines
-    /// patch and stored values independently.
+    /// The single cumulative projection for the canonical practice transaction. Every current
+    /// practice reader goes through this projection; no caller recombines patch and stored values
+    /// independently.
     private struct EffectivePracticeTransitionState {
         let requestedStage: ReflectionProtocolStage
         let replyIntent: TurnReplyIntent
@@ -502,6 +501,12 @@ struct ReflectionProtocolController: Sendable {
            awaiting.proposal == nil,
            (transition.transactionID != awaiting.transactionID
                 || transition.narrativeReferenceID != awaiting.narrativeReferenceID) {
+            missing.append(.transactionReference)
+        }
+        if session.protocolStage == .narrativeConfirmation,
+           state.replyIntent == .suggestPractice,
+           transition.narrativeReferenceID
+            != effectiveCurrentPrompt(for: session)?.referenceID {
             missing.append(.transactionReference)
         }
         if proposal.kind == .noAction { missing.append(.proposalKind) }
@@ -934,16 +939,14 @@ struct ReflectionProtocolController: Sendable {
         if let prompt = protocolPlan.nextPrompt {
             if protocolPlan.replyIntent == .completeConversation {
                 nextPrompt = TurnNextPrompt.none
-            } else if let target = confirmationTargetEstablished(by: protocolPlan.replyIntent) {
+            } else if let target = confirmationTargetEstablished(by: protocolPlan.replyIntent),
+                      target != .practice {
                 // The typed intent uniquely establishes this target. Extra or missing
                 // nextPrompt metadata cannot change the conversational function, so canonicalize
                 // it instead of discarding a legal turn.
-                let referenceID = target == .practice
-                    ? memoryUpdate.practiceTransition?.proposal?.id
-                    : nil
                 nextPrompt = .confirmationRequest(
                     target: target,
-                    referenceID: referenceID
+                    referenceID: nil
                 )
             } else {
                 switch prompt.kind {
@@ -963,7 +966,12 @@ struct ReflectionProtocolController: Sendable {
                     )
                 case .confirmationRequest:
                     if let target = prompt.target {
-                        nextPrompt = .confirmationRequest(target: target)
+                        nextPrompt = .confirmationRequest(
+                            target: target,
+                            referenceID: target == .practice
+                                ? prompt.referenceID
+                                : nil
+                        )
                     }
                 }
             }
@@ -1522,13 +1530,16 @@ struct ReflectionProtocolController: Sendable {
                 throw ReflectionProtocolViolation.invalidNextPrompt
             }
         case .confirmationRequest:
+            let hasLegalReference = nextPrompt.target == .practice
+                ? nonempty(nextPrompt.referenceID)
+                : nextPrompt.referenceID == nil
             guard nextPrompt.purpose == nil,
                   nextPrompt.focus == nil,
                   nextPrompt.disclosurePurpose == nil,
                   nextPrompt.disclosureTarget == nil,
                   nextPrompt.disclosureReopenReason == nil,
                   nextPrompt.target != nil,
-                  nextPrompt.referenceID == nil else {
+                  hasLegalReference else {
                 throw ReflectionProtocolViolation.invalidNextPrompt
             }
         }

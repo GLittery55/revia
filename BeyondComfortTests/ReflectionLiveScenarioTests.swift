@@ -135,8 +135,8 @@ final class ReflectionLiveScenarioTests: XCTestCase {
                 ReflectionProtocolStage.complete.rawValue,
             ],
             finalNarrative: "synthetic final narrative",
-            practiceKind: TurnPracticeKind.care.rawValue,
-            selectedPractice: "synthetic practice",
+            proposalKind: TurnPracticeKind.care.rawValue,
+            practiceContent: "synthetic practice",
             turns: [turn]
         )
         let report = LiveScenarioMatrixReport(
@@ -715,8 +715,8 @@ final class ReflectionLiveScenarioTests: XCTestCase {
             ).map(LiveTrackingCueSnapshot.init),
             visitedProtocolStages: Self.visitedProtocolStages(from: events),
             finalNarrative: model.session.semanticMemory.finalNarrative,
-            practiceKind: model.session.semanticMemory.practiceKind?.rawValue,
-            selectedPractice: model.session.semanticMemory.selectedPractice,
+            proposalKind: model.session.semanticMemory.practiceTransition?.proposal?.kind.rawValue,
+            practiceContent: model.session.semanticMemory.practiceTransition?.proposal?.content,
             turns: turns
         )
     }
@@ -1531,8 +1531,8 @@ private struct LiveScenarioRunReport: Codable {
     let initialTrackingCues: [LiveTrackingCueSnapshot]
     let visitedProtocolStages: [String]
     let finalNarrative: String?
-    let practiceKind: String?
-    let selectedPractice: String?
+    let proposalKind: String?
+    let practiceContent: String?
     let turns: [LiveScenarioTurnReport]
 }
 
@@ -1918,8 +1918,8 @@ private enum LiveScenarioReportRenderer {
                 "## 最终产出",
                 "",
                 "- 最终叙事：\(run.finalNarrative ?? "无")",
-                "- Practice 类型：`\(run.practiceKind ?? "none")`",
-                "- Practice：\(run.selectedPractice ?? "无")",
+                "- Practice 类型：`\(run.proposalKind ?? "none")`",
+                "- Practice：\(run.practiceContent ?? "无")",
                 "",
             ]
         }

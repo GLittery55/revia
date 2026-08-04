@@ -156,7 +156,8 @@ _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
     "narrativeConfirmation": (
         "Interpret the narrative response. On accepted/revised, preserve that resolution and emit "
         "one complete practiceTransition with requestedStage=optionalAction, suggestPractice, a "
-        "grounded pending proposal, and practice confirmation of the same id. Never stay here or "
+        "grounded pending proposal, and practice confirmation. transactionID, proposal.id, and "
+        "the practice confirmation referenceID must be identical. Never stay here or "
         "use nextPrompt none/openQuestion."
     ),
     "optionalAction": (
@@ -316,7 +317,8 @@ practiceTransition is null or exactly
 "source":"assistantProposed|userRevised"},"noActionReason":null}.
 Awaiting proposal uses both nullable members null; noAction uses proposal=null and one typed reason.
 suggestPractice/revisePractice requires optionalAction, a complete pending proposal, and practice
-confirmation whose referenceID equals proposal.id. Retired practice arrays/scalars are forbidden.
+confirmation; transactionID, proposal.id, and confirmation referenceID must be identical. Retired
+practice arrays/scalars are forbidden.
 """.strip()
 
 
@@ -550,7 +552,8 @@ require a fixed number of turns or fields.
 
 For suggestPractice/revisePractice require one atomic transition: optionalAction; one complete
 pending proposal with non-empty id/content/user-evidence basis and a legal kind; noActionReason
-null; plus practice confirmation of that same id. Reject retired fields, generic/missing basis,
+null; plus practice confirmation. transactionID, proposal.id, and confirmation referenceID must
+be identical. Reject retired fields, generic/missing basis,
 multiple proposals, another stage, nextPrompt none/openQuestion, or target mismatch. Preserve an
 accepted/revised finalNarrative resolution. noAction requires proposal=null and a supported reason.
 When resolving a pending practice: accepted confirms the unchanged proposal; revised confirms the

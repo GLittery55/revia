@@ -690,7 +690,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
     func testRetiredIncompatibleMetadataCannotBlockValidCardInvitation() throws {
         let rawPlan = Data(
-            #"{"requestedStage":"cardConsent","localAction":{"kind":"none","trackingCueIDs":[]},"memoryUpdate":{"eventDisclosureOutcome":"readyForTenderOrCard","reflectionFocusKind":"explicitGlobalSelfJudgment","tenderGroundingKind":"none","tenderUnderstanding":null,"episodeStructure":{"concreteFacts":["用户答应去接家人但最后没去"],"behaviorEvidenceStatus":"present","behaviorEvidence":["临时和朋友吃饭且没有提前告诉家人"],"eventProcessStatus":"present","possibleContributors":["原来的安排临时改变"]}},"resolvedConfirmation":null,"nextPrompt":{"kind":"confirmationRequest","purpose":null,"focus":null,"disclosurePurpose":null,"disclosureTarget":null,"disclosureReopenReason":null,"target":"cardConsent","referenceID":null},"replyIntent":"inviteCardConsent","noActionReason":null,"replyGuidance":"简短事实承接并邀请随机反思卡"}"#.utf8
+            #"{"requestedStage":"cardConsent","localAction":{"kind":"none","trackingCueIDs":[]},"memoryUpdate":{"eventDisclosureOutcome":"readyForTenderOrCard","reflectionFocusKind":"explicitGlobalSelfJudgment","tenderGroundingKind":"none","tenderUnderstanding":null,"episodeStructure":{"concreteFacts":["用户答应去接家人但最后没去"],"behaviorEvidenceStatus":"present","behaviorEvidence":["临时和朋友吃饭且没有提前告诉家人"],"eventProcessStatus":"present","possibleContributors":["原来的安排临时改变"]}},"resolvedConfirmation":null,"nextPrompt":{"kind":"confirmationRequest","purpose":null,"focus":null,"disclosurePurpose":null,"disclosureTarget":null,"disclosureReopenReason":null,"target":"cardConsent","referenceID":null},"replyIntent":"inviteCardConsent","replyGuidance":"简短事实承接并邀请随机反思卡"}"#.utf8
         )
         let plan = try JSONDecoder().decode(LLMTurnResponsePlan.self, from: rawPlan)
         var session = ReflectionSession()
@@ -1066,7 +1066,6 @@ final class ReflectionProtocolControllerTests: XCTestCase {
           "resolvedConfirmation":null,
           "nextPrompt":{"kind":"none","purpose":null,"focus":null,"disclosureTarget":null,"target":null,"referenceID":null},
           "replyIntent":"authorizeCardGuidance",
-          "noActionReason":null,
           "replyGuidance":null,
           "cardReferenceSelection":null
         }
@@ -1101,7 +1100,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         }
     }
 
-    func testCurrentProtocolRejectsPracticeWithoutConfirmedBasis() throws {
+    func testCurrentProposalRequiresNonOptionalGroundedBasis() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
         session.protocolStage = .narrativeConfirmation
@@ -1111,44 +1110,52 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             referenceID: "final-1"
         )
 
-        func practice(_ basis: String?) -> LLMTurnResponsePlan {
-            LLMTurnResponsePlan(
+        func practice(_ basis: String) -> LLMTurnResponsePlan {
+            let transition = practiceTransition(
+                id: "bounded-check",
+                basis: basis,
+                narrativeReferenceID: "final-1"
+            )
+            return LLMTurnResponsePlan(
                 requestedStage: .optionalAction,
                 localAction: .none,
-                memoryUpdate: .init(
-                    practiceOptions: [
-                        .init(
-                            id: "bounded-check",
-                            kind: .change,
-                            title: "只验证一个问题",
-                            instruction: "下一轮修改前写下一个要验证的问题，结束后只检查它。",
-                            rationale: "避免把一次结果扩大成对整体能力的判断。",
-                            basis: basis
-                        ),
-                    ]
-                ),
+                memoryUpdate: .init(practiceTransition: transition),
                 resolvedConfirmation: .init(
                     target: .finalNarrative,
                     decision: .accepted,
                     referenceID: "final-1"
                 ),
-                nextPrompt: .confirmationRequest(target: .practice),
+                nextPrompt: .confirmationRequest(
+                    target: .practice,
+                    referenceID: "bounded-check"
+                ),
                 replyIntent: .suggestPractice,
                 replyGuidance: "给出一个直接对应确认区分的小练习"
             )
         }
 
-        XCTAssertThrowsError(try controller.validate(practice(nil), for: session)) {
-            XCTAssertEqual(
-                $0 as? ReflectionProtocolViolation,
-                .missingRequiredMemoryField(.practiceBasis)
-            )
+        XCTAssertThrowsError(try controller.validate(practice(""), for: session)) { error in
+            guard case .incompletePracticeTransition(let requirements) =
+                    error as? ReflectionProtocolViolation else {
+                return XCTFail("Expected incompletePracticeTransition")
+            }
+            XCTAssertTrue(requirements.contains(.proposalBasis))
         }
         XCTAssertNoThrow(
             try controller.validate(
                 practice("用户确认自己容易把一次未达预期扩大成整体能力判断"),
                 for: session
             )
+        )
+
+        let missingBasisJSON = Data(
+            """
+            {"id":"p","kind":"change","content":"做一个小动作",\
+            "status":"pendingConfirmation","source":"assistantProposed"}
+            """.utf8
+        )
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(TurnPracticeProposal.self, from: missingBasisJSON)
         )
     }
 
@@ -1235,257 +1242,162 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    func testPracticeOfferWithoutStructuredOptionIsRejected() throws {
+    func testPracticeCreationAndConfirmationUseOneCanonicalTransaction() throws {
         var session = protocolSession(stage: .narrativeConfirmation)
-        session.semanticMemory.finalNarrative = "已经由用户确认前等待处理的叙事"
+        session.semanticMemory.finalNarrative = "已经等待确认的最终叙事"
         session.semanticMemory.nextPrompt = .confirmationRequest(
             target: .finalNarrative,
             referenceID: "narrative-1"
         )
+        let transition = practiceTransition(
+            id: "practice-1",
+            narrativeReferenceID: "narrative-1"
+        )
         let plan = LLMTurnResponsePlan(
             requestedStage: .optionalAction,
             localAction: .none,
-            memoryUpdate: .init(
-                answeredQuestionPurposes: ["narrative_confirmed"]
-            ),
+            memoryUpdate: .init(practiceTransition: transition),
             resolvedConfirmation: .init(
                 target: .finalNarrative,
                 decision: .accepted,
                 referenceID: "narrative-1"
             ),
-            nextPrompt: .confirmationRequest(target: .practice),
-            replyIntent: .suggestPractice,
-            replyGuidance: "提出一个具体、可修改或拒绝的小实践"
-        )
-
-        XCTAssertThrowsError(try controller.validate(plan, for: session)) {
-            XCTAssertEqual(
-                $0 as? ReflectionProtocolViolation,
-                .missingRequiredMemoryField(.practiceBasis)
-            )
-        }
-    }
-
-    func testStructuredPracticeIsPersistedWithoutPreselectingIt() throws {
-        var session = protocolSession(stage: .narrativeConfirmation)
-        session.semanticMemory.finalNarrative = "已经等待确认的最终叙事"
-        session.semanticMemory.nextPrompt = .confirmationRequest(
-            target: .finalNarrative,
-            referenceID: "narrative-choices"
-        )
-        let options = protocolPracticeOptions()
-        let plan = LLMTurnResponsePlan(
-            requestedStage: .optionalAction,
-            localAction: .none,
-            memoryUpdate: .init(
-                practiceOptions: options
-            ),
-            resolvedConfirmation: .init(
-                target: .finalNarrative,
-                decision: .accepted,
-                referenceID: "narrative-choices"
-            ),
-            nextPrompt: .confirmationRequest(target: .practice),
-            replyIntent: .suggestPractice,
-            replyGuidance: "呈现一个证据最充分的完整实践"
-        )
-
-        let validated = try controller.validate(plan, for: session)
-        XCTAssertEqual(validated.memoryUpdate.practiceOptions, options)
-        XCTAssertNil(validated.memoryUpdate.practiceKind)
-        XCTAssertNil(validated.memoryUpdate.selectedPractice)
-        XCTAssertTrue(
-            controller.nonBlockingWarnings(
-                originalPlan: plan,
-                validatedPlan: validated,
-                for: session
-            ).isEmpty
-        )
-
-        session.semanticMemory.apply(validated.memoryUpdate)
-        XCTAssertEqual(session.semanticMemory.practiceOptions, options)
-        XCTAssertNil(session.semanticMemory.practiceKind)
-        XCTAssertNil(session.semanticMemory.selectedPractice)
-    }
-
-    func testPracticeOfferRejectsMoreThanOneOption() throws {
-        var session = protocolSession(stage: .narrativeConfirmation)
-        session.semanticMemory.finalNarrative = "已经等待确认的最终叙事"
-        session.semanticMemory.nextPrompt = .confirmationRequest(
-            target: .finalNarrative,
-            referenceID: "narrative-too-many-options"
-        )
-        let base = protocolPracticeOptions()
-        let second = TurnPracticeOption(
-            id: "protect-1",
-            kind: .protect,
-            title: "保护一个边界",
-            instruction: "只说明一个已经确认的责任范围。",
-            rationale: "这是另一个候选方向。"
-        )
-        let plan = LLMTurnResponsePlan(
-            requestedStage: .optionalAction,
-            localAction: .none,
-            memoryUpdate: .init(practiceOptions: base + [second]),
-            resolvedConfirmation: .init(
-                target: .finalNarrative,
-                decision: .accepted,
-                referenceID: "narrative-too-many-options"
-            ),
-            nextPrompt: .confirmationRequest(target: .practice),
-            replyIntent: .suggestPractice,
-            replyGuidance: "候选过多"
-        )
-
-        XCTAssertThrowsError(try controller.validate(plan, for: session)) { error in
-            XCTAssertEqual(error as? ReflectionProtocolViolation, .illegalReplyIntent)
-        }
-    }
-
-    func testAcceptedPresentedPracticeCanonicalizesCompletionTupleAndKind() throws {
-        var session = protocolSession(stage: .optionalAction)
-        let options = protocolPracticeOptions()
-        session.semanticMemory.practiceOptions = options
-        session.semanticMemory.nextPrompt = .confirmationRequest(
-            target: .practice,
-            referenceID: "practice-choice"
-        )
-        let malformedButUnambiguous = LLMTurnResponsePlan(
-            requestedStage: .optionalAction,
-            localAction: .none,
-            memoryUpdate: .init(selectedPractice: options[0].instruction),
-            resolvedConfirmation: .init(
+            nextPrompt: .confirmationRequest(
                 target: .practice,
-                decision: .accepted,
-                referenceID: "practice-choice"
-            ),
-            nextPrompt: TurnNextPrompt.none,
-            replyIntent: .completeConversation,
-            replyGuidance: "用户接受现有实践，简短结束"
-        )
-
-        let normalized = try controller.validate(malformedButUnambiguous, for: session)
-        XCTAssertEqual(normalized.requestedStage, .complete)
-        XCTAssertEqual(normalized.localAction.kind, .completeSession)
-        XCTAssertEqual(normalized.nextPrompt?.kind, TurnNextPromptKind.none)
-        XCTAssertEqual(normalized.memoryUpdate.practiceKind, options[0].kind)
-    }
-
-    func testAcceptedPracticeCannotReplacePresentedOptionWithNewInstruction() throws {
-        var session = protocolSession(stage: .optionalAction)
-        session.semanticMemory.practiceOptions = protocolPracticeOptions()
-        session.semanticMemory.nextPrompt = .confirmationRequest(
-            target: .practice,
-            referenceID: "practice-choice-mismatch"
-        )
-        let mismatched = LLMTurnResponsePlan(
-            requestedStage: .complete,
-            localAction: .init(kind: .completeSession),
-            memoryUpdate: .init(selectedPractice: "一个没有展示过的新实践"),
-            resolvedConfirmation: .init(
-                target: .practice,
-                decision: .accepted,
-                referenceID: "practice-choice-mismatch"
-            ),
-            nextPrompt: TurnNextPrompt.none,
-            replyIntent: .completeConversation,
-            replyGuidance: "错误替换用户所选实践"
-        )
-
-        XCTAssertThrowsError(try controller.validate(mismatched, for: session)) { error in
-            XCTAssertEqual(error as? ReflectionProtocolViolation, .illegalReplyIntent)
-        }
-    }
-
-    func testPracticeChoiceSetRejectsDuplicateIDsAndNoActionOption() throws {
-        var session = protocolSession(stage: .narrativeConfirmation)
-        session.semanticMemory.finalNarrative = "已经等待确认的最终叙事"
-        session.semanticMemory.nextPrompt = .confirmationRequest(
-            target: .finalNarrative,
-            referenceID: "narrative-invalid-options"
-        )
-        let duplicateOptions = [
-            protocolPracticeOptions()[0],
-            TurnPracticeOption(
-                id: "care-1",
-                kind: .noAction,
-                title: "无效选项",
-                instruction: "这不应成为一个主动实践选项。",
-                rationale: "noAction 应由独立结果表达。"
-            ),
-        ]
-        let plan = LLMTurnResponsePlan(
-            requestedStage: .optionalAction,
-            localAction: .none,
-            memoryUpdate: .init(practiceOptions: duplicateOptions),
-            resolvedConfirmation: .init(
-                target: .finalNarrative,
-                decision: .accepted,
-                referenceID: "narrative-invalid-options"
-            ),
-            nextPrompt: .confirmationRequest(target: .practice),
-            replyIntent: .suggestPractice,
-            replyGuidance: "无效的候选集合"
-        )
-
-        XCTAssertThrowsError(try controller.validate(plan, for: session)) { error in
-            XCTAssertEqual(error as? ReflectionProtocolViolation, .illegalReplyIntent)
-        }
-    }
-
-    func testLegacySemanticMemoryWithoutPracticeOptionsKeepsExistingValues() throws {
-        let data = Data(
-            """
-            {
-              "situationUnderstanding":"已有理解",
-              "answeredQuestionPurposes":["event_clarified"],
-              "selectedPractice":"已有实践"
-            }
-            """.utf8
-        )
-
-        let memory = try JSONDecoder().decode(TurnSemanticMemory.self, from: data)
-
-        XCTAssertEqual(memory.situationUnderstanding, "已有理解")
-        XCTAssertEqual(memory.answeredQuestionPurposes, ["event_clarified"])
-        XCTAssertEqual(memory.selectedPractice, "已有实践")
-        XCTAssertEqual(memory.practiceOptions, [])
-    }
-
-    func testAcceptedPracticeCanCompleteWhenOnlyPracticeKindMetadataIsMissing() throws {
-        var session = protocolSession(stage: .optionalAction)
-        session.semanticMemory.nextPrompt = .confirmationRequest(
-            target: .practice,
-            referenceID: "practice-1"
-        )
-        let plan = LLMTurnResponsePlan(
-            requestedStage: .complete,
-            localAction: .init(kind: .completeSession),
-            memoryUpdate: .init(
-                answeredQuestionPurposes: ["practice_decided"],
-                selectedPractice: "今晚安排十分钟有边界的恢复时间"
-            ),
-            resolvedConfirmation: .init(
-                target: .practice,
-                decision: .accepted,
                 referenceID: "practice-1"
             ),
-            nextPrompt: TurnNextPrompt.none,
-            replyIntent: .completeConversation,
-            replyGuidance: "确认实践已经记录，并自然结束"
+            replyIntent: .suggestPractice,
+            replyGuidance: "呈现一个有依据的小行动"
         )
 
         let validated = try controller.validate(plan, for: session)
+        XCTAssertEqual(validated.memoryUpdate.practiceTransition, transition)
+        session.semanticMemory.apply(validated.memoryUpdate)
+        XCTAssertEqual(session.semanticMemory.practiceTransition, transition)
+    }
 
-        XCTAssertEqual(validated.requestedStage, .complete)
-        XCTAssertEqual(
-            controller.nonBlockingWarnings(
-                originalPlan: plan,
-                validatedPlan: validated,
-                for: session
-            ),
-            [.missingPracticeKind]
+    func testPracticeCreationRejectsMissingProposalAndMismatchedTargetID() throws {
+        var session = protocolSession(stage: .narrativeConfirmation)
+        session.semanticMemory.finalNarrative = "最终叙事"
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .finalNarrative,
+            referenceID: "narrative-1"
         )
+        func plan(_ transition: TurnPracticeTransition?, promptID: String?) -> LLMTurnResponsePlan {
+            LLMTurnResponsePlan(
+                requestedStage: .optionalAction,
+                localAction: .none,
+                memoryUpdate: .init(practiceTransition: transition),
+                resolvedConfirmation: .init(
+                    target: .finalNarrative,
+                    decision: .accepted,
+                    referenceID: "narrative-1"
+                ),
+                nextPrompt: .confirmationRequest(target: .practice, referenceID: promptID),
+                replyIntent: .suggestPractice,
+                replyGuidance: "一个小行动"
+            )
+        }
+        XCTAssertThrowsError(try controller.validate(plan(nil, promptID: nil), for: session))
+        XCTAssertThrowsError(
+            try controller.validate(
+                plan(
+                    practiceTransition(
+                        id: "practice-1",
+                        narrativeReferenceID: "narrative-1"
+                    ),
+                    promptID: "other-id"
+                ),
+                for: session
+            )
+        ) { error in
+            guard case .incompletePracticeTransition(let requirements) =
+                    error as? ReflectionProtocolViolation else {
+                return XCTFail("Expected incompletePracticeTransition")
+            }
+            XCTAssertTrue(requirements.contains(.confirmationReference))
+        }
+    }
+
+    func testPracticeAcceptReviseAndRejectAreAtomic() throws {
+        let pending = practiceTransition(id: "practice-1")
+        func session() -> ReflectionSession {
+            var value = protocolSession(stage: .optionalAction)
+            value.semanticMemory.practiceTransition = pending
+            value.semanticMemory.nextPrompt = .confirmationRequest(
+                target: .practice,
+                referenceID: "practice-1"
+            )
+            return value
+        }
+        func completion(
+            decision: TurnConfirmationDecision,
+            transition: TurnPracticeTransition
+        ) -> LLMTurnResponsePlan {
+            LLMTurnResponsePlan(
+                requestedStage: .complete,
+                localAction: .init(kind: .completeSession),
+                memoryUpdate: .init(practiceTransition: transition),
+                resolvedConfirmation: .init(
+                    target: .practice,
+                    decision: decision,
+                    referenceID: "practice-1"
+                ),
+                nextPrompt: TurnNextPrompt.none,
+                replyIntent: .completeConversation,
+                replyGuidance: "简短结束"
+            )
+        }
+
+        var accepted = pending
+        accepted.proposal = TurnPracticeProposal(
+            id: "practice-1",
+            kind: .care,
+            content: pending.proposal!.content,
+            basis: pending.proposal!.basis,
+            status: .confirmed,
+            source: .assistantProposed
+        )
+        XCTAssertNoThrow(try controller.validate(completion(decision: .accepted, transition: accepted), for: session()))
+
+        var revised = pending
+        revised.proposal = TurnPracticeProposal(
+            id: "practice-1",
+            kind: .repair,
+            content: "先发一条消息说明没有提前告知。",
+            basis: pending.proposal!.basis,
+            status: .confirmed,
+            source: .userRevised
+        )
+        XCTAssertNoThrow(try controller.validate(completion(decision: .revised, transition: revised), for: session()))
+
+        var rejected = pending
+        rejected.proposal = nil
+        rejected.noActionReason = .userDeclined
+        XCTAssertNoThrow(try controller.validate(completion(decision: .rejected, transition: rejected), for: session()))
+    }
+
+    func testLegacyPracticeMigrationDoesNotPromoteMissingBasis() throws {
+        let incomplete = Data(
+            """
+            {"practiceOptions":[{"id":"legacy","kind":"care","title":"旧",\
+            "instruction":"旧行动","rationale":"旧理由","basis":null}],\
+            "selectedPractice":"旧行动"}
+            """.utf8
+        )
+        let skipped = try JSONDecoder().decode(TurnSemanticMemory.self, from: incomplete)
+        XCTAssertNil(skipped.practiceTransition)
+
+        let complete = Data(
+            """
+            {"practiceOptions":[{"id":"legacy","kind":"care","title":"旧",\
+            "instruction":"旧行动","rationale":"旧理由","basis":"用户确认的需要"}]}
+            """.utf8
+        )
+        let migrated = try JSONDecoder().decode(TurnSemanticMemory.self, from: complete)
+        XCTAssertEqual(migrated.practiceTransition?.proposal?.id, "legacy")
+        XCTAssertEqual(migrated.practiceTransition?.proposal?.basis, "用户确认的需要")
+        XCTAssertEqual(migrated.practiceTransition?.proposal?.status, .pendingConfirmation)
     }
 
     func testOpenQuestionMetadataIsCompletedWithoutRejectingTheTurn() throws {
@@ -1529,7 +1441,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    func testTypedConfirmationIntentRepairsMissingPromptTarget() throws {
+    func testPracticeConfirmationMetadataIsNotSilentlyInvented() throws {
         let controller = ReflectionProtocolController()
         var session = protocolSession(stage: .narrativeConfirmation)
         session.semanticMemory.finalNarrative = "已经等待确认的叙事"
@@ -1541,7 +1453,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             requestedStage: .optionalAction,
             localAction: .none,
             memoryUpdate: .init(
-                practiceOptions: protocolPracticeOptions()
+                practiceTransition: practiceTransition(
+                    id: "practice-normalized",
+                    narrativeReferenceID: "narrative-1"
+                )
             ),
             resolvedConfirmation: .init(
                 target: .finalNarrative,
@@ -1559,21 +1474,16 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             replyGuidance: "提出一个可修改或拒绝的小实践"
         )
 
-        let validated = try controller.validate(plan, for: session)
-
-        XCTAssertEqual(validated.nextPrompt?.target, .practice)
-        XCTAssertNil(validated.nextPrompt?.purpose)
-        XCTAssertEqual(
-            controller.nonBlockingWarnings(
-                originalPlan: plan,
-                validatedPlan: validated,
-                for: session
-            ),
-            [.normalizedNextPromptMetadata]
-        )
+        XCTAssertThrowsError(try controller.validate(plan, for: session)) { error in
+            guard case .incompletePracticeTransition(let requirements) =
+                    error as? ReflectionProtocolViolation else {
+                return XCTFail("Expected incompletePracticeTransition")
+            }
+            XCTAssertTrue(requirements.contains(.confirmationPrompt))
+        }
     }
 
-    func testNoActionRequiresTypedEvidenceBoundedReason() throws {
+    func testSuggestPracticeCannotUseNoActionInsteadOfAProposal() throws {
         let controller = ReflectionProtocolController()
         var session = protocolSession(stage: .narrativeConfirmation)
         session.semanticMemory.finalNarrative = "已经确认前等待处理的叙事"
@@ -1582,40 +1492,27 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             referenceID: "narrative-1"
         )
 
+        let noAction = TurnPracticeTransition(
+            transactionID: "practice-1",
+            narrativeReferenceID: "narrative-1",
+            proposal: nil,
+            noActionReason: .userNotReady
+        )
         let unsupported = LLMTurnResponsePlan(
             requestedStage: .optionalAction,
             localAction: .none,
-            memoryUpdate: .init(practiceKind: .noAction),
+            memoryUpdate: .init(practiceTransition: noAction),
             resolvedConfirmation: .init(
                 target: .finalNarrative,
                 decision: .accepted,
                 referenceID: "narrative-1"
             ),
-            nextPrompt: .confirmationRequest(target: .practice),
+            nextPrompt: .confirmationRequest(target: .practice, referenceID: "practice-1"),
             replyIntent: .suggestPractice,
             replyGuidance: "不提出任何实践"
         )
 
-        XCTAssertThrowsError(try controller.validate(unsupported, for: session)) {
-            XCTAssertEqual($0 as? ReflectionProtocolViolation, .missingNoActionReason)
-        }
-
-        let supported = LLMTurnResponsePlan(
-            requestedStage: .optionalAction,
-            localAction: .none,
-            memoryUpdate: .init(practiceKind: .noAction),
-            resolvedConfirmation: .init(
-                target: .finalNarrative,
-                decision: .accepted,
-                referenceID: "narrative-1"
-            ),
-            nextPrompt: .confirmationRequest(target: .practice),
-            replyIntent: .suggestPractice,
-            noActionReason: .userNotReady,
-            replyGuidance: "用户明确表示尚未准备好采取实践，提出可修改或拒绝的 noAction"
-        )
-
-        XCTAssertNoThrow(try controller.validate(supported, for: session))
+        XCTAssertThrowsError(try controller.validate(unsupported, for: session))
     }
 
     func testNewCompletionRequiresResolvedNarrativeOrPracticeGate() throws {
@@ -1643,6 +1540,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
 
         var practice = protocolSession(stage: .optionalAction)
+        practice.semanticMemory.practiceTransition = practiceTransition(id: "practice-1")
         practice.semanticMemory.nextPrompt = .confirmationRequest(
             target: .practice,
             referenceID: "practice-1"
@@ -1664,10 +1562,16 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             try controller.validate(acceptedWithoutStoredPractice, for: practice)
         )
 
+        let declinedTransition = TurnPracticeTransition(
+            transactionID: "practice-1",
+            narrativeReferenceID: nil,
+            proposal: nil,
+            noActionReason: .userDeclined
+        )
         let declined = LLMTurnResponsePlan(
             requestedStage: .complete,
             localAction: .init(kind: .completeSession),
-            memoryUpdate: .init(),
+            memoryUpdate: .init(practiceTransition: declinedTransition),
             resolvedConfirmation: .init(
                 target: .practice,
                 decision: .declined,
@@ -1967,19 +1871,27 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     func testCompletionIntentCanonicalizesTheSwiftOwnedCompletionAction() throws {
         var session = protocolSession(stage: .optionalAction)
         session.condition = .directLLM
+        let pending = practiceTransition(id: "practice-completion")
+        session.semanticMemory.practiceTransition = pending
         session.semanticMemory.nextPrompt = .confirmationRequest(
             target: .practice,
             referenceID: "practice-completion"
         )
-        session.semanticMemory.selectedPractice = "一个已经确认的小实践"
+        var confirmed = pending
+        confirmed.proposal = TurnPracticeProposal(
+            id: "practice-completion",
+            kind: pending.proposal!.kind,
+            content: pending.proposal!.content,
+            basis: pending.proposal!.basis,
+            status: .confirmed,
+            source: .assistantProposed
+        )
 
         let normalized = try controller.validate(
             LLMTurnResponsePlan(
                 requestedStage: .optionalAction,
                 localAction: .none,
-                memoryUpdate: .init(
-                    selectedPractice: "一个已经确认的小实践"
-                ),
+                memoryUpdate: .init(practiceTransition: confirmed),
                 resolvedConfirmation: .init(
                     target: .practice,
                     decision: .accepted,
@@ -2013,12 +1925,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     }
 
     func testCurrentTurnPromptsUseImmutableServerRegistryVersion() {
-        XCTAssertEqual(ServerTurnPrompt.version, "turn-v4-server-v36")
-        XCTAssertEqual(ServerTurnPrompt.version(for: 2), "turn-v4-server-v36")
-        XCTAssertEqual(ServerTurnPrompt.version(for: 3), "turn-v4-server-v36")
+        XCTAssertEqual(ServerTurnPrompt.version, "turn-v4-server-v37")
+        XCTAssertEqual(ServerTurnPrompt.version(for: 2), "turn-v4-server-v37")
+        XCTAssertEqual(ServerTurnPrompt.version(for: 3), "turn-v4-server-v37")
         XCTAssertEqual(
             ServerTurnPrompt.version(for: ReflectionSession.currentProtocolVersion),
-            "turn-v4-server-v36"
+            "turn-v4-server-v37"
         )
         XCTAssertEqual(ServerTurnPrompt.Task.planner.rawValue, "planner")
         XCTAssertEqual(ServerTurnPrompt.Task.planCritic.rawValue, "plan_critic")
@@ -2785,17 +2697,58 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    private func protocolPracticeOptions() -> [TurnPracticeOption] {
-        [
-            .init(
-                id: "care-1",
-                kind: .care,
-                title: "先安排一个有边界的停顿",
-                instruction: "今晚留出十分钟，只照顾当下的疲惫，时间到了就停止。",
-                rationale: "这回应了已经确认的消耗，同时不会要求立即解决全部问题。",
-                basis: "最终叙事已经确认当前消耗需要一个有边界的照顾动作。"
+    private func practiceTransition(
+        id: String,
+        kind: TurnPracticeKind = .care,
+        content: String = "今晚留出十分钟，只照顾当下的疲惫，时间到了就停止。",
+        basis: String = "最终叙事已经确认当前消耗需要一个有边界的照顾动作。",
+        status: TurnPracticeProposalStatus = .pendingConfirmation,
+        source: TurnPracticeProposalSource = .assistantProposed,
+        narrativeReferenceID: String? = nil
+    ) -> TurnPracticeTransition {
+        TurnPracticeTransition(
+            transactionID: id,
+            narrativeReferenceID: narrativeReferenceID,
+            proposal: TurnPracticeProposal(
+                id: id,
+                kind: kind,
+                content: content,
+                basis: basis,
+                status: status,
+                source: source
             ),
+            noActionReason: nil
+        )
+    }
+
+    func testCurrentOptionalActionRuntimeHasNoRetiredPracticeProtocolReaders() throws {
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let currentRuntimeFiles = [
+            "BeyondComfort/Services/ReflectionProtocolController.swift",
+            "BeyondComfort/Services/LLMTurnController.swift",
+            "BeyondComfort/ViewModels/ReflectionViewModel.swift",
+            "server/app/prompt_registry.py",
+            "server/app/providers.py",
         ]
+        let retiredSymbols = [
+            "practiceOptions", "practiceKind", "selectedPractice",
+            "TurnPracticeOption", "practiceBasis",
+            "missing_required_memory_practiceBasis",
+        ]
+        for relativePath in currentRuntimeFiles {
+            let source = try String(
+                contentsOf: repository.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for symbol in retiredSymbols {
+                XCTAssertFalse(
+                    source.contains(symbol),
+                    "Retired Optional Action symbol \(symbol) remains in \(relativePath)"
+                )
+            }
+        }
     }
 
     func testAuthorizedGroundedCardMappingOnlyPermitsNegotiatedReading() {
@@ -3741,9 +3694,12 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         let criticCalls = await planCritic.callCount()
 
         XCTAssertEqual(result.replyIntent, .suggestPractice)
-        XCTAssertEqual(result.memoryUpdate.practiceOptions?.count, 1)
-        XCTAssertNil(result.memoryUpdate.practiceKind)
-        XCTAssertNil(result.memoryUpdate.selectedPractice)
+        XCTAssertEqual(result.memoryUpdate.practiceTransition?.proposal?.kind, .change)
+        XCTAssertEqual(
+            result.memoryUpdate.practiceTransition?.proposal?.status,
+            .pendingConfirmation
+        )
+        XCTAssertEqual(result.nextPrompt?.referenceID, "practice-transition")
         XCTAssertEqual(plannerCalls, 2)
         XCTAssertEqual(criticCalls, 2)
     }
@@ -5487,6 +5443,320 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(counts.writes, 1)
     }
 
+    func testAcceptedNarrativeRepairsOnlyIncompletePracticeThenWritesOnce() async {
+        let narrativeID = "narrative-action-1"
+        let transactionID = "practice-action-1"
+        let invalidProposal = TurnPracticeProposal(
+            id: transactionID,
+            kind: .repair,
+            content: "给家人发一条说明和道歉的信息。",
+            basis: "",
+            status: .pendingConfirmation,
+            source: .assistantProposed
+        )
+        let repairedProposal = TurnPracticeProposal(
+            id: transactionID,
+            kind: .repair,
+            content: "给家人发一条说明和道歉的信息。",
+            basis: "用户明确说自己没有提前告知家人，并认为自己的做法伤到了家人。",
+            status: .pendingConfirmation,
+            source: .assistantProposed
+        )
+        func plan(
+            proposal: TurnPracticeProposal,
+            resolution: TurnResolvedConfirmation?
+        ) -> LLMTurnResponsePlan {
+            LLMTurnResponsePlan(
+                requestedStage: .optionalAction,
+                localAction: .none,
+                memoryUpdate: .init(
+                    practiceTransition: .init(
+                        transactionID: transactionID,
+                        narrativeReferenceID: narrativeID,
+                        proposal: proposal,
+                        noActionReason: nil
+                    )
+                ),
+                resolvedConfirmation: resolution,
+                nextPrompt: .confirmationRequest(
+                    target: .practice,
+                    referenceID: transactionID
+                ),
+                replyIntent: .suggestPractice,
+                replyGuidance: "提出一个有用户证据的小行动"
+            )
+        }
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    plan(
+                        proposal: invalidProposal,
+                        resolution: .init(
+                            target: .finalNarrative,
+                            decision: .accepted,
+                            referenceID: narrativeID
+                        )
+                    )
+                ),
+                .success(plan(proposal: repairedProposal, resolution: nil)),
+            ],
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .suggestPractice,
+                        reply: "可以先给家人发一条简短的信息，说明你没有提前告知并为此道歉。"
+                    )
+                ),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            sessionStore: SessionStore(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            ),
+            preparesContextDataAutomatically: false
+        )
+        preparePendingFinalNarrative(model, referenceID: narrativeID)
+
+        model.draft = "对"
+        model.send()
+        await waitUntilIdle(model)
+
+        let counts = await controller.callCounts()
+        XCTAssertEqual(counts.plans, 2)
+        XCTAssertEqual(counts.writes, 1, "Writer must see only the repaired legal proposal")
+        XCTAssertTrue(model.session.finalNarrativeConfirmed)
+        XCTAssertEqual(model.session.protocolStage, .optionalAction)
+        XCTAssertEqual(
+            model.session.semanticMemory.practiceTransition?.proposal,
+            repairedProposal
+        )
+        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.target, .practice)
+        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.referenceID, transactionID)
+        XCTAssertFalse(model.canRetry)
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("没有顺利接上")
+            }
+        )
+        XCTAssertEqual(
+            model.session.studyEvents.filter {
+                $0.action == "final_narrative_accepted_committed_before_practice"
+            }.count,
+            1
+        )
+        let requests = await controller.receivedRequests()
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertNil(requests[1].semanticMemory.nextPrompt)
+        XCTAssertEqual(
+            requests[1].semanticMemory.practiceTransition?.transactionID,
+            transactionID
+        )
+        XCTAssertEqual(requests[1].permissions.allowedStages, [.optionalAction])
+        XCTAssertEqual(requests[1].permissions.allowedReplyIntents, [.suggestPractice])
+    }
+
+    func testSecondIncompletePracticeEndsAsFormalNoActionWithoutThirdPlanner() async {
+        let narrativeID = "narrative-action-2"
+        let transactionID = "practice-action-2"
+        func incompletePlan(
+            resolution: TurnResolvedConfirmation?
+        ) -> LLMTurnResponsePlan {
+            let proposal = TurnPracticeProposal(
+                id: transactionID,
+                kind: .change,
+                content: "完成一个小动作。",
+                basis: "",
+                status: .pendingConfirmation,
+                source: .assistantProposed
+            )
+            return LLMTurnResponsePlan(
+                requestedStage: .optionalAction,
+                localAction: .none,
+                memoryUpdate: .init(
+                    practiceTransition: .init(
+                        transactionID: transactionID,
+                        narrativeReferenceID: narrativeID,
+                        proposal: proposal,
+                        noActionReason: nil
+                    )
+                ),
+                resolvedConfirmation: resolution,
+                nextPrompt: .confirmationRequest(
+                    target: .practice,
+                    referenceID: transactionID
+                ),
+                replyIntent: .suggestPractice,
+                replyGuidance: "提出一个小行动"
+            )
+        }
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    incompletePlan(
+                        resolution: .init(
+                            target: .finalNarrative,
+                            decision: .accepted,
+                            referenceID: narrativeID
+                        )
+                    )
+                ),
+                .success(incompletePlan(resolution: nil)),
+            ],
+            writings: []
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            sessionStore: SessionStore(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            ),
+            preparesContextDataAutomatically: false
+        )
+        preparePendingFinalNarrative(model, referenceID: narrativeID)
+
+        model.draft = "准确"
+        model.send()
+        await waitUntilIdle(model)
+
+        let counts = await controller.callCounts()
+        XCTAssertEqual(counts.plans, 2, "No generic third Planner may follow the targeted repair")
+        XCTAssertEqual(counts.writes, 0)
+        XCTAssertTrue(model.session.finalNarrativeConfirmed)
+        XCTAssertEqual(model.session.protocolStage, .complete)
+        XCTAssertNil(model.session.semanticMemory.practiceTransition?.proposal)
+        XCTAssertEqual(
+            model.session.semanticMemory.practiceTransition?.noActionReason,
+            .insufficientSupportedMaterial
+        )
+        XCTAssertFalse(model.canRetry)
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "practice_transition_repair_budget_exhausted_no_action"
+            }
+        )
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("没有顺利接上")
+            }
+        )
+    }
+
+    func testRestartedAwaitingPracticeReusesTransactionWithoutReconfirmingNarrative() async throws {
+        let narrativeID = "narrative-restart"
+        let transactionID = "practice-restart"
+        var persisted = ReflectionSession()
+        persisted.protocolVersion = ReflectionSession.currentProtocolVersion
+        persisted.condition = .cardMediated
+        persisted.protocolStage = .optionalAction
+        persisted.stage = .attributionReflection
+        persisted.workflowPhase = .optionalAction
+        persisted.finalNarrativeConfirmed = true
+        persisted.semanticMemory.finalNarrative = "已经确认的最终叙事"
+        persisted.semanticMemory.practiceTransition = .init(
+            transactionID: transactionID,
+            narrativeReferenceID: narrativeID,
+            proposal: nil,
+            noActionReason: nil
+        )
+        persisted.semanticMemory.nextPrompt = nil
+        persisted.messages = [
+            .init(
+                role: .assistant,
+                content: "这是已经确认的最终叙事。",
+                state: .attributionReflection
+            ),
+        ]
+        let restored = try JSONDecoder().decode(
+            ReflectionSession.self,
+            from: JSONEncoder().encode(persisted)
+        )
+        let proposal = TurnPracticeProposal(
+            id: transactionID,
+            kind: .change,
+            content: "下一次计划变化时先发一条消息。",
+            basis: "用户明确认为计划变化时应该提前商量。",
+            status: .pendingConfirmation,
+            source: .assistantProposed
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .optionalAction,
+            localAction: .none,
+            memoryUpdate: .init(
+                practiceTransition: .init(
+                    transactionID: transactionID,
+                    narrativeReferenceID: narrativeID,
+                    proposal: proposal,
+                    noActionReason: nil
+                )
+            ),
+            resolvedConfirmation: nil,
+            nextPrompt: .confirmationRequest(
+                target: .practice,
+                referenceID: transactionID
+            ),
+            replyIntent: .suggestPractice,
+            replyGuidance: "只完成重启前尚未建立的行动提议"
+        )
+        let controller = ScriptedReflectionTurnController(
+            plans: [.success(plan)],
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .suggestPractice,
+                        reply: "下一次安排有变化时，可以先发一条简短消息。"
+                    )
+                ),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            sessionStore: SessionStore(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            ),
+            preparesContextDataAutomatically: false
+        )
+        model.session = restored
+
+        model.draft = "准确"
+        model.send()
+        await waitUntilIdle(model)
+
+        let counts = await controller.callCounts()
+        XCTAssertEqual(counts.plans, 1)
+        XCTAssertEqual(counts.writes, 1)
+        XCTAssertTrue(model.session.finalNarrativeConfirmed)
+        XCTAssertEqual(model.session.protocolStage, .optionalAction)
+        XCTAssertEqual(
+            model.session.semanticMemory.practiceTransition?.transactionID,
+            transactionID
+        )
+        XCTAssertEqual(model.session.semanticMemory.practiceTransition?.proposal, proposal)
+        XCTAssertEqual(
+            model.session.studyEvents.filter {
+                $0.action.contains("committed_before_practice")
+            }.count,
+            0,
+            "A restart must not submit the final narrative confirmation again"
+        )
+        let requests = await controller.receivedRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertNotNil(request.semanticMemory.finalNarrative)
+        XCTAssertNil(request.semanticMemory.nextPrompt)
+        XCTAssertEqual(
+            request.semanticMemory.practiceTransition?.transactionID,
+            transactionID
+        )
+    }
+
     func testWriterQuestionPunctuationMismatchDoesNotFailOrReplanTheTurn() async {
         let reply = "听起来你既后悔那句话，也担心这段关系。现在最想先说哪一部分？还有别的吗？"
         let controller = ScriptedReflectionTurnController(
@@ -6165,6 +6435,30 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.session.messages = []
     }
 
+    private func preparePendingFinalNarrative(
+        _ model: ReflectionViewModel,
+        referenceID: String
+    ) {
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.condition = .cardMediated
+        model.session.protocolStage = .narrativeConfirmation
+        model.session.stage = .attributionReflection
+        model.session.workflowPhase = .reflectionNarrativeConfirmation
+        model.session.finalNarrativeConfirmed = false
+        model.session.semanticMemory.finalNarrative = "已经形成、正在等待用户确认的最终叙事"
+        model.session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .finalNarrative,
+            referenceID: referenceID
+        )
+        model.session.messages = [
+            .init(
+                role: .assistant,
+                content: "这是已经形成的最终叙事。",
+                state: .attributionReflection
+            ),
+        ]
+    }
+
     private func waitUntilIdle(_ model: ReflectionViewModel) async {
         // `send()` schedules the response task; give the main actor one turn to enter it before
         // treating an initially-false `isTyping` value as completion.
@@ -6412,32 +6706,37 @@ private actor RevisingTurnPlanner: LLMTurnPlanning {
             )
         }
         if request.protocolStage == .narrativeConfirmation {
-            let care = TurnPracticeOption(
-                id: "care-1",
-                kind: .care,
-                title: "先安排恢复",
-                instruction: "今晚留出十分钟照顾已经确认的疲惫。",
-                rationale: "这回应了当前的消耗。"
+            let proposal = TurnPracticeProposal(
+                id: "practice-transition",
+                kind: calls == 1 ? .care : .change,
+                content: calls == 1
+                    ? "今晚留出十分钟照顾已经确认的疲惫。"
+                    : "下一次只记录一个事实和一个可以检查的部分。",
+                basis: calls == 1
+                    ? "用户确认了当前消耗。"
+                    : "用户确认了一个需要改变的可控行为。",
+                status: .pendingConfirmation,
+                source: .assistantProposed
             )
-            let change = TurnPracticeOption(
-                id: "change-1",
-                kind: .change,
-                title: "检查一个可控部分",
-                instruction: "下一次只记录一个事实和一个可以检查的部分。",
-                rationale: "这回应了已经确认的可控行为。"
+            let transition = TurnPracticeTransition(
+                transactionID: "practice-transition",
+                narrativeReferenceID: "narrative-practice-options",
+                proposal: proposal,
+                noActionReason: nil
             )
             return LLMTurnResponsePlan(
                 requestedStage: .optionalAction,
                 localAction: .none,
-                memoryUpdate: .init(
-                    practiceOptions: calls == 1 ? [care] : [change]
-                ),
+                memoryUpdate: .init(practiceTransition: transition),
                 resolvedConfirmation: .init(
                     target: .finalNarrative,
                     decision: .accepted,
                     referenceID: "narrative-practice-options"
                 ),
-                nextPrompt: .confirmationRequest(target: .practice),
+                nextPrompt: .confirmationRequest(
+                    target: .practice,
+                    referenceID: "practice-transition"
+                ),
                 replyIntent: .suggestPractice,
                 replyGuidance: calls == 1
                     ? "给出一个较弱的候选"

@@ -1207,7 +1207,7 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
                 '"pendingCardRealityConnection":null,"cardConnectionOutcome":null,'
                 '"cardNegotiatedMeaning":null,'
                 '"fierceUnderstanding":null,"finalNarrative":null,'
-                '"practiceOptions":null,"selectedPractice":null},'
+                '"practiceTransition":null},'
                 '"replyIntent":"exploreContext",'
                 '"replyGuidance":"continue"}'
             ),
@@ -1266,7 +1266,10 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("practiceTransition must be null or one object", repair_system)
         self.assertIn("non-empty id, content, and basis", repair_system)
         self.assertIn("requestedStage=optionalAction", repair_system)
-        self.assertIn("referenceID exactly equals proposal.id", repair_system)
+        self.assertIn(
+            "transactionID, proposal.id, and its referenceID must be identical",
+            repair_system,
+        )
         self.assertIn("formal noAction transition", repair_system)
         self.assertNotIn('"practiceOptions":', repair_system)
         self.assertNotIn('"practiceKind":', repair_system)

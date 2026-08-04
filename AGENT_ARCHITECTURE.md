@@ -101,8 +101,9 @@ Tender 理解确认后，模型先自然邀请，用户明确同意后才可申�
 - `protect`：需要保护需要、边界、安全或责任范围；
 - `change`：用户已经识别出一个具体、可改变的行为或模式。
 
-建议必须来自已确认的叙事，允许用户缩小、改写或拒绝。只有用户接受或改写后才写入
-`selectedPractice`；没有足够依据或用户不想行动时，`no-action` 仍是完整结果。
+建议必须来自已确认的叙事，允许用户缩小、改写或拒绝。只有用户接受或改写后，唯一的
+canonical `practiceTransition.proposal` 才标记为 `confirmed`；没有足够依据或用户不想行动时，
+同一个 transition 以 typed `noActionReason` 完成。
 
 ## 失败处理
 

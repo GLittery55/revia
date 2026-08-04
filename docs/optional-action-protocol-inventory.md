@@ -42,7 +42,7 @@ This inventory records the practice protocol before consolidation. Classificatio
 | option-count, duplicate-ID and noAction-option checks | C/G | Several checks around the retired array. Replace with one proposal validator. |
 | basis non-empty check | A/E | Correct current requirement, but currently separate from stage/intent/prompt validation. Centralize it. |
 | stage/intent transition table | A | Retain and make subordinate to the atomic practice transition validator. |
-| `confirmationTargetEstablished(.suggestPractice)` | A | Retain only as deterministic normalization to the proposal ID. |
+| `confirmationTargetEstablished(.suggestPractice)` | A | Retain only as typed intent classification; the canonical validator rejects missing or mismatched proposal IDs instead of inventing them. |
 | accepted instruction-to-kind lookup | C/E/G | Reads the retired option catalogue. Delete. |
 | selected instruction equality check | C/E/G | Second selection truth source. Delete. |
 | `missingPracticeOptions` / `missingPracticeKind` warnings | C | Old soft-admission behavior; delete. |

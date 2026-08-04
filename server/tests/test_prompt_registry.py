@@ -362,7 +362,7 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("userWithdrewPreviousAnswer", prompt.system)
         self.assertIn("newContradictionDetected", prompt.system)
 
-    def test_v36_plan_critic_audits_disclosure_and_bridge_semantics(self) -> None:
+    def test_v37_plan_critic_audits_disclosure_and_bridge_semantics(self) -> None:
         critic = build_turn_messages(
             item(
                 "plan_critic",
@@ -817,6 +817,32 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("The system proposes it", planner.system)
         self.assertIn("Never provide a menu", planner.system)
 
+    def test_optional_action_transition_contract_is_atomic_across_roles(self) -> None:
+        request = request_payload()
+        request["protocolStage"] = "narrativeConfirmation"
+        planner = build_turn_messages(item("planner", {"request": request}))
+        critic = build_turn_messages(
+            item("plan_critic", {"request": request, "plan": plan()})
+        )
+
+        self.assertIn("one complete practiceTransition", planner.system)
+        self.assertIn(
+            "transactionID, proposal.id, and the practice confirmation referenceID must be identical",
+            planner.system,
+        )
+        self.assertIn("non-empty id/content/user-evidence basis", critic.system)
+        self.assertIn(
+            "transactionID, proposal.id, and confirmation referenceID must\nbe identical",
+            critic.system,
+        )
+        for retired in (
+            "practiceOptions",
+            "practiceKind",
+            "selectedPractice",
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, planner.system)
+
     def test_post_card_candid_reflection_distinguishes_event_parts_without_replaying_disclosure(
         self,
     ) -> None:
@@ -1010,6 +1036,7 @@ class PromptRegistryTests(unittest.TestCase):
 
     def test_old_and_unknown_versions_are_rejected(self) -> None:
         for version in (
+            "turn-v4-server-v36",
             "turn-v4-server-v32",
             "turn-v4-server-v30",
             "turn-v4-server-v28",
