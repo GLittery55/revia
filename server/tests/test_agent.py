@@ -1263,14 +1263,18 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"cardRealityMapping":null', repair_system)
         self.assertNotIn('"cardRealityMappingSource":null', repair_system)
         self.assertIn("cardRealityConnection, cardMapping", repair_system)
-        self.assertIn("practiceKind must be null or exactly", repair_system)
-        self.assertIn("practiceOptions must be null or an array", repair_system)
-        self.assertIn("exactly one object", repair_system)
-        self.assertIn("noActionReason must be null unless", repair_system)
+        self.assertIn("practiceTransition must be null or one object", repair_system)
+        self.assertIn("non-empty id, content, and basis", repair_system)
+        self.assertIn("requestedStage=optionalAction", repair_system)
+        self.assertIn("referenceID exactly equals proposal.id", repair_system)
+        self.assertIn("formal noAction transition", repair_system)
+        self.assertNotIn('"practiceOptions":', repair_system)
+        self.assertNotIn('"practiceKind":', repair_system)
+        self.assertNotIn('"selectedPractice":', repair_system)
         self.assertIn('"resolvedConfirmation":null', repair_system)
         self.assertIn('"nextPrompt":{"kind":"none"', repair_system)
         self.assertIn(
-            '"replyIntent":"","noActionReason":null,"replyGuidance":""',
+            '"replyIntent":"","replyGuidance":""',
             repair_system,
         )
 

@@ -1576,8 +1576,6 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
     /// Prompt established by the new visible reply. Missing only for legacy responses.
     let nextPrompt: TurnNextPrompt?
     let replyIntent: TurnReplyIntent
-    /// Required only when a proposed practice uses `practiceKind = noAction`.
-    let noActionReason: TurnNoActionReason?
     /// Natural-language details grounded in the latest turn. This can describe what to acknowledge
     /// but cannot change the typed intent or authorize a workflow function.
     let replyGuidance: String
@@ -1592,7 +1590,6 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
         resolvedConfirmation: TurnResolvedConfirmation? = nil,
         nextPrompt: TurnNextPrompt? = nil,
         replyIntent: TurnReplyIntent,
-        noActionReason: TurnNoActionReason? = nil,
         replyGuidance: String,
         cardReferenceSelection: CardReferenceSelection? = nil
     ) {
@@ -1602,14 +1599,13 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
         self.resolvedConfirmation = resolvedConfirmation
         self.nextPrompt = nextPrompt
         self.replyIntent = replyIntent
-        self.noActionReason = noActionReason
         self.replyGuidance = replyGuidance
         self.cardReferenceSelection = cardReferenceSelection
     }
 
     private enum CodingKeys: String, CodingKey {
         case requestedStage, localAction, memoryUpdate, resolvedConfirmation, nextPrompt
-        case replyIntent, noActionReason, replyGuidance, cardReferenceSelection
+        case replyIntent, replyGuidance, cardReferenceSelection
     }
 
     init(from decoder: Decoder) throws {
@@ -1623,7 +1619,6 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
         )
         nextPrompt = try box.decodeIfPresent(TurnNextPrompt.self, forKey: .nextPrompt)
         replyIntent = try box.decode(TurnReplyIntent.self, forKey: .replyIntent)
-        noActionReason = try box.decodeIfPresent(TurnNoActionReason.self, forKey: .noActionReason)
         // Silent local transactions never call the Writer. Treat an omitted private writing hint
         // as empty and let the protocol validator require it only for genuinely visible turns.
         replyGuidance =
@@ -1649,7 +1644,6 @@ struct LLMTurnControllerResponse: Codable, Equatable, Sendable {
     let resolvedConfirmation: TurnResolvedConfirmation?
     let nextPrompt: TurnNextPrompt?
     let replyIntent: TurnReplyIntent
-    let noActionReason: TurnNoActionReason?
     let reply: String
 
     init(
@@ -1659,7 +1653,6 @@ struct LLMTurnControllerResponse: Codable, Equatable, Sendable {
         resolvedConfirmation: TurnResolvedConfirmation? = nil,
         nextPrompt: TurnNextPrompt? = nil,
         replyIntent: TurnReplyIntent,
-        noActionReason: TurnNoActionReason? = nil,
         reply: String
     ) {
         self.requestedStage = requestedStage
@@ -1668,7 +1661,6 @@ struct LLMTurnControllerResponse: Codable, Equatable, Sendable {
         self.resolvedConfirmation = resolvedConfirmation
         self.nextPrompt = nextPrompt
         self.replyIntent = replyIntent
-        self.noActionReason = noActionReason
         self.reply = reply
     }
 }

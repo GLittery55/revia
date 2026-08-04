@@ -512,7 +512,6 @@ struct ReflectionProtocolController: Sendable {
                 resolvedConfirmation: response.resolvedConfirmation,
                 nextPrompt: response.nextPrompt,
                 replyIntent: response.replyIntent,
-                noActionReason: response.noActionReason,
                 replyGuidance: "validated response"
             ),
             for: session
@@ -524,7 +523,6 @@ struct ReflectionProtocolController: Sendable {
             resolvedConfirmation: validatedPlan.resolvedConfirmation,
             nextPrompt: validatedPlan.nextPrompt,
             replyIntent: validatedPlan.replyIntent,
-            noActionReason: validatedPlan.noActionReason,
             reply: response.reply
         )
     }
@@ -905,7 +903,6 @@ struct ReflectionProtocolController: Sendable {
             resolvedConfirmation: resolvedConfirmation,
             nextPrompt: nextPrompt,
             replyIntent: replyIntent,
-            noActionReason: memoryUpdate.practiceTransition?.noActionReason,
             replyGuidance: protocolPlan.replyGuidance,
             cardReferenceSelection: protocolPlan.cardReferenceSelection
         )
@@ -942,7 +939,6 @@ struct ReflectionProtocolController: Sendable {
             resolvedConfirmation: plan.resolvedConfirmation,
             nextPrompt: TurnNextPrompt.none,
             replyIntent: .authorizeCardGuidance,
-            noActionReason: nil,
             replyGuidance: "Authorize use of the user-grounded image-to-reality relation, then generate one visible, correctable reading in a fresh turn."
         )
     }

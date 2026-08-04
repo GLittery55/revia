@@ -375,7 +375,9 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
     private static func invalidNoActionReason(in content: String) -> String? {
         guard let data = content.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = root["noActionReason"] as? String,
+              let memory = root["memoryUpdate"] as? [String: Any],
+              let transition = memory["practiceTransition"] as? [String: Any],
+              let raw = transition["noActionReason"] as? String,
               !Set(TurnNoActionReason.allCases.map(\.rawValue)).contains(raw) else {
             return nil
         }
@@ -419,7 +421,7 @@ struct LLMTurnCriticResponse: Codable, Equatable, Sendable {
 enum ServerTurnPrompt {
     /// Immutable server registry key. A prompt update must introduce a new value rather than
     /// changing the meaning of this version for an in-progress research session.
-    static let version = "turn-v4-server-v36"
+    static let version = "turn-v4-server-v37"
 
     static func version(for _: Int) -> String {
         version
@@ -867,7 +869,6 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                 resolvedConfirmation: nil,
                 nextPrompt: plan.nextPrompt,
                 replyIntent: plan.replyIntent,
-                noActionReason: plan.noActionReason,
                 replyGuidance: plan.replyGuidance,
                 cardReferenceSelection: plan.cardReferenceSelection
             )
@@ -890,7 +891,6 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                 resolvedConfirmation: normalized.resolvedConfirmation,
                 nextPrompt: normalized.nextPrompt,
                 replyIntent: normalized.replyIntent,
-                noActionReason: normalized.noActionReason,
                 replyGuidance: normalized.replyGuidance,
                 cardReferenceSelection: normalized.cardReferenceSelection
             )
@@ -925,7 +925,6 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             resolvedConfirmation: normalized.resolvedConfirmation,
             nextPrompt: TurnNextPrompt.none,
             replyIntent: .authorizeCardGuidance,
-            noActionReason: nil,
             replyGuidance: "Commit the typed user-authored image-to-life mapping and silently authorize one candidate reading."
         )
     }
@@ -944,7 +943,6 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             resolvedConfirmation: plan.resolvedConfirmation,
             nextPrompt: plan.nextPrompt,
             replyIntent: plan.replyIntent,
-            noActionReason: plan.noActionReason,
             replyGuidance: plan.replyGuidance,
             cardReferenceSelection: nil
         )

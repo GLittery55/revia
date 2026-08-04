@@ -829,7 +829,7 @@ class ProviderGateway:
                 "content": (
                     "You are a strict JSON formatter for an LLM TurnPlanner. Return exactly one "
                     "JSON object with requestedStage, localAction, memoryUpdate, "
-                    "resolvedConfirmation, nextPrompt, replyIntent, noActionReason, and "
+                    "resolvedConfirmation, nextPrompt, replyIntent, and "
                     "replyGuidance. Preserve "
                     "DRAFT meaning. requestedStage and localAction must use only values explicitly "
                     "listed under CURRENT PERMISSIONS in ORIGINAL_REQUEST. Use null for memory fields "
@@ -850,20 +850,21 @@ class ProviderGateway:
                     '"cardInterpretiveTension":null,'
                     '"cardNegotiatedMeaning":null,"candidUnderstanding":null,'
                     '"fierceUnderstanding":null,"finalNarrative":null,'
-                    '"practiceOptions":null,"practiceKind":null,"selectedPractice":null},'
+                    '"practiceTransition":null},'
                     '"resolvedConfirmation":null,'
                     '"nextPrompt":{"kind":"none","purpose":null,"focus":null,'
                     '"disclosurePurpose":null,"disclosureTarget":null,'
                     '"disclosureReopenReason":null,"target":null,"referenceID":null},'
-                    '"replyIntent":"",'
-                    '"noActionReason":null,"replyGuidance":""}. '
+                    '"replyIntent":"","replyGuidance":""}. '
                     "resolvedConfirmation is null unless the latest user reply resolves the exact "
                     "confirmationRequest stored in semanticMemory.nextPrompt; then it must copy "
                     "that target and referenceID and use a legal decision. nextPrompt must always "
                     "be one tagged shape: none with all optional fields null; openQuestion with "
                     "non-empty purpose and focus and the contextual disclosureTarget required by "
-                    "ORIGINAL_REQUEST; or confirmationRequest with target only. "
-                    "The new nextPrompt.referenceID is always null because Swift assigns it. "
+                    "ORIGINAL_REQUEST; or confirmationRequest with target only. A new "
+                    "nextPrompt.referenceID is normally null because Swift assigns it; the sole "
+                    "exception is a practice proposal, whose referenceID must exactly equal "
+                    "proposal.id. "
                     "trackingAssessments must be null or an array of objects whose relevance is "
                     "exactly related, partlyRelated, unrelated, or uncertain. Every assessment "
                     "cueID must be copied exactly and unchanged from presentedTrackingCues in "
@@ -886,11 +887,16 @@ class ProviderGateway:
                     "candidateRealityMapping and a matching cardRealityConnection confirmation. "
                     "A confirmation target must be exactly trackingRelationship, cardConsent, "
                     "cardRealityConnection, cardMapping, finalNarrative, or practice. "
-                    "practiceOptions must be null or an array containing exactly one object with "
-                    "id, kind, title, instruction, rationale, and basis; option kind must be exactly "
-                    "care, repair, protect, or change. practiceKind must be null or exactly care, "
-                    "repair, protect, change, or noAction. noActionReason must be null unless "
-                    "practiceKind is noAction. Non-null arrays update "
+                    "practiceTransition must be null or one object with transactionID, optional "
+                    "narrativeReferenceID, proposal, and noActionReason. An active proposal must "
+                    "contain non-empty id, content, and basis; kind exactly care, repair, protect, "
+                    "or change; status pendingConfirmation or confirmed; and source "
+                    "assistantProposed or userRevised. suggestPractice/revisePractice requires "
+                    "requestedStage=optionalAction, pendingConfirmation, noActionReason=null, and "
+                    "a practice confirmation whose referenceID exactly equals proposal.id. A "
+                    "formal noAction transition has proposal=null and reason exactly userDeclined, "
+                    "userNotReady, or insufficientSupportedMaterial. Never emit retired "
+                    "practiceOptions, practiceKind, or selectedPractice keys. Non-null arrays update "
                     "typed entries, while [] makes no "
                     "additions and does not clear stored entries."
                 ),

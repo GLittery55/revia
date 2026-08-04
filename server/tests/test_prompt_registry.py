@@ -333,10 +333,10 @@ class PromptRegistryTests(unittest.TestCase):
         self.assertIn("preserve conduct and impact", writer.system)
         self.assertIn("only question is the optional card-consent question", writer.system)
 
-    def test_v36_disclosure_contract_uses_only_current_core_as_gate(self) -> None:
+    def test_v37_disclosure_contract_uses_only_current_core_as_gate(self) -> None:
         prompt = build_turn_messages(item("planner", {"request": request_payload()}))
 
-        self.assertEqual(TURN_PROMPT_VERSION, "turn-v4-server-v36")
+        self.assertEqual(TURN_PROMPT_VERSION, "turn-v4-server-v37")
         for field in (
             "receivedDisclosureQuestionPurposes",
             "eventDisclosureOutcome",

@@ -2003,7 +2003,6 @@ final class ReflectionViewModel: ObservableObject {
                     resolvedConfirmation: validatedPlan.resolvedConfirmation,
                     nextPrompt: validatedPlan.nextPrompt,
                     replyIntent: validatedPlan.replyIntent,
-                    noActionReason: validatedPlan.noActionReason,
                     reply: "local_card_mapping_resolution"
                 )
                 return .success(try protocolController.validate(response, for: session))
@@ -2040,7 +2039,6 @@ final class ReflectionViewModel: ObservableObject {
                     resolvedConfirmation: validatedPlan.resolvedConfirmation,
                     nextPrompt: validatedPlan.nextPrompt,
                     replyIntent: validatedPlan.replyIntent,
-                    noActionReason: validatedPlan.noActionReason,
                     reply: acknowledgement
                 )
                 let response = try protocolController.validate(
@@ -2120,7 +2118,6 @@ final class ReflectionViewModel: ObservableObject {
                 resolvedConfirmation: validatedPlan.resolvedConfirmation,
                 nextPrompt: validatedPlan.nextPrompt,
                 replyIntent: validatedPlan.replyIntent,
-                noActionReason: validatedPlan.noActionReason,
                 reply: wording.reply
             )
             return try protocolController.validate(response, for: session)
@@ -3401,11 +3398,10 @@ final class ReflectionViewModel: ObservableObject {
                 "eventDisclosureOutcome": TurnEventDisclosureOutcome.allCases.map(\.rawValue),
                 "confirmation.target": TurnConfirmationTarget.allCases.map(\.rawValue),
                 "confirmation.decision": TurnConfirmationDecision.allCases.map(\.rawValue),
-                "practiceKind": TurnPracticeKind.allCases.map(\.rawValue),
-                "practiceOptions[].kind": TurnPracticeKind.allCases
+                "practiceTransition.proposal.kind": TurnPracticeKind.allCases
                     .filter { $0 != .noAction }
                     .map(\.rawValue),
-                "noActionReason": TurnNoActionReason.allCases.map(\.rawValue),
+                "practiceTransition.noActionReason": TurnNoActionReason.allCases.map(\.rawValue),
                 "tracking.relevance": TurnTrackingRelevance.allCases.map(\.rawValue),
                 "cardRealityConnection.source": TurnCardRealityMappingSource.allCases.map(\.rawValue),
                 "cardRealityConnection.status": TurnCardRealityConnectionStatus.allCases.map(\.rawValue),
@@ -3582,16 +3578,16 @@ final class ReflectionViewModel: ObservableObject {
                 if diagnostic.invalidPracticeKind != nil ||
                     diagnostic.keyPath.hasSuffix("practiceKind") {
                     return """
-                    practiceKind must be exactly care, repair, protect, change, or noAction. Keep \
-                    the current stage and do not translate or invent this enum.
+                    practiceTransition.proposal.kind must be exactly care, repair, protect, or \
+                    change. Keep the current stage and do not translate or invent this enum.
                     """
                 }
                 if diagnostic.invalidNoActionReason != nil ||
                     diagnostic.keyPath.hasSuffix("noActionReason") {
                     return """
-                    noActionReason must be null unless practiceKind is noAction. For noAction use \
-                    exactly userDeclined, userNotReady, or insufficientSupportedMaterial, and only \
-                    when the conversation supports that exception.
+                    practiceTransition.noActionReason must be null when a proposal exists. For a \
+                    noAction transition use exactly userDeclined, userNotReady, or \
+                    insufficientSupportedMaterial, and only when the conversation supports it.
                     """
                 }
                 return """
@@ -3646,10 +3642,11 @@ final class ReflectionViewModel: ObservableObject {
                 Repair only the complete Optional Action transition. The invalid transaction is \
                 missing or conflicts on: \(fields). Preserve the accepted finalNarrative \
                 resolution. Return requestedStage=optionalAction, replyIntent=suggestPractice or \
-                revisePractice as appropriate, exactly one complete grounded practice option, and \
-                a confirmationRequest nextPrompt targeting that same practice. For an active \
-                proposal its id, kind, instruction, rationale, title, and basis must all be \
-                non-empty. Do not return narrativeConfirmation, an openQuestion, or nextPrompt=none.
+                revisePractice as appropriate, exactly one complete grounded practiceTransition, \
+                and a confirmationRequest nextPrompt targeting that proposal's id. For an active \
+                proposal its id, kind, content, and basis must be non-empty, its status must be \
+                pendingConfirmation, and its source must be assistantProposed or userRevised. Do \
+                not return narrativeConfirmation, an openQuestion, or nextPrompt=none.
                 """
             case .emptyReply:
                 return "The prior reply was empty. Keep the current stage and regenerate one reply."
@@ -3671,23 +3668,23 @@ final class ReflectionViewModel: ObservableObject {
                 if session.protocolStage == .optionalAction,
                    session.semanticMemory.nextPrompt?.target == .practice {
                     return """
-                    The latest reply is handling the pending practice choice. If the person accepts \
-                    an existing option, copy that option's exact complete instruction into \
-                    memoryUpdate.selectedPractice, copy its exact kind into practiceKind, resolve \
-                    the current practice reference, and finish with requestedStage=complete, \
+                    The latest reply is handling the one pending practice proposal. Acceptance or \
+                    revision must update that canonical proposal to status=confirmed, preserve its \
+                    id for acceptance or use source=userRevised for a revision, resolve the current \
+                    practice reference, and finish with requestedStage=complete, \
                     replyIntent=completeConversation, localAction=completeSession, and \
-                    nextPrompt=none. A revised practice may use the person's complete revision. If \
-                    they ask to change the offer or remain unclear, stay in optionalAction with \
-                    revisePractice instead of completing.
+                    nextPrompt=none. Rejection uses one canonical noAction transition. If the \
+                    person remains unclear, stay in optionalAction with one replacement \
+                    pendingConfirmation proposal.
                     """
                 }
                 if session.protocolStage == .narrativeConfirmation {
                     return """
-                    For an active practice offer, keep practiceKind and selectedPractice null and \
-                    supply exactly one strongest complete practiceOption. Its kind must match what \
-                    the instruction actually does. Never add a secondary category. For noAction \
-                    use an empty practiceOptions array, \
-                    practiceKind=noAction, and the required typed noActionReason.
+                    Return one complete canonical practiceTransition. For an active offer, its one \
+                    proposal must contain id, kind, content, basis, pendingConfirmation status, \
+                    and assistantProposed source, and nextPrompt must confirm the same proposal id. \
+                    Never emit retired practiceOptions, practiceKind, or selectedPractice fields. \
+                    For noAction use proposal=null and one supported typed noActionReason.
                     """
                 }
                 if session.protocolStage == .cardReflection,
@@ -6644,7 +6641,6 @@ final class ReflectionViewModel: ObservableObject {
                 resolvedConfirmation: validatedPlan.resolvedConfirmation,
                 nextPrompt: validatedPlan.nextPrompt,
                 replyIntent: validatedPlan.replyIntent,
-                noActionReason: validatedPlan.noActionReason,
                 reply: "local_card_draw_authorization"
             )
             let validatedResponse = try protocolController.validate(response, for: session)
@@ -6737,7 +6733,6 @@ final class ReflectionViewModel: ObservableObject {
                 resolvedConfirmation: validatedPlan.resolvedConfirmation,
                 nextPrompt: validatedPlan.nextPrompt,
                 replyIntent: validatedPlan.replyIntent,
-                noActionReason: validatedPlan.noActionReason,
                 reply: "local_card_mapping_explicit_acceptance"
             )
             let validatedResponse = try protocolController.validate(response, for: session)

@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
-TURN_PROMPT_VERSION = "turn-v4-server-v36"
+TURN_PROMPT_VERSION = "turn-v4-server-v37"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -154,8 +154,10 @@ _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
         "another question would add little, move to the final narrative."
     ),
     "narrativeConfirmation": (
-        "Interpret the natural response to the integrated narrative, then use only the permitted "
-        "optional-action transition. Do not require an approval word or complete directly."
+        "Interpret the narrative response. On accepted/revised, preserve that resolution and emit "
+        "one complete practiceTransition with requestedStage=optionalAction, suggestPractice, a "
+        "grounded pending proposal, and practice confirmation of the same id. Never stay here or "
+        "use nextPrompt none/openQuestion."
     ),
     "optionalAction": (
         "Offer or revise one evidence-grounded practice. Complete only after the practice decision "
@@ -263,7 +265,7 @@ refusal and uncertainty. resolvedConfirmation concerns the stored confirmation; 
 new turn. Application events resolve nothing. Memory is a patch: null means unchanged; episode keys
 are only new/corrected; [] requires compatible replacement and never reopens present/mixed evidence.
 Apply your patch to stored memory before choosing nextPrompt. Add answered purposes/assessments;
-replace practiceOptions. Stay within permissions.
+replace the one canonical practiceTransition only as one complete object. Stay within permissions.
 
 The final narrative is a concise delta, not a workflow recap or another defense against the original
 self-criticism. Where evidence supports both, pair one experience or constraint that merits
@@ -289,10 +291,10 @@ Return exactly one JSON object and nothing else:
 "cardConnectionOutcome":null,
 "cardInterpretiveTension":null,
 "cardNegotiatedMeaning":null,"candidUnderstanding":null,"fierceUnderstanding":null,
-"finalNarrative":null,"practiceOptions":null,"practiceKind":null,"selectedPractice":null},
+"finalNarrative":null,"practiceTransition":null},
 "resolvedConfirmation":null,"nextPrompt":{"kind":"none","purpose":null,"focus":null,
 "disclosurePurpose":null,"disclosureTarget":null,"disclosureReopenReason":null,
-"target":null,"referenceID":null},"replyIntent":"","noActionReason":null,
+"target":null,"referenceID":null},"replyIntent":"",
 "replyGuidance":"","cardReferenceSelection":null}
 cardReferenceSelection may instead be {"relationIndex":0}; the index is zero-based under the closed
 reference contract. Never return relation text there.
@@ -305,6 +307,13 @@ shareCardGuidance; visible operations require a specific direction.
 Canonical/pending connections are complete or null; pending is not evidence.
 cardImageRelation/cardRealityMapping/cardRealityMappingSource are forbidden even when null.
 Post-guidance, omit cardRealityConnection; confirmed value is immutable.
+practiceTransition is null or exactly
+{"transactionID":"","narrativeReferenceID":null,"proposal":{"id":"","kind":"care|repair|protect|change",
+"content":"","basis":"","status":"pendingConfirmation|confirmed",
+"source":"assistantProposed|userRevised"},"noActionReason":null}.
+Awaiting proposal uses both nullable members null; noAction uses proposal=null and one typed reason.
+suggestPractice/revisePractice requires optionalAction, a complete pending proposal, and practice
+confirmation whose referenceID equals proposal.id. Retired practice arrays/scalars are forbidden.
 """.strip()
 
 
@@ -532,6 +541,12 @@ action design, or bypasses the event-internal boundary between what merits under
 needs ownership or change; or a final narrative replays the workflow or resolves stated uncertainty. Do not
 require a fixed number of turns or fields.
 
+For suggestPractice/revisePractice require one atomic transition: optionalAction; one complete
+pending proposal with non-empty id/content/user-evidence basis and a legal kind; noActionReason
+null; plus practice confirmation of that same id. Reject retired fields, generic/missing basis,
+multiple proposals, another stage, nextPrompt none/openQuestion, or target mismatch. Preserve an
+accepted/revised finalNarrative resolution. noAction requires proposal=null and a supported reason.
+
 Allowed reasonCodes:
 duplicate_question_function, overfilled_focus, latest_answer_ignored,
 episode_structure_incomplete, behavioral_fact_erased, premature_tender_bridge,
@@ -552,7 +567,7 @@ image_relation_not_compared_with_focal_episode,
 unsupported_card_reference_selection, card_reference_permission_invalid,
 premature_card_conclusion, candid_delta_repetition, accountability_correction_ignored,
 premature_action_design, narrative_delta_mismatch, uncertainty_overridden, practice_offer_required,
-practice_choice_set_invalid, practice_evidence_mismatch, unsupported_no_action,
+incomplete_practice_transition, practice_evidence_mismatch, unsupported_no_action,
 completion_contract_invalid.
 The additional connection reasonCodes are exactly: user_connection_not_committed,
 incomplete_connection_patch, card_mapping_not_used, connection_source_without_content,
