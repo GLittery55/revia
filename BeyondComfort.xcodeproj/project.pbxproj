@@ -6,9 +6,20 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		BC100008300633340012E77F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3719BB8C300633340012E77F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3719BB93300633340012E77F;
+			remoteInfo = BeyondComfort;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		3719BB94300633340012E77F /* BeyondComfort.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BeyondComfort.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC000001300633340012E77F /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = SOURCE_ROOT; };
+		BC100001300633340012E77F /* BeyondComfortTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BeyondComfortTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -30,10 +41,22 @@
 			path = BeyondComfort;
 			sourceTree = "<group>";
 		};
+		BC100002300633340012E77F /* BeyondComfortTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BeyondComfortTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		3719BB91300633340012E77F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC100004300633340012E77F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -48,6 +71,7 @@
 			children = (
 				BC000001300633340012E77F /* Config.xcconfig */,
 				3719BB96300633340012E77F /* BeyondComfort */,
+				BC100002300633340012E77F /* BeyondComfortTests */,
 				3719BB95300633340012E77F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -56,6 +80,7 @@
 			isa = PBXGroup;
 			children = (
 				3719BB94300633340012E77F /* BeyondComfort.app */,
+				BC100001300633340012E77F /* BeyondComfortTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -85,6 +110,29 @@
 			productReference = 3719BB94300633340012E77F /* BeyondComfort.app */;
 			productType = "com.apple.product-type.application";
 		};
+		BC100007300633340012E77F /* BeyondComfortTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BC10000C300633340012E77F /* Build configuration list for PBXNativeTarget "BeyondComfortTests" */;
+			buildPhases = (
+				BC100003300633340012E77F /* Sources */,
+				BC100004300633340012E77F /* Frameworks */,
+				BC100005300633340012E77F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BC100009300633340012E77F /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BC100002300633340012E77F /* BeyondComfortTests */,
+			);
+			name = BeyondComfortTests;
+			packageProductDependencies = (
+			);
+			productName = BeyondComfortTests;
+			productReference = BC100001300633340012E77F /* BeyondComfortTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -97,6 +145,10 @@
 				TargetAttributes = {
 					3719BB93300633340012E77F = {
 						CreatedOnToolsVersion = 26.6;
+					};
+					BC100007300633340012E77F = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = 3719BB93300633340012E77F;
 					};
 				};
 			};
@@ -115,12 +167,20 @@
 			projectRoot = "";
 			targets = (
 				3719BB93300633340012E77F /* BeyondComfort */,
+				BC100007300633340012E77F /* BeyondComfortTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		3719BB92300633340012E77F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC100005300633340012E77F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -137,7 +197,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BC100003300633340012E77F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BC100009300633340012E77F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3719BB93300633340012E77F /* BeyondComfort */;
+			targetProxy = BC100008300633340012E77F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		3719BB9D300633350012E77F /* Debug */ = {
@@ -272,8 +347,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BeyondComfort/Info.plist;
-				INFOPLIST_KEY_DEEPSEEK_API_KEY = "$(DEEPSEEK_API_KEY)";
-				INFOPLIST_KEY_DEEPSEEK_MODEL = "$(DEEPSEEK_MODEL)";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "读取日程数量与时长，为反思提供负载线索；不会读取标题或内容。";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "读取睡眠、静息心率和 HRV，为反思提供状态线索。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -286,7 +359,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.wj.BeyondComfort;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wujie.beyondcomfort;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -299,6 +372,7 @@
 		};
 		3719BBA1300633350012E77F /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC000001300633340012E77F /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -309,8 +383,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BeyondComfort/Info.plist;
-				INFOPLIST_KEY_DEEPSEEK_API_KEY = "$(DEEPSEEK_API_KEY)";
-				INFOPLIST_KEY_DEEPSEEK_MODEL = "$(DEEPSEEK_MODEL)";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "读取日程数量与时长，为反思提供负载线索；不会读取标题或内容。";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "读取睡眠、静息心率和 HRV，为反思提供状态线索。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -323,7 +395,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.wj.BeyondComfort;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wujie.beyondcomfort;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -331,6 +403,40 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		BC10000A300633340012E77F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wj.BeyondComfortTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BeyondComfort.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BeyondComfort";
+			};
+			name = Debug;
+		};
+		BC10000B300633340012E77F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wj.BeyondComfortTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BeyondComfort.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BeyondComfort";
 			};
 			name = Release;
 		};
@@ -351,6 +457,15 @@
 			buildConfigurations = (
 				3719BBA0300633350012E77F /* Debug */,
 				3719BBA1300633350012E77F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BC10000C300633340012E77F /* Build configuration list for PBXNativeTarget "BeyondComfortTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC10000A300633340012E77F /* Debug */,
+				BC10000B300633340012E77F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

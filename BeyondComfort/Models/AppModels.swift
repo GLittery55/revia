@@ -168,8 +168,8 @@ enum TurnLocalActionKind: String, Codable, CaseIterable, Sendable {
     /// Requests the application-owned uniform random draw. The model cannot provide a card ID.
     case drawRandomCard
     /// After the person has described an image relationship and connected it with a real
-    /// relationship, authorizes the fixed local card guidance for a tentative, correctable
-    /// reading. The catalogue remains hidden from the UI.
+    /// relationship, authorizes use of that user-grounded relation for a tentative, correctable
+    /// reading. No catalogue meaning enters the prompt or UI.
     case shareCardGuidance
     case completeSession
 }
@@ -183,6 +183,264 @@ struct TurnLocalActionRequest: Codable, Equatable, Sendable {
 
 enum TurnTrackingRelevance: String, Codable, CaseIterable, Sendable {
     case related, partlyRelated, unrelated, uncertain
+}
+
+/// Whether the person has actually expressed a self-critical proposition. Keeping absence and
+/// uncertainty explicit prevents a reflection model from inventing self-criticism merely to move
+/// the study workflow forward.
+enum TurnSelfCriticismStatus: String, Codable, CaseIterable, Sendable {
+    case unresolved
+    case present
+    case absent
+    case uncertain
+}
+
+/// Planner-authored semantic readiness for the current Event Disclosure. Swift validates only
+/// its relationship to typed memory and capabilities; it never derives this value from Chinese.
+enum TurnEventDisclosureOutcome: String, Codable, CaseIterable, Sendable {
+    case needsConcreteEpisode
+    case needsBehaviorOrProcess
+    case needsReflectionFocus
+    case readyForTenderOrCard
+}
+
+/// The reflection object established before the optional card invitation. Keeping anticipated
+/// external evaluation separate from a user-authored global verdict prevents Tender from
+/// manufacturing a whole-person judgment.
+enum TurnReflectionFocusKind: String, Codable, CaseIterable, Sendable {
+    case explicitGlobalSelfJudgment
+    case specificSelfCriticism
+    case eventTension
+    case unclearFocus
+}
+
+/// The one pre-card grounding function selected from the typed reflection focus. This is not a
+/// new workflow stage and never creates a separate confirmation turn.
+enum TurnTenderGroundingKind: String, Codable, CaseIterable, Sendable {
+    case globalJudgmentDistinction
+    case specificEventGrounding
+    case none
+}
+
+enum TurnDisclosureReopenReason: String, Codable, CaseIterable, Sendable {
+    case userCorrectedPreviousFact
+    case userWithdrewPreviousAnswer
+    case newContradictionDetected
+}
+
+/// Canonical current-protocol question functions. The legacy free-text purpose remains available
+/// for saved-session export, but repetition and repair boundaries use this closed value.
+enum TurnDisclosureQuestionPurpose: String, Codable, CaseIterable, Sendable {
+    case identifyConcreteEpisode
+    case clarifyBehavior
+    case clarifyEventProcess
+    case clarifyImmediateOutcome
+    case clarifyReflectionFocus
+
+    var target: TurnDisclosureQuestionTarget {
+        switch self {
+        case .identifyConcreteEpisode: return .focalEvent
+        case .clarifyBehavior: return .behavior
+        case .clarifyEventProcess: return .eventProcess
+        case .clarifyImmediateOutcome: return .actualImpact
+        case .clarifyReflectionFocus: return .reflectionFocus
+        }
+    }
+}
+
+/// A contextual cue becomes usable reflective background only through the person's own account
+/// of whether and how it participated in the concrete situation. This aggregate relationship is
+/// deliberately separate from legacy cue-level tracking assessments.
+struct TurnContextRelationship: Codable, Equatable, Sendable {
+    let relevance: TurnTrackingRelevance
+    let userInterpretation: String?
+}
+
+/// Whether the disclosed facts currently support a concrete behavioral proposition or impact.
+/// This is deliberately not a moral verdict: `present` means only that the person supplied
+/// observable evidence, while `uncertain` preserves an unresolved distinction.
+enum TurnEpisodeEvidenceStatus: String, Codable, CaseIterable, Sendable {
+    case unresolved
+    case present
+    case absent
+    case mixed
+    case uncertain
+}
+
+/// Compact, cumulative structure built through natural disclosure. A single user answer may fill
+/// several relationships; these fields must never become a checklist of mandatory visible
+/// questions. They let later Tender and candid reflection distinguish facts from a global label
+/// and preserve an unknown cause instead of filling it with a comforting explanation.
+struct TurnEpisodeStructure: Codable, Equatable, Sendable {
+    var concreteFacts: [String] = []
+    var behaviorEvidenceStatus: TurnEpisodeEvidenceStatus = .unresolved
+    var behaviorEvidence: [String] = []
+    /// Whether the person has described how the focal event developed. A resolved value does not
+    /// require a definite cause: `uncertain` preserves an explicit inability or refusal to know,
+    /// while `absent` preserves a user-grounded account that no additional process is available.
+    var eventProcessStatus: TurnEpisodeEvidenceStatus = .unresolved
+    var possibleContributors: [String] = []
+    var contextualConstraints: [String] = []
+    var controllableParts: [String] = []
+    var impactStatus: TurnEpisodeEvidenceStatus = .unresolved
+    var impacts: [String] = []
+    var keyUncertainty: String?
+
+    /// Tracks which fields were actually present in an LLM-authored patch. Persisted semantic
+    /// memory still encodes the complete structure, while a partial Planner update can now be
+    /// merged without resetting previously confirmed facts to Codable defaults.
+    private var providedFields: Set<CodingKeys> = Set(CodingKeys.allCases)
+
+    init(
+        concreteFacts: [String] = [],
+        behaviorEvidenceStatus: TurnEpisodeEvidenceStatus = .unresolved,
+        behaviorEvidence: [String] = [],
+        eventProcessStatus: TurnEpisodeEvidenceStatus = .unresolved,
+        possibleContributors: [String] = [],
+        contextualConstraints: [String] = [],
+        controllableParts: [String] = [],
+        impactStatus: TurnEpisodeEvidenceStatus = .unresolved,
+        impacts: [String] = [],
+        keyUncertainty: String? = nil
+    ) {
+        self.concreteFacts = concreteFacts
+        self.behaviorEvidenceStatus = behaviorEvidenceStatus
+        self.behaviorEvidence = behaviorEvidence
+        self.eventProcessStatus = eventProcessStatus
+        self.possibleContributors = possibleContributors
+        self.contextualConstraints = contextualConstraints
+        self.controllableParts = controllableParts
+        self.impactStatus = impactStatus
+        self.impacts = impacts
+        self.keyUncertainty = keyUncertainty
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case concreteFacts, behaviorEvidenceStatus, behaviorEvidence, eventProcessStatus
+        case possibleContributors
+        case contextualConstraints, controllableParts, impactStatus, impacts, keyUncertainty
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        providedFields = Set(CodingKeys.allCases.filter { box.contains($0) })
+        concreteFacts = (try? box.decode([String].self, forKey: .concreteFacts)) ?? []
+        behaviorEvidenceStatus =
+            (try? box.decode(TurnEpisodeEvidenceStatus.self, forKey: .behaviorEvidenceStatus))
+            ?? .unresolved
+        behaviorEvidence = (try? box.decode([String].self, forKey: .behaviorEvidence)) ?? []
+        eventProcessStatus =
+            (try? box.decode(TurnEpisodeEvidenceStatus.self, forKey: .eventProcessStatus))
+            ?? .unresolved
+        possibleContributors =
+            (try? box.decode([String].self, forKey: .possibleContributors)) ?? []
+        contextualConstraints =
+            (try? box.decode([String].self, forKey: .contextualConstraints)) ?? []
+        controllableParts =
+            (try? box.decode([String].self, forKey: .controllableParts)) ?? []
+        impactStatus =
+            (try? box.decode(TurnEpisodeEvidenceStatus.self, forKey: .impactStatus))
+            ?? .unresolved
+        impacts = (try? box.decode([String].self, forKey: .impacts)) ?? []
+        keyUncertainty = try? box.decodeIfPresent(String.self, forKey: .keyUncertainty)
+    }
+
+    /// Applies only fields explicitly supplied by the latest Planner. Supplied arrays replace prior
+    /// values when they remain consistent with the effective typed status, preserving explicit
+    /// corrections; omitted fields retain their cumulative value instead of resetting to defaults.
+    func merging(_ patch: TurnEpisodeStructure) -> TurnEpisodeStructure {
+        var merged = self
+        if patch.providedFields.contains(.concreteFacts) {
+            merged.concreteFacts = patch.concreteFacts
+        }
+        if patch.providedFields.contains(.behaviorEvidenceStatus) {
+            merged.behaviorEvidenceStatus = patch.behaviorEvidenceStatus
+        }
+        if patch.providedFields.contains(.behaviorEvidence) {
+            merged.behaviorEvidence = patch.behaviorEvidence
+        }
+        if patch.providedFields.contains(.eventProcessStatus) {
+            merged.eventProcessStatus = patch.eventProcessStatus
+        }
+        if patch.providedFields.contains(.possibleContributors) {
+            merged.possibleContributors = patch.possibleContributors
+        }
+        if patch.providedFields.contains(.contextualConstraints) {
+            merged.contextualConstraints = patch.contextualConstraints
+        }
+        if patch.providedFields.contains(.controllableParts) {
+            merged.controllableParts = patch.controllableParts
+        }
+        if patch.providedFields.contains(.impactStatus) {
+            merged.impactStatus = patch.impactStatus
+        }
+        if patch.providedFields.contains(.impacts) {
+            merged.impacts = patch.impacts
+        }
+        if patch.providedFields.contains(.keyUncertainty) {
+            merged.keyUncertainty = patch.keyUncertainty
+        }
+
+        // Empty arrays are valid only when the accompanying typed status also says that the
+        // relation is absent, uncertain, or otherwise no longer evidence-bearing. A Planner that
+        // repeats a resolved `present`/`mixed` status while accidentally emitting [] must not
+        // reopen a completed relation and send the dialogue backwards. Explicit corrections still
+        // work by changing the status or by supplying replacement evidence.
+        if [.present, .mixed].contains(merged.behaviorEvidenceStatus),
+           !merged.behaviorEvidence.contains(where: Self.nonempty),
+           behaviorEvidence.contains(where: Self.nonempty) {
+            merged.behaviorEvidence = behaviorEvidence
+        }
+        let mergedHasEventProcessEvidence = [
+            merged.behaviorEvidence,
+            merged.possibleContributors,
+            merged.contextualConstraints,
+            merged.controllableParts,
+        ].contains { $0.contains(where: Self.nonempty) }
+        let priorHasEventProcessEvidence = [
+            behaviorEvidence,
+            possibleContributors,
+            contextualConstraints,
+            controllableParts,
+        ].contains { $0.contains(where: Self.nonempty) }
+        if [.present, .mixed].contains(merged.eventProcessStatus),
+           !mergedHasEventProcessEvidence,
+           priorHasEventProcessEvidence {
+            merged.behaviorEvidence = behaviorEvidence
+            merged.possibleContributors = possibleContributors
+            merged.contextualConstraints = contextualConstraints
+            merged.controllableParts = controllableParts
+        }
+        if [.present, .mixed].contains(merged.impactStatus),
+           !merged.impacts.contains(where: Self.nonempty),
+           impacts.contains(where: Self.nonempty) {
+            merged.impacts = impacts
+        }
+        merged.providedFields = Set(CodingKeys.allCases)
+        return merged
+    }
+
+    private static func nonempty(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Field names only, for privacy-preserving protocol diagnostics and repair contracts.
+    var explicitlyProvidedFieldNames: [String] {
+        providedFields.map(\.rawValue).sorted()
+    }
+
+    static func == (lhs: TurnEpisodeStructure, rhs: TurnEpisodeStructure) -> Bool {
+        lhs.concreteFacts == rhs.concreteFacts
+            && lhs.behaviorEvidenceStatus == rhs.behaviorEvidenceStatus
+            && lhs.behaviorEvidence == rhs.behaviorEvidence
+            && lhs.eventProcessStatus == rhs.eventProcessStatus
+            && lhs.possibleContributors == rhs.possibleContributors
+            && lhs.contextualConstraints == rhs.contextualConstraints
+            && lhs.controllableParts == rhs.controllableParts
+            && lhs.impactStatus == rhs.impactStatus
+            && lhs.impacts == rhs.impacts
+            && lhs.keyUncertainty == rhs.keyUncertainty
+    }
 }
 
 enum TurnPracticeKind: String, Codable, CaseIterable, Sendable {
@@ -201,6 +459,26 @@ struct TurnPracticeOption: Codable, Equatable, Identifiable, Sendable {
     let title: String
     let instruction: String
     let rationale: String
+    /// A compact user-confirmed need, impact, boundary, behavior, uncertainty, or negotiated
+    /// distinction that makes this particular practice relevant. Optional decoding preserves
+    /// practices stored by older protocol versions; current sessions require it before display.
+    let basis: String?
+
+    init(
+        id: String,
+        kind: TurnPracticeKind,
+        title: String,
+        instruction: String,
+        rationale: String,
+        basis: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.instruction = instruction
+        self.rationale = rationale
+        self.basis = basis
+    }
 }
 
 /// `noAction` is an evidence-bounded practice outcome, not a convenient way for the Planner to
@@ -231,6 +509,9 @@ enum TurnReplyIntent: String, Codable, CaseIterable, Sendable {
     case inviteCardObservation
     case developCardImage
     case inviteCardConnection
+    /// Deepens a concrete image-to-life mapping until it contains one user-authored tension,
+    /// evaluative standard, contrast, or uncertainty. This is not a second observation scaffold.
+    case deepenCardConnection
     case authorizeCardGuidance
     case presentCardReading
     case directCandidReflection
@@ -250,6 +531,9 @@ enum TurnConfirmationTarget: String, Codable, CaseIterable, Sendable {
     case trackingRelationship
     case tenderSummary
     case cardConsent
+    /// A pre-guidance candidate that can become a complete userAccepted/userRevised connection.
+    /// This is deliberately distinct from `cardMapping`, which negotiates the later card reading.
+    case cardRealityConnection
     case cardMapping
     case finalNarrative
     case practice
@@ -287,30 +571,127 @@ enum TurnNextPromptKind: String, Codable, CaseIterable, Sendable {
     case confirmationRequest
 }
 
+/// The single semantic relationship an ordinary contextual-disclosure question is allowed to
+/// clarify. This remains separate from free-form wording so Swift can prevent a completed event
+/// process from being reopened under a newly phrased purpose.
+enum TurnDisclosureQuestionTarget: String, Codable, CaseIterable, Sendable {
+    case focalEvent
+    case behavior
+    case selfCriticism
+    case eventProcess
+    case actualImpact
+    case selfCriticismLink
+    case reflectionFocus
+    case contextRelationship
+}
+
 /// The interaction the newly generated assistant reply establishes for the following user turn.
 /// Swift validates only this structural contract; the LLM owns the semantic purpose and focus.
 struct TurnNextPrompt: Codable, Equatable, Sendable {
     let kind: TurnNextPromptKind
     let purpose: String?
     let focus: String?
+    let disclosurePurpose: TurnDisclosureQuestionPurpose?
+    let disclosureTarget: TurnDisclosureQuestionTarget?
+    let disclosureReopenReason: TurnDisclosureReopenReason?
     let target: TurnConfirmationTarget?
     /// Assigned by Swift when a new confirmation request is committed. A Planner must copy the
     /// current value when resolving it, but does not invent an ID for a new prompt.
     let referenceID: String?
 
+    init(
+        kind: TurnNextPromptKind,
+        purpose: String?,
+        focus: String?,
+        disclosurePurpose: TurnDisclosureQuestionPurpose? = nil,
+        disclosureTarget: TurnDisclosureQuestionTarget? = nil,
+        disclosureReopenReason: TurnDisclosureReopenReason? = nil,
+        target: TurnConfirmationTarget?,
+        referenceID: String?
+    ) {
+        self.kind = kind
+        self.purpose = purpose
+        self.focus = focus
+        self.disclosurePurpose = disclosurePurpose
+        self.disclosureTarget = disclosureTarget
+        self.disclosureReopenReason = disclosureReopenReason
+        self.target = target
+        self.referenceID = referenceID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, purpose, focus, disclosurePurpose, disclosureTarget
+        case disclosureReopenReason, target, referenceID
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try box.decode(TurnNextPromptKind.self, forKey: .kind)
+        purpose = try box.decodeIfPresent(String.self, forKey: .purpose)
+        focus = try box.decodeIfPresent(String.self, forKey: .focus)
+        disclosurePurpose = try? box.decodeIfPresent(
+            TurnDisclosureQuestionPurpose.self,
+            forKey: .disclosurePurpose
+        )
+        disclosureReopenReason = try? box.decodeIfPresent(
+            TurnDisclosureReopenReason.self,
+            forKey: .disclosureReopenReason
+        )
+        target = try box.decodeIfPresent(TurnConfirmationTarget.self, forKey: .target)
+        referenceID = try box.decodeIfPresent(String.self, forKey: .referenceID)
+        do {
+            disclosureTarget = try box.decodeIfPresent(
+                TurnDisclosureQuestionTarget.self,
+                forKey: .disclosureTarget
+            )
+        } catch {
+            // `disclosureTarget` is an optional refinement used only by contextual disclosure.
+            // A stray value in a card/direct turn must not make the whole Planner object
+            // undecodable. In contextual disclosure this becomes nil and the typed validator
+            // still requests the exact required target, preserving the hard progression rule.
+            disclosureTarget = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        try box.encode(kind, forKey: .kind)
+        // Preserve the existing wire shape: Planner contracts carry explicit nulls for fields
+        // outside the active tagged shape.
+        try box.encode(purpose, forKey: .purpose)
+        try box.encode(focus, forKey: .focus)
+        try box.encode(disclosurePurpose, forKey: .disclosurePurpose)
+        try box.encode(disclosureTarget, forKey: .disclosureTarget)
+        try box.encode(disclosureReopenReason, forKey: .disclosureReopenReason)
+        try box.encode(target, forKey: .target)
+        try box.encode(referenceID, forKey: .referenceID)
+    }
+
     static let none = TurnNextPrompt(
         kind: .none,
         purpose: nil,
         focus: nil,
+        disclosurePurpose: nil,
+        disclosureTarget: nil,
+        disclosureReopenReason: nil,
         target: nil,
         referenceID: nil
     )
 
-    static func openQuestion(purpose: String, focus: String) -> TurnNextPrompt {
+    static func openQuestion(
+        purpose: String,
+        focus: String,
+        disclosurePurpose: TurnDisclosureQuestionPurpose? = nil,
+        disclosureTarget: TurnDisclosureQuestionTarget? = nil,
+        disclosureReopenReason: TurnDisclosureReopenReason? = nil
+    ) -> TurnNextPrompt {
         TurnNextPrompt(
             kind: .openQuestion,
             purpose: purpose,
             focus: focus,
+            disclosurePurpose: disclosurePurpose,
+            disclosureTarget: disclosureTarget,
+            disclosureReopenReason: disclosureReopenReason,
             target: nil,
             referenceID: nil
         )
@@ -324,6 +705,9 @@ struct TurnNextPrompt: Codable, Equatable, Sendable {
             kind: .confirmationRequest,
             purpose: nil,
             focus: nil,
+            disclosurePurpose: nil,
+            disclosureTarget: nil,
+            disclosureReopenReason: nil,
             target: target,
             referenceID: referenceID
         )
@@ -334,6 +718,9 @@ struct TurnNextPrompt: Codable, Equatable, Sendable {
             kind: kind,
             purpose: purpose,
             focus: focus,
+            disclosurePurpose: disclosurePurpose,
+            disclosureTarget: disclosureTarget,
+            disclosureReopenReason: disclosureReopenReason,
             target: target,
             referenceID: value
         )
@@ -347,12 +734,154 @@ struct TurnTrackingAssessment: Codable, Equatable, Sendable {
     let userInterpretation: String?
 }
 
+/// Provenance of the final user-grounded image-to-reality mapping. The model chooses this typed
+/// value from the latest response; Swift never infers it from words or from a candidate reading.
+enum TurnCardRealityMappingSource: String, Codable, CaseIterable, Sendable {
+    case userAuthored
+    case userAccepted
+    case userRevised
+}
+
+enum TurnCardRealityConnectionStatus: String, Codable, CaseIterable, Sendable {
+    case confirmed
+}
+
+/// The sole authoritative image-to-reality connection for current protocol sessions. A connection
+/// is either absent or complete; the legacy scalar fields below are compatibility mirrors only.
+struct TurnCardRealityConnection: Codable, Equatable, Sendable {
+    let imageRelation: String
+    let realityMapping: String
+    let source: TurnCardRealityMappingSource
+    let status: TurnCardRealityConnectionStatus
+
+    init(
+        imageRelation: String,
+        realityMapping: String,
+        source: TurnCardRealityMappingSource,
+        status: TurnCardRealityConnectionStatus = .confirmed
+    ) {
+        self.imageRelation = imageRelation
+        self.realityMapping = realityMapping
+        self.source = source
+        self.status = status
+    }
+
+    var normalizedConfirmed: TurnCardRealityConnection? {
+        let image = imageRelation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reality = realityMapping.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard status == .confirmed, !image.isEmpty, !reality.isEmpty else { return nil }
+        return TurnCardRealityConnection(
+            imageRelation: image,
+            realityMapping: reality,
+            source: source,
+            status: .confirmed
+        )
+    }
+}
+
+/// A bounded, pre-guidance candidate. It is not user evidence and never unlocks guidance until a
+/// typed acceptance or revision promotes it into `TurnCardRealityConnection`.
+struct PendingCardRealityConnection: Codable, Equatable, Sendable {
+    let id: UUID
+    let imageRelation: String
+    let candidateRealityMapping: String
+
+    init(
+        id: UUID = UUID(),
+        imageRelation: String,
+        candidateRealityMapping: String
+    ) {
+        self.id = id
+        self.imageRelation = imageRelation
+        self.candidateRealityMapping = candidateRealityMapping
+    }
+
+    var isStructurallyComplete: Bool {
+        !imageRelation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !candidateRealityMapping.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// Planner-owned semantic outcome. Swift updates the attempt counter from this closed result and
+/// never derives it from Chinese wording or from how many questions the assistant happened to ask.
+enum TurnCardConnectionOutcome: String, Codable, CaseIterable, Sendable {
+    case connectionConfirmed
+    case partialConnection
+    case noConnectionFound
+    case candidateRejected
+    case userRequestedSkip
+}
+
+enum LegacySavedCardRealityConnectionMigration: Equatable, Sendable {
+    case none
+    case migrated
+    case incomplete
+    case canonicalConflictIgnored
+}
+
+/// One shared resolver used by normalization, validation, capabilities, recovery, and card-context
+/// projection. It combines typed state only and never interprets the person's language.
+enum TurnCardRealityConnectionResolver {
+    static func effective(
+        memory: TurnSemanticMemory,
+        update: TurnSemanticMemoryUpdate? = nil,
+        resolution: TurnResolvedConfirmation? = nil
+    ) -> TurnCardRealityConnection? {
+        if update?.clearCardRealityConnection == true { return nil }
+
+        if let proposed = update?.cardRealityConnection {
+            return proposed.normalizedConfirmed
+        }
+
+        if let resolution,
+           resolution.target == .cardRealityConnection,
+           memory.nextPrompt?.kind == .confirmationRequest,
+           memory.nextPrompt?.target == .cardRealityConnection,
+           let pending = memory.pendingCardRealityConnection,
+           pending.isStructurallyComplete,
+           (memory.nextPrompt?.referenceID == nil
+            || memory.nextPrompt?.referenceID == pending.id.uuidString) {
+            switch resolution.decision {
+            case .accepted:
+                return TurnCardRealityConnection(
+                    imageRelation: pending.imageRelation,
+                    realityMapping: pending.candidateRealityMapping,
+                    source: .userAccepted
+                ).normalizedConfirmed
+            case .revised:
+                return update?.cardRealityConnection?.normalizedConfirmed
+            case .rejected, .declined, .unclear, .related, .partlyRelated, .unrelated, .uncertain:
+                return nil
+            }
+        }
+
+        return memory.cardRealityConnection?.normalizedConfirmed
+    }
+}
+
 /// LLM-owned conversational memory. It records what has been understood and which question
 /// functions have already been completed, while protocol state and local permissions remain
 /// outside this structure.
 struct TurnSemanticMemory: Codable, Equatable, Sendable {
     var situationUnderstanding = ""
     var answeredQuestionPurposes: [String] = []
+    var receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose] = []
+    var eventDisclosureOutcome: TurnEventDisclosureOutcome = .needsConcreteEpisode
+    var reflectionFocusKind: TurnReflectionFocusKind = .unclearFocus
+    var reflectionFocus: String?
+    var tenderGroundingKind: TurnTenderGroundingKind = .none
+    var selfCriticismStatus: TurnSelfCriticismStatus = .unresolved
+    /// The person's proposition in compact form, not a clinician- or model-authored label.
+    var selfCriticalStatement: String?
+    /// The user-grounded relationship between reported reality and the self-evaluation. This is
+    /// the actual reflection object: it records how a fact is being taken to mean something about
+    /// the self, or that this connection remains uncertain, without supplying a hidden motive.
+    var selfCriticismLink: String?
+    /// Evidence structure underlying the self-evaluation. It contains only user-authored facts,
+    /// constraints, possibilities, controllable parts, impacts, and explicit uncertainty.
+    var episodeStructure: TurnEpisodeStructure?
+    /// The person's assessment of whether and how the optional contextual cue mattered.
+    var contextRelationship: TurnContextRelationship?
     /// New protocol representation. Nil means an older saved session still relies on the legacy
     /// pending fields below; `.none` means the new protocol intentionally has no pending prompt.
     var nextPrompt: TurnNextPrompt?
@@ -361,8 +890,14 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     var pendingConfirmationTarget: TurnConfirmationTarget?
     var trackingAssessments: [TurnTrackingAssessment] = []
     var tenderUnderstanding: String?
+    var cardRealityConnection: TurnCardRealityConnection?
+    var pendingCardRealityConnection: PendingCardRealityConnection?
     var cardImageRelation: String?
     var cardRealityMapping: String?
+    var cardRealityMappingSource: TurnCardRealityMappingSource?
+    /// The user-authored or user-confirmed distinction that makes the mapping interpretively
+    /// richer than a surface similarity. Catalogue meanings never enter this field.
+    var cardInterpretiveTension: String?
     var cardNegotiatedMeaning: String?
     /// Optional, user-negotiated candid understanding. It may concern responsibility, boundary,
     /// impact, cost, change, protection, or uncertainty; absence never blocks final narrative.
@@ -374,17 +909,30 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     var practiceOptions: [TurnPracticeOption] = []
     var practiceKind: TurnPracticeKind?
     var selectedPractice: String?
-
     init(
         situationUnderstanding: String = "",
         answeredQuestionPurposes: [String] = [],
+        receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose] = [],
+        eventDisclosureOutcome: TurnEventDisclosureOutcome = .needsConcreteEpisode,
+        reflectionFocusKind: TurnReflectionFocusKind = .unclearFocus,
+        reflectionFocus: String? = nil,
+        tenderGroundingKind: TurnTenderGroundingKind = .none,
+        selfCriticismStatus: TurnSelfCriticismStatus = .unresolved,
+        selfCriticalStatement: String? = nil,
+        selfCriticismLink: String? = nil,
+        episodeStructure: TurnEpisodeStructure? = nil,
+        contextRelationship: TurnContextRelationship? = nil,
         nextPrompt: TurnNextPrompt? = nil,
         pendingQuestionPurpose: String? = nil,
         pendingConfirmationTarget: TurnConfirmationTarget? = nil,
         trackingAssessments: [TurnTrackingAssessment] = [],
         tenderUnderstanding: String? = nil,
+        cardRealityConnection: TurnCardRealityConnection? = nil,
+        pendingCardRealityConnection: PendingCardRealityConnection? = nil,
         cardImageRelation: String? = nil,
         cardRealityMapping: String? = nil,
+        cardRealityMappingSource: TurnCardRealityMappingSource? = nil,
+        cardInterpretiveTension: String? = nil,
         cardNegotiatedMeaning: String? = nil,
         candidUnderstanding: String? = nil,
         fierceUnderstanding: String? = nil,
@@ -395,13 +943,28 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     ) {
         self.situationUnderstanding = situationUnderstanding
         self.answeredQuestionPurposes = answeredQuestionPurposes
+        self.receivedDisclosureQuestionPurposes = receivedDisclosureQuestionPurposes
+        self.eventDisclosureOutcome = eventDisclosureOutcome
+        self.reflectionFocusKind = reflectionFocusKind
+        self.reflectionFocus = reflectionFocus
+        self.tenderGroundingKind = tenderGroundingKind
+        self.selfCriticismStatus = selfCriticismStatus
+        self.selfCriticalStatement = selfCriticalStatement
+        self.selfCriticismLink = selfCriticismLink
+        self.episodeStructure = episodeStructure
+        self.contextRelationship = contextRelationship
         self.nextPrompt = nextPrompt
         self.pendingQuestionPurpose = pendingQuestionPurpose
         self.pendingConfirmationTarget = pendingConfirmationTarget
         self.trackingAssessments = trackingAssessments
         self.tenderUnderstanding = tenderUnderstanding
-        self.cardImageRelation = cardImageRelation
-        self.cardRealityMapping = cardRealityMapping
+        let canonical = cardRealityConnection?.normalizedConfirmed
+        self.cardRealityConnection = canonical
+        self.pendingCardRealityConnection = pendingCardRealityConnection
+        self.cardImageRelation = canonical?.imageRelation ?? cardImageRelation
+        self.cardRealityMapping = canonical?.realityMapping ?? cardRealityMapping
+        self.cardRealityMappingSource = canonical?.source ?? cardRealityMappingSource
+        self.cardInterpretiveTension = cardInterpretiveTension
         self.cardNegotiatedMeaning = cardNegotiatedMeaning
         self.candidUnderstanding = candidUnderstanding
         self.fierceUnderstanding = fierceUnderstanding
@@ -414,13 +977,27 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case situationUnderstanding
         case answeredQuestionPurposes
+        case receivedDisclosureQuestionPurposes
+        case eventDisclosureOutcome
+        case reflectionFocusKind
+        case reflectionFocus
+        case tenderGroundingKind
+        case selfCriticismStatus
+        case selfCriticalStatement
+        case selfCriticismLink
+        case episodeStructure
+        case contextRelationship
         case nextPrompt
         case pendingQuestionPurpose
         case pendingConfirmationTarget
         case trackingAssessments
         case tenderUnderstanding
+        case cardRealityConnection
+        case pendingCardRealityConnection
         case cardImageRelation
         case cardRealityMapping
+        case cardRealityMappingSource
+        case cardInterpretiveTension
         case cardNegotiatedMeaning
         case candidUnderstanding
         case fierceUnderstanding
@@ -436,6 +1013,38 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             (try? box.decode(String.self, forKey: .situationUnderstanding)) ?? ""
         answeredQuestionPurposes =
             (try? box.decode([String].self, forKey: .answeredQuestionPurposes)) ?? []
+        receivedDisclosureQuestionPurposes =
+            (try? box.decode(
+                [TurnDisclosureQuestionPurpose].self,
+                forKey: .receivedDisclosureQuestionPurposes
+            )) ?? []
+        eventDisclosureOutcome =
+            (try? box.decode(
+                TurnEventDisclosureOutcome.self,
+                forKey: .eventDisclosureOutcome
+            )) ?? .needsConcreteEpisode
+        reflectionFocusKind =
+            (try? box.decode(
+                TurnReflectionFocusKind.self,
+                forKey: .reflectionFocusKind
+            )) ?? .unclearFocus
+        reflectionFocus = try? box.decodeIfPresent(String.self, forKey: .reflectionFocus)
+        tenderGroundingKind =
+            (try? box.decode(
+                TurnTenderGroundingKind.self,
+                forKey: .tenderGroundingKind
+            )) ?? .none
+        selfCriticismStatus =
+            (try? box.decode(TurnSelfCriticismStatus.self, forKey: .selfCriticismStatus))
+            ?? .unresolved
+        selfCriticalStatement =
+            try? box.decodeIfPresent(String.self, forKey: .selfCriticalStatement)
+        selfCriticismLink =
+            try? box.decodeIfPresent(String.self, forKey: .selfCriticismLink)
+        episodeStructure =
+            try? box.decodeIfPresent(TurnEpisodeStructure.self, forKey: .episodeStructure)
+        contextRelationship =
+            try? box.decodeIfPresent(TurnContextRelationship.self, forKey: .contextRelationship)
         nextPrompt = try? box.decodeIfPresent(TurnNextPrompt.self, forKey: .nextPrompt)
         pendingQuestionPurpose =
             try? box.decodeIfPresent(String.self, forKey: .pendingQuestionPurpose)
@@ -448,10 +1057,26 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             (try? box.decode([TurnTrackingAssessment].self, forKey: .trackingAssessments)) ?? []
         tenderUnderstanding =
             try? box.decodeIfPresent(String.self, forKey: .tenderUnderstanding)
+        let decodedCanonical = try? box.decodeIfPresent(
+            TurnCardRealityConnection.self,
+            forKey: .cardRealityConnection
+        )
+        pendingCardRealityConnection = try? box.decodeIfPresent(
+            PendingCardRealityConnection.self,
+            forKey: .pendingCardRealityConnection
+        )
         cardImageRelation =
             try? box.decodeIfPresent(String.self, forKey: .cardImageRelation)
         cardRealityMapping =
             try? box.decodeIfPresent(String.self, forKey: .cardRealityMapping)
+        cardRealityMappingSource =
+            try? box.decodeIfPresent(
+                TurnCardRealityMappingSource.self,
+                forKey: .cardRealityMappingSource
+            )
+        cardRealityConnection = decodedCanonical?.normalizedConfirmed
+        cardInterpretiveTension =
+            try? box.decodeIfPresent(String.self, forKey: .cardInterpretiveTension)
         cardNegotiatedMeaning =
             try? box.decodeIfPresent(String.self, forKey: .cardNegotiatedMeaning)
         candidUnderstanding =
@@ -466,6 +1091,63 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             try? box.decodeIfPresent(TurnPracticeKind.self, forKey: .practiceKind)
         selectedPractice =
             try? box.decodeIfPresent(String.self, forKey: .selectedPractice)
+    }
+
+    /// The sole legacy scalar-to-canonical migration entry. It is called only while decoding a
+    /// saved `ReflectionSession`; runtime Planner patches never invoke it.
+    mutating func migrateLegacySavedCardRealityConnection()
+        -> LegacySavedCardRealityConnectionMigration {
+        let legacyImage = cardImageRelation?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let legacyMapping = cardRealityMapping?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasLegacyPayload = cardRealityMappingSource != nil
+            || legacyImage?.isEmpty == false
+            || legacyMapping?.isEmpty == false
+
+        if let canonical = cardRealityConnection?.normalizedConfirmed {
+            let legacyCandidate: TurnCardRealityConnection?
+            if let legacyImage, !legacyImage.isEmpty,
+               let legacyMapping, !legacyMapping.isEmpty,
+               let legacySource = cardRealityMappingSource {
+                legacyCandidate = TurnCardRealityConnection(
+                    imageRelation: legacyImage,
+                    realityMapping: legacyMapping,
+                    source: legacySource
+                ).normalizedConfirmed
+            } else {
+                legacyCandidate = nil
+            }
+            let conflict = hasLegacyPayload
+                && (legacyCandidate == nil || legacyCandidate != canonical)
+            cardRealityConnection = canonical
+            cardImageRelation = canonical.imageRelation
+            cardRealityMapping = canonical.realityMapping
+            cardRealityMappingSource = canonical.source
+            return conflict ? .canonicalConflictIgnored : .none
+        }
+
+        guard hasLegacyPayload else { return .none }
+        guard let legacyImage, !legacyImage.isEmpty,
+              let legacyMapping, !legacyMapping.isEmpty,
+              let legacySource = cardRealityMappingSource,
+              let migrated = TurnCardRealityConnection(
+                  imageRelation: legacyImage,
+                  realityMapping: legacyMapping,
+                  source: legacySource
+              ).normalizedConfirmed else {
+            // Historical relation/mapping text remains exportable. An orphan source is removed so
+            // it cannot masquerade as a confirmed runtime connection after restoration.
+            cardRealityConnection = nil
+            cardRealityMappingSource = nil
+            return .incomplete
+        }
+
+        cardRealityConnection = migrated
+        cardImageRelation = migrated.imageRelation
+        cardRealityMapping = migrated.realityMapping
+        cardRealityMappingSource = migrated.source
+        return .migrated
     }
 
     /// New Planner requests use `nextPrompt` as their only pending-interaction source. The
@@ -492,6 +1174,22 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
                 Set(answeredQuestionPurposes + values)
             ).sorted()
         }
+        if let values = update.receivedDisclosureQuestionPurposes {
+            receivedDisclosureQuestionPurposes = Array(
+                Set(receivedDisclosureQuestionPurposes + values)
+            ).sorted { $0.rawValue < $1.rawValue }
+        }
+        if let value = update.eventDisclosureOutcome { eventDisclosureOutcome = value }
+        if let value = update.reflectionFocusKind { reflectionFocusKind = value }
+        if let value = update.reflectionFocus { reflectionFocus = value }
+        if let value = update.tenderGroundingKind { tenderGroundingKind = value }
+        if let value = update.selfCriticismStatus { selfCriticismStatus = value }
+        if let value = update.selfCriticalStatement { selfCriticalStatement = value }
+        if let value = update.selfCriticismLink { selfCriticismLink = value }
+        if let value = update.episodeStructure {
+            episodeStructure = episodeStructure?.merging(value) ?? value
+        }
+        if let value = update.contextRelationship { contextRelationship = value }
         if let committedNextPrompt {
             nextPrompt = committedNextPrompt
             // Mirror the new prompt into legacy fields so older local views and safely resumed
@@ -528,8 +1226,31 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             trackingAssessments = indexed.values.sorted { $0.cueID < $1.cueID }
         }
         if let value = update.tenderUnderstanding { tenderUnderstanding = value }
-        if let value = update.cardImageRelation { cardImageRelation = value }
-        if let value = update.cardRealityMapping { cardRealityMapping = value }
+        if update.clearPendingCardRealityConnection == true {
+            pendingCardRealityConnection = nil
+        }
+        if let pending = update.pendingCardRealityConnection,
+           pending.isStructurallyComplete {
+            pendingCardRealityConnection = pending
+        }
+        if update.clearCardRealityConnection == true {
+            cardRealityConnection = nil
+            cardImageRelation = nil
+            cardRealityMapping = nil
+            cardRealityMappingSource = nil
+        } else if let canonical = update.cardRealityConnection?.normalizedConfirmed {
+            cardRealityConnection = canonical
+            cardImageRelation = canonical.imageRelation
+            cardRealityMapping = canonical.realityMapping
+            cardRealityMappingSource = canonical.source
+        } else {
+            // Legacy runtime branches may still update their export mirrors, but these fields can
+            // never construct or change the canonical connection during a current turn.
+            if let value = update.cardImageRelation { cardImageRelation = value }
+            if let value = update.cardRealityMapping { cardRealityMapping = value }
+            if let value = update.cardRealityMappingSource { cardRealityMappingSource = value }
+        }
+        if let value = update.cardInterpretiveTension { cardInterpretiveTension = value }
         if let value = update.cardNegotiatedMeaning { cardNegotiatedMeaning = value }
         if let value = update.candidUnderstanding { candidUnderstanding = value }
         if let value = update.fierceUnderstanding { fierceUnderstanding = value }
@@ -545,13 +1266,41 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
 struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     var situationUnderstanding: String?
     var answeredQuestionPurposes: [String]?
+    var receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose]?
+    var eventDisclosureOutcome: TurnEventDisclosureOutcome?
+    var reflectionFocusKind: TurnReflectionFocusKind?
+    var reflectionFocus: String?
+    var tenderGroundingKind: TurnTenderGroundingKind?
+    var selfCriticismStatus: TurnSelfCriticismStatus?
+    var selfCriticalStatement: String?
+    var selfCriticismLink: String?
+    var episodeStructure: TurnEpisodeStructure?
+    var contextRelationship: TurnContextRelationship?
+    /// Transient protocol signal: the visible reply actually juxtaposes the optional contextual
+    /// cue after a user-authored card-to-reality mapping. Persistence lives in the local inference
+    /// relevance state (`offered`), not in semantic narrative memory.
+    var contextCueOffered: Bool?
     var pendingQuestionPurpose: String?
     var pendingConfirmationTarget: TurnConfirmationTarget?
     var clearPendingQuestionPurpose: Bool?
     var trackingAssessments: [TurnTrackingAssessment]?
     var tenderUnderstanding: String?
+    /// Atomic current-protocol connection. Legacy scalar fields below are decode/input
+    /// compatibility only and cannot independently authorize card guidance.
+    var cardRealityConnection: TurnCardRealityConnection?
+    /// A system-proposed mapping awaiting a typed pre-guidance confirmation.
+    var pendingCardRealityConnection: PendingCardRealityConnection?
+    var clearCardRealityConnection: Bool?
+    var clearPendingCardRealityConnection: Bool?
+    /// Semantic outcome used only for the bounded connection-attempt policy.
+    var cardConnectionOutcome: TurnCardConnectionOutcome?
     var cardImageRelation: String?
     var cardRealityMapping: String?
+    var cardRealityMappingSource: TurnCardRealityMappingSource?
+    /// Decode-boundary metadata. `true` means at least one retired scalar key appeared in the
+    /// Planner payload, including an explicit JSON null. It is not encoded or persisted.
+    var legacyConnectionFieldsPresentInPayload = false
+    var cardInterpretiveTension: String?
     var cardNegotiatedMeaning: String?
     var candidUnderstanding: String?
     var fierceUnderstanding: String?
@@ -563,13 +1312,31 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     init(
         situationUnderstanding: String? = nil,
         answeredQuestionPurposes: [String]? = nil,
+        receivedDisclosureQuestionPurposes: [TurnDisclosureQuestionPurpose]? = nil,
+        eventDisclosureOutcome: TurnEventDisclosureOutcome? = nil,
+        reflectionFocusKind: TurnReflectionFocusKind? = nil,
+        reflectionFocus: String? = nil,
+        tenderGroundingKind: TurnTenderGroundingKind? = nil,
+        selfCriticismStatus: TurnSelfCriticismStatus? = nil,
+        selfCriticalStatement: String? = nil,
+        selfCriticismLink: String? = nil,
+        episodeStructure: TurnEpisodeStructure? = nil,
+        contextRelationship: TurnContextRelationship? = nil,
+        contextCueOffered: Bool? = nil,
         pendingQuestionPurpose: String? = nil,
         pendingConfirmationTarget: TurnConfirmationTarget? = nil,
         clearPendingQuestionPurpose: Bool? = nil,
         trackingAssessments: [TurnTrackingAssessment]? = nil,
         tenderUnderstanding: String? = nil,
+        cardRealityConnection: TurnCardRealityConnection? = nil,
+        pendingCardRealityConnection: PendingCardRealityConnection? = nil,
+        clearCardRealityConnection: Bool? = nil,
+        clearPendingCardRealityConnection: Bool? = nil,
+        cardConnectionOutcome: TurnCardConnectionOutcome? = nil,
         cardImageRelation: String? = nil,
         cardRealityMapping: String? = nil,
+        cardRealityMappingSource: TurnCardRealityMappingSource? = nil,
+        cardInterpretiveTension: String? = nil,
         cardNegotiatedMeaning: String? = nil,
         candidUnderstanding: String? = nil,
         fierceUnderstanding: String? = nil,
@@ -580,13 +1347,34 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     ) {
         self.situationUnderstanding = situationUnderstanding
         self.answeredQuestionPurposes = answeredQuestionPurposes
+        self.receivedDisclosureQuestionPurposes = receivedDisclosureQuestionPurposes
+        self.eventDisclosureOutcome = eventDisclosureOutcome
+        self.reflectionFocusKind = reflectionFocusKind
+        self.reflectionFocus = reflectionFocus
+        self.tenderGroundingKind = tenderGroundingKind
+        self.selfCriticismStatus = selfCriticismStatus
+        self.selfCriticalStatement = selfCriticalStatement
+        self.selfCriticismLink = selfCriticismLink
+        self.episodeStructure = episodeStructure
+        self.contextRelationship = contextRelationship
+        self.contextCueOffered = contextCueOffered
         self.pendingQuestionPurpose = pendingQuestionPurpose
         self.pendingConfirmationTarget = pendingConfirmationTarget
         self.clearPendingQuestionPurpose = clearPendingQuestionPurpose
         self.trackingAssessments = trackingAssessments
         self.tenderUnderstanding = tenderUnderstanding
+        self.cardRealityConnection = cardRealityConnection
+        self.pendingCardRealityConnection = pendingCardRealityConnection
+        self.clearCardRealityConnection = clearCardRealityConnection
+        self.clearPendingCardRealityConnection = clearPendingCardRealityConnection
+        self.cardConnectionOutcome = cardConnectionOutcome
         self.cardImageRelation = cardImageRelation
         self.cardRealityMapping = cardRealityMapping
+        self.cardRealityMappingSource = cardRealityMappingSource
+        self.legacyConnectionFieldsPresentInPayload = cardImageRelation != nil
+            || cardRealityMapping != nil
+            || cardRealityMappingSource != nil
+        self.cardInterpretiveTension = cardInterpretiveTension
         self.cardNegotiatedMeaning = cardNegotiatedMeaning
         self.candidUnderstanding = candidUnderstanding
         self.fierceUnderstanding = fierceUnderstanding
@@ -599,13 +1387,31 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case situationUnderstanding
         case answeredQuestionPurposes
+        case receivedDisclosureQuestionPurposes
+        case eventDisclosureOutcome
+        case reflectionFocusKind
+        case reflectionFocus
+        case tenderGroundingKind
+        case selfCriticismStatus
+        case selfCriticalStatement
+        case selfCriticismLink
+        case episodeStructure
+        case contextRelationship
+        case contextCueOffered
         case pendingQuestionPurpose
         case pendingConfirmationTarget
         case clearPendingQuestionPurpose
         case trackingAssessments
         case tenderUnderstanding
+        case cardRealityConnection
+        case pendingCardRealityConnection
+        case clearCardRealityConnection
+        case clearPendingCardRealityConnection
+        case cardConnectionOutcome
         case cardImageRelation
         case cardRealityMapping
+        case cardRealityMappingSource
+        case cardInterpretiveTension
         case cardNegotiatedMeaning
         case candidUnderstanding
         case fierceUnderstanding
@@ -623,6 +1429,50 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         situationUnderstanding = try? box.decode(
             String.self,
             forKey: .situationUnderstanding
+        )
+        receivedDisclosureQuestionPurposes = try? box.decode(
+            [TurnDisclosureQuestionPurpose].self,
+            forKey: .receivedDisclosureQuestionPurposes
+        )
+        eventDisclosureOutcome = try? box.decode(
+            TurnEventDisclosureOutcome.self,
+            forKey: .eventDisclosureOutcome
+        )
+        reflectionFocusKind = try? box.decode(
+            TurnReflectionFocusKind.self,
+            forKey: .reflectionFocusKind
+        )
+        reflectionFocus = try? box.decode(
+            String.self,
+            forKey: .reflectionFocus
+        )
+        tenderGroundingKind = try? box.decode(
+            TurnTenderGroundingKind.self,
+            forKey: .tenderGroundingKind
+        )
+        selfCriticismStatus = try? box.decode(
+            TurnSelfCriticismStatus.self,
+            forKey: .selfCriticismStatus
+        )
+        selfCriticalStatement = try? box.decode(
+            String.self,
+            forKey: .selfCriticalStatement
+        )
+        selfCriticismLink = try? box.decode(
+            String.self,
+            forKey: .selfCriticismLink
+        )
+        episodeStructure = try? box.decode(
+            TurnEpisodeStructure.self,
+            forKey: .episodeStructure
+        )
+        contextRelationship = try? box.decode(
+            TurnContextRelationship.self,
+            forKey: .contextRelationship
+        )
+        contextCueOffered = try? Self.decodeOptionalProtocolBool(
+            from: box,
+            forKey: .contextCueOffered
         )
         if let values = try? box.decode(
             [String].self,
@@ -657,6 +1507,26 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
             String.self,
             forKey: .tenderUnderstanding
         )
+        cardRealityConnection = try? box.decode(
+            TurnCardRealityConnection.self,
+            forKey: .cardRealityConnection
+        )
+        pendingCardRealityConnection = try? box.decode(
+            PendingCardRealityConnection.self,
+            forKey: .pendingCardRealityConnection
+        )
+        clearCardRealityConnection = try? Self.decodeOptionalProtocolBool(
+            from: box,
+            forKey: .clearCardRealityConnection
+        )
+        clearPendingCardRealityConnection = try? Self.decodeOptionalProtocolBool(
+            from: box,
+            forKey: .clearPendingCardRealityConnection
+        )
+        cardConnectionOutcome = try? box.decode(
+            TurnCardConnectionOutcome.self,
+            forKey: .cardConnectionOutcome
+        )
         cardImageRelation = try? box.decode(
             String.self,
             forKey: .cardImageRelation
@@ -664,6 +1534,17 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         cardRealityMapping = try? box.decode(
             String.self,
             forKey: .cardRealityMapping
+        )
+        cardRealityMappingSource = try? box.decode(
+            TurnCardRealityMappingSource.self,
+            forKey: .cardRealityMappingSource
+        )
+        legacyConnectionFieldsPresentInPayload = box.contains(.cardImageRelation)
+            || box.contains(.cardRealityMapping)
+            || box.contains(.cardRealityMappingSource)
+        cardInterpretiveTension = try? box.decode(
+            String.self,
+            forKey: .cardInterpretiveTension
         )
         cardNegotiatedMeaning = try? box.decode(
             String.self,
@@ -729,6 +1610,12 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
 
 /// The semantic planner can recommend protocol movement and describe the communicative purpose
 /// of the next reply, but it does not write text shown to the person.
+struct CardReferenceSelection: Codable, Equatable, Sendable {
+    /// Index into the selected card's application-supplied `referenceGuidance.relations` array.
+    /// Using an index keeps the Planner from inventing or rewriting a private source relation.
+    let relationIndex: Int
+}
+
 struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
     let requestedStage: ReflectionProtocolStage
     let localAction: TurnLocalActionRequest
@@ -743,6 +1630,9 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
     /// Natural-language details grounded in the latest turn. This can describe what to acknowledge
     /// but cannot change the typed intent or authorize a workflow function.
     let replyGuidance: String
+    /// An optional, turn-local question lens. It is never persisted as semantic memory and never
+    /// represents the person's interpretation or answer.
+    let cardReferenceSelection: CardReferenceSelection?
 
     init(
         requestedStage: ReflectionProtocolStage,
@@ -752,7 +1642,8 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
         nextPrompt: TurnNextPrompt? = nil,
         replyIntent: TurnReplyIntent,
         noActionReason: TurnNoActionReason? = nil,
-        replyGuidance: String
+        replyGuidance: String,
+        cardReferenceSelection: CardReferenceSelection? = nil
     ) {
         self.requestedStage = requestedStage
         self.localAction = localAction
@@ -762,6 +1653,34 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
         self.replyIntent = replyIntent
         self.noActionReason = noActionReason
         self.replyGuidance = replyGuidance
+        self.cardReferenceSelection = cardReferenceSelection
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestedStage, localAction, memoryUpdate, resolvedConfirmation, nextPrompt
+        case replyIntent, noActionReason, replyGuidance, cardReferenceSelection
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        requestedStage = try box.decode(ReflectionProtocolStage.self, forKey: .requestedStage)
+        localAction = try box.decode(TurnLocalActionRequest.self, forKey: .localAction)
+        memoryUpdate = try box.decode(TurnSemanticMemoryUpdate.self, forKey: .memoryUpdate)
+        resolvedConfirmation = try box.decodeIfPresent(
+            TurnResolvedConfirmation.self,
+            forKey: .resolvedConfirmation
+        )
+        nextPrompt = try box.decodeIfPresent(TurnNextPrompt.self, forKey: .nextPrompt)
+        replyIntent = try box.decode(TurnReplyIntent.self, forKey: .replyIntent)
+        noActionReason = try box.decodeIfPresent(TurnNoActionReason.self, forKey: .noActionReason)
+        // Silent local transactions never call the Writer. Treat an omitted private writing hint
+        // as empty and let the protocol validator require it only for genuinely visible turns.
+        replyGuidance =
+            (try? box.decode(String.self, forKey: .replyGuidance)) ?? ""
+        cardReferenceSelection = try box.decodeIfPresent(
+            CardReferenceSelection.self,
+            forKey: .cardReferenceSelection
+        )
     }
 }
 
@@ -927,6 +1846,7 @@ enum ExperimentalCondition: String, Codable, CaseIterable {
     case directLLM = "modelAsserted"
 
     var usesCard: Bool { self == .cardMediated }
+    var usesSimpleGentleReflection: Bool { self == .directLLM }
 }
 
 /// Counterbalanced order for the two-session crossover. Swift owns use of this value; the model
@@ -1211,7 +2131,9 @@ struct TrackingProvenance: Codable, Equatable {
 }
 
 enum TrackingCueRelevance: String, Codable, CaseIterable, Sendable {
-    case notReviewed, relevant, irrelevant, uncertain
+    /// The cue was made available in dialogue but the person has not related it to the event.
+    /// It remains ineligible for the final narrative.
+    case notReviewed, offered, relevant, irrelevant, uncertain
 }
 
 /// A deliberately coarse interpretation of several tracking deviations. It is not a measured
@@ -1219,6 +2141,7 @@ enum TrackingCueRelevance: String, Codable, CaseIterable, Sendable {
 enum ContextualLoadState: String, Codable, Sendable {
     case insufficientEvidence
     case usualRange
+    case recordedScheduleContext
     case possibleReducedRecovery
     case possiblyElevated
     case elevated
@@ -1299,6 +2222,11 @@ struct TrackingInsight: Identifiable, Codable, Equatable {
     let suggestedReflectionQuestion: String
     let provenance: [TrackingProvenance]
     let recentMedian: Double?
+    /// Direct recent-window totals. They are currently populated for calendar occupancy so that
+    /// a schedule can be described from its own count and duration instead of a personal baseline.
+    /// Optional defaults keep previously stored insights decodable.
+    var recentTotal: Double? = nil
+    var recentRecordCount: Int? = nil
     let baselineMedian: Double?
     let medianAbsoluteDeviation: Double?
     let interquartileRange: Double?
@@ -1432,27 +2360,6 @@ struct TurnTrackingPresentation: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-/// Internal design guidance for a projective image. It is a bounded question-generation space,
-/// never an interpretation, diagnosis, or conclusion shown to the user.
-enum SelfCompassionDimension: String, Codable, CaseIterable {
-    case selfKindness
-    case commonHumanity
-    case mindfulness
-}
-
-/// A card-specific supplement for applying the three self-compassion dimensions. These are
-/// candidate wording directions only. They neither replace the card's existing tender/fierce
-/// guidance nor become a meaning assigned to the image.
-struct CardSelfCompassionGuidance: Codable, Equatable {
-    let primaryDimension: SelfCompassionDimension
-    let secondaryDimensions: [SelfCompassionDimension]
-    let selfKindnessCandidates: [String]
-    let commonHumanityCandidates: [String]
-    let mindfulnessCandidates: [String]
-    let candidateQuestion: String
-    let activationHint: String
-}
-
 /// An image-only prompt that may help when the person has described a card but cannot yet
 /// connect it with their life. Every anchor group must be present in the person's own picture
 /// narrative before the question can be shown. This deliberately keeps card semantics out of
@@ -1462,73 +2369,76 @@ struct CardVisualScaffold: Codable, Equatable, Hashable, Sendable {
     let question: String
 }
 
-struct CardReflectionGuidance: Codable, Equatable {
-    let coreTension: String
-    let tenderLenses: [String]
-    let fierceLenses: [String]
+/// Card-owned metadata stops at visible composition. `observableRelation` records what the
+/// designer can point to in the picture; it is never a psychological target interpretation.
+struct CardVisualGuidance: Codable, Equatable {
+    let observableRelation: String
     let visualAnchors: [String]
-    let possibleDirections: [String]
     let prohibitedClaims: [String]
-    let selfCompassion: CardSelfCompassionGuidance?
-    /// Optional so older persisted sessions decode safely. These are image-only questions that
-    /// may be used once after a soft “想不到”; they never become a meaning assigned to the card.
-    let visualScaffolds: [CardVisualScaffold]?
+    let visualScaffolds: [CardVisualScaffold]
 
     init(
-        coreTension: String,
-        tenderLenses: [String],
-        fierceLenses: [String],
+        observableRelation: String,
         visualAnchors: [String],
-        possibleDirections: [String],
         prohibitedClaims: [String],
-        selfCompassion: CardSelfCompassionGuidance? = nil,
-        visualScaffolds: [CardVisualScaffold]? = nil
+        visualScaffolds: [CardVisualScaffold] = []
     ) {
-        self.coreTension = coreTension
-        self.tenderLenses = tenderLenses
-        self.fierceLenses = fierceLenses
+        self.observableRelation = observableRelation
         self.visualAnchors = visualAnchors
-        self.possibleDirections = possibleDirections
         self.prohibitedClaims = prohibitedClaims
-        self.selfCompassion = selfCompassion
         self.visualScaffolds = visualScaffolds
     }
 }
 
-/// A deterministic, locally-computed overlap between what the user actually described and the
-/// selected card's internal catalogue. No overlap means no card lens is supplied to the model.
-struct CardGuidanceMatch: Codable, Equatable {
+/// A small set of reality-translated Major Arcana relationships. These are closed reference
+/// lenses, not default card meanings or user facts. The app withholds this object until the
+/// person has established an image relation and an image-to-life mapping; the model may then use
+/// at most one supported relationship to shape a question, never as the person's answer.
+struct CardReferenceGuidance: Codable, Equatable, Sendable {
+    let relations: [String]
+    let activationBoundary: String
+    let prohibitedClaims: [String]
+}
+
+/// Tender and Fierce are system-wide response methods. They operate on the person's own
+/// interpretation and confirmed evidence; no card selects a private Tender or Fierce meaning.
+struct SystemReflectionApproaches: Codable, Equatable {
+    let tender: String
+    let fierce: String
+
+    static let standard = SystemReflectionApproaches(
+        tender: "从用户已经确认的画面解释和现实描述出发，更具体、更少评判地理解处境、感受、限制和需要；不补充牌义。",
+        fierce: "仅在用户愿意且已有事实支持时，邀请进一步观察选择、影响、责任、边界或行动；不把画面当成这些判断的证据。"
+    )
+}
+
+/// A deterministic, locally-computed grounding between the person's image relation and confirmed
+/// reality relation. It records user evidence only and contains no designer meaning or card lens.
+struct CardGroundingMatch: Codable, Equatable {
     let matchedVisualAnchors: [String]
-    let candidateDirections: [String]
-    /// Optional for additive decoding of sessions saved before three-sided guidance matching.
     let imageRelation: String?
     let realityRelation: String?
     let matchedConcepts: [SemanticConcept]?
-    /// Stable local catalogue selections. The model may phrase only these selected directions;
-    /// it must not choose among or blend the full Tender/Fierce catalogues.
-    let selectedTenderLensID: String?
-    let selectedFierceLensID: String?
-    let selectedSelfCompassionCandidateID: String?
 
     init(
         matchedVisualAnchors: [String],
-        candidateDirections: [String],
         imageRelation: String? = nil,
         realityRelation: String? = nil,
-        matchedConcepts: [SemanticConcept]? = nil,
-        selectedTenderLensID: String? = nil,
-        selectedFierceLensID: String? = nil,
-        selectedSelfCompassionCandidateID: String? = nil
+        matchedConcepts: [SemanticConcept]? = nil
     ) {
         self.matchedVisualAnchors = matchedVisualAnchors
-        self.candidateDirections = candidateDirections
         self.imageRelation = imageRelation
         self.realityRelation = realityRelation
         self.matchedConcepts = matchedConcepts
-        self.selectedTenderLensID = selectedTenderLensID
-        self.selectedFierceLensID = selectedFierceLensID
-        self.selectedSelfCompassionCandidateID = selectedSelfCompassionCandidateID
     }
+}
+
+/// Decode only the visually safe subset of sessions written before card meaning and visual
+/// composition were separated. Legacy core/tender/fierce fields are intentionally ignored.
+private struct LegacyCardReflectionGuidance: Decodable {
+    let visualAnchors: [String]
+    let prohibitedClaims: [String]
+    let visualScaffolds: [CardVisualScaffold]?
 }
 
 struct ReflectionCard: Identifiable, Codable, Equatable {
@@ -1539,28 +2449,34 @@ struct ReflectionCard: Identifiable, Codable, Equatable {
     /// User-visible card name. Older saved sessions safely fall back to their neutral label.
     let title: String
     let imageName: String
-    /// Legacy single-tension field retained for additive session migration.
+    /// Retained only so stored research sessions continue to round-trip. Runtime prompts never
+    /// read this former theme field.
     let reflectiveThemes: String
-    let internalGuidance: CardReflectionGuidance?
+    let visualGuidance: CardVisualGuidance?
+    let referenceGuidance: CardReferenceGuidance?
 
     init(
         id: Int,
         neutralLabel: String,
         title: String? = nil,
         imageName: String,
-        reflectiveThemes: String,
-        internalGuidance: CardReflectionGuidance? = nil
+        reflectiveThemes: String = "",
+        visualGuidance: CardVisualGuidance? = nil,
+        referenceGuidance: CardReferenceGuidance? = nil
     ) {
         self.id = id
         self.neutralLabel = neutralLabel
         self.title = title ?? neutralLabel
         self.imageName = imageName
         self.reflectiveThemes = reflectiveThemes
-        self.internalGuidance = internalGuidance
+        self.visualGuidance = visualGuidance
+        self.referenceGuidance = referenceGuidance
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, neutralLabel, title, imageName, reflectiveThemes, internalGuidance
+        case id, neutralLabel, title, imageName, reflectiveThemes, visualGuidance
+        case referenceGuidance
+        case internalGuidance
     }
 
     init(from decoder: Decoder) throws {
@@ -1568,9 +2484,41 @@ struct ReflectionCard: Identifiable, Codable, Equatable {
         id = try box.decode(Int.self, forKey: .id)
         neutralLabel = try box.decode(String.self, forKey: .neutralLabel)
         title = (try? box.decode(String.self, forKey: .title)) ?? neutralLabel
-        imageName = try box.decode(String.self, forKey: .imageName)
+        let decodedImageName = try box.decode(String.self, forKey: .imageName)
+        // Sessions created before the revised artwork used the provisional resource name.
+        // Keep those sessions intact while showing the current card image after restoration.
+        imageName = decodedImageName == "旧模与新形" ? "传下来的图样" : decodedImageName
         reflectiveThemes = (try? box.decode(String.self, forKey: .reflectiveThemes)) ?? ""
-        internalGuidance = try? box.decodeIfPresent(CardReflectionGuidance.self, forKey: .internalGuidance)
+        if let current = try? box.decodeIfPresent(CardVisualGuidance.self, forKey: .visualGuidance) {
+            visualGuidance = current
+        } else if let legacy = try? box.decodeIfPresent(
+            LegacyCardReflectionGuidance.self,
+            forKey: .internalGuidance
+        ) {
+            visualGuidance = CardVisualGuidance(
+                observableRelation: "",
+                visualAnchors: legacy.visualAnchors,
+                prohibitedClaims: legacy.prohibitedClaims,
+                visualScaffolds: legacy.visualScaffolds ?? []
+            )
+        } else {
+            visualGuidance = nil
+        }
+        referenceGuidance = try? box.decodeIfPresent(
+            CardReferenceGuidance.self,
+            forKey: .referenceGuidance
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        try box.encode(id, forKey: .id)
+        try box.encode(neutralLabel, forKey: .neutralLabel)
+        try box.encode(title, forKey: .title)
+        try box.encode(imageName, forKey: .imageName)
+        try box.encode(reflectiveThemes, forKey: .reflectiveThemes)
+        try box.encodeIfPresent(visualGuidance, forKey: .visualGuidance)
+        try box.encodeIfPresent(referenceGuidance, forKey: .referenceGuidance)
     }
 }
 
@@ -2010,6 +2958,12 @@ struct AdaptiveDisclosureResolver {
 }
 
 struct ReflectionSession: Identifiable, Codable {
+    /// Protocol 3 introduced the internal Tender bridge. Protocol 4 adds the evidence-structured
+    /// disclosure gate without changing already-running protocol-3 sessions mid-reflection.
+    static let internalTenderProtocolVersion = 3
+    static let currentProtocolVersion = 4
+    static let simpleGentleControlProtocolVersion = 3
+
     var id = UUID()
     var createdAt = Date()
     var stage: ReflectionState = .welcome
@@ -2023,6 +2977,13 @@ struct ReflectionSession: Identifiable, Codable {
     var trackingPresentations: [TurnTrackingPresentation] = []
     var activeTrackingPresentationID: String?
     var cardGuidanceShared = false
+    /// Persisted between the silent mapping/guidance transaction and its one visible successor.
+    /// If the app is suspended in that narrow window, resume restarts only the visible turn and
+    /// never repeats the mapping patch or local capability operation.
+    var pendingCardGuidanceTurn = false
+    /// Stable idempotency key for the last committed card-guidance authorization. It is derived
+    /// from the persisted user-message ID, never from reflection text.
+    var cardGuidanceTransactionID: String?
     var condition: ExperimentalCondition = .cardMediated
     /// Nil marks a pre-study/ordinary reflection. These additive fields distinguish deliberate
     /// crossover periods from historical card-mediated sessions.
@@ -2033,6 +2994,10 @@ struct ReflectionSession: Identifiable, Codable {
     /// language stays at “最近 / 这段时间”.
     var eventDateIsUserSpecified = false
     var messages: [ChatMessage] = []
+    /// Assistant interpretations that the person rejected or replaced remain in the persisted
+    /// transcript for research audit, but are excluded from all later model evidence. This is an
+    /// application-owned provenance boundary, not an LLM judgment about conversational meaning.
+    var supersededAssistantMessageIDs: Set<UUID> = []
     var context = ReflectionContext()
     var trackingCues: [TrackingCue] = []
     var contextualLoadInference: ContextualLoadInference?
@@ -2064,6 +3029,10 @@ struct ReflectionSession: Identifiable, Codable {
     /// The synthesis confirmed after disclosure and tracking. Card narration treats this as a
     /// locked baseline and may reference it briefly, but cannot rebuild it field by field.
     var lockedBaselineNarrative: String?
+    /// Number of committed image-development prompts before the first image-to-life invitation.
+    /// Current sessions permit at most one relational clarification and one temporal projection;
+    /// this is a protocol counter, not an interpretation of the person's words.
+    var cardImageDevelopmentTurnCount = 0
     var cardConnectionAttemptCount = 0
     /// Protocol-v2 capability flag. Once true, neither a second visual scaffold nor another
     /// guidance-based bridge may be requested for the same card connection.
@@ -2072,6 +3041,9 @@ struct ReflectionSession: Identifiable, Codable {
     /// soft “想不到”. That answer extends the user-authored picture narrative; it is never stored
     /// as a real-life connection.
     var cardConnectionScaffoldPending = false
+    /// Current-protocol card reflection may ask one responsive question after a concrete
+    /// image-to-life mapping when that mapping has not yet produced an interpretive distinction.
+    var cardConnectionDeepeningUsed = false
     var cardConnectionUnavailable = false
     var cardLifeConnection: String?
     /// A system-proposed bridge is deliberately separate from the user's raw image-to-life
@@ -2079,9 +3051,9 @@ struct ReflectionSession: Identifiable, Codable {
     var cardCandidateMapping: String?
     var cardConfirmedMapping: String?
     var cardMappingConfirmed = false
-    /// A local, deterministic overlap between the user's image words and the selected card's
-    /// internal guidance. Absence is meaningful: it prevents card metadata entering dialogue.
-    var cardGuidanceMatch: CardGuidanceMatch?
+    /// A local, deterministic grounding between user-authored image and reality relations.
+    /// It contains no designer meaning and absence prevents even structural card use.
+    var cardGroundingMatch: CardGroundingMatch?
     var cardMeaningShiftResponse: String?
     var cardMeaningShiftCompleted = false
     /// What the card phase added beyond the locked baseline. Kept separate to prevent summary
@@ -2113,8 +3085,10 @@ struct ReflectionSession: Identifiable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id, createdAt, stage, protocolVersion, protocolStage, reflectionReadiness, semanticMemory
         case presentedTrackingCueIDs, trackingPresentations, activeTrackingPresentationID
-        case cardGuidanceShared
-        case condition, studySequence, studyPeriod, eventDateIsUserSpecified, messages, context, canvas, trackingCues
+        case cardGuidanceShared, pendingCardGuidanceTurn, cardGuidanceTransactionID
+        case condition, studySequence, studyPeriod, eventDateIsUserSpecified, messages
+        case supersededAssistantMessageIDs
+        case context, canvas, trackingCues
         case contextualLoadInference
         case trackingUseDeclined, pendingTrackingCueID, pendingTrackingCueIDs
         case card, cardDrawRecord, cardWasSetAside, cardInterpretation
@@ -2125,10 +3099,10 @@ struct ReflectionSession: Identifiable, Codable {
         case tenderGroundingRevisionCount, tenderGroundingConfirmed, trackingReviewCompleted
         case trackingReviewUnavailable, trackingContextLinkCompleted, trackingContextLinkResponse
         case contextConfirmationRevisionCount, contextSummaryConfirmed, lockedBaselineNarrative
-        case cardConnectionAttemptCount, cardConnectionScaffoldUsed
-        case cardConnectionScaffoldPending, cardConnectionUnavailable
+        case cardImageDevelopmentTurnCount, cardConnectionAttemptCount, cardConnectionScaffoldUsed
+        case cardConnectionScaffoldPending, cardConnectionDeepeningUsed, cardConnectionUnavailable
         case cardLifeConnection, cardCandidateMapping, cardConfirmedMapping, cardMappingConfirmed
-        case cardGuidanceMatch, cardMeaningShiftResponse, cardMeaningShiftCompleted
+        case cardGroundingMatch, cardGuidanceMatch, cardMeaningShiftResponse, cardMeaningShiftCompleted
         case cardDerivedDeltaNarrative
         case candidCircumstancesCompleted, candidCircumstancesResponse
         case candidAgencyCompleted, candidAgencyResponse
@@ -2143,6 +3117,12 @@ struct ReflectionSession: Identifiable, Codable {
     init() {}
 
     var usesLLMTurnController: Bool { protocolVersion >= 2 }
+    /// Only current protocol sessions use the prompt-only active baseline. Legacy in-progress
+    /// sessions keep their original workflow so decoding an old record never changes it mid-turn.
+    var usesSimpleGentleControl: Bool {
+        protocolVersion >= Self.simpleGentleControlProtocolVersion &&
+            condition.usesSimpleGentleReflection
+    }
 
     init(from decoder: Decoder) throws {
         let box = try decoder.container(keyedBy: CodingKeys.self)
@@ -2159,8 +3139,12 @@ struct ReflectionSession: Identifiable, Codable {
                 : (protocolStage == .contextualDisclosure || protocolStage == .tenderConfirmation
                     ? .needsTender
                     : .reflectionOpen))
-        semanticMemory = (try? box.decode(TurnSemanticMemory.self, forKey: .semanticMemory))
+        var decodedSemanticMemory =
+            (try? box.decode(TurnSemanticMemory.self, forKey: .semanticMemory))
             ?? TurnSemanticMemory()
+        let savedCardConnectionMigration =
+            decodedSemanticMemory.migrateLegacySavedCardRealityConnection()
+        semanticMemory = decodedSemanticMemory
         presentedTrackingCueIDs =
             (try? box.decode(Set<String>.self, forKey: .presentedTrackingCueIDs)) ?? []
         trackingPresentations =
@@ -2169,11 +3153,17 @@ struct ReflectionSession: Identifiable, Codable {
             try? box.decodeIfPresent(String.self, forKey: .activeTrackingPresentationID)
         cardGuidanceShared =
             (try? box.decode(Bool.self, forKey: .cardGuidanceShared)) ?? false
+        pendingCardGuidanceTurn =
+            (try? box.decode(Bool.self, forKey: .pendingCardGuidanceTurn)) ?? false
+        cardGuidanceTransactionID =
+            try? box.decodeIfPresent(String.self, forKey: .cardGuidanceTransactionID)
         condition = (try? box.decode(ExperimentalCondition.self, forKey: .condition)) ?? .cardMediated
         studySequence = try? box.decodeIfPresent(StudySequence.self, forKey: .studySequence)
         studyPeriod = try? box.decodeIfPresent(Int.self, forKey: .studyPeriod)
         eventDateIsUserSpecified = (try? box.decode(Bool.self, forKey: .eventDateIsUserSpecified)) ?? false
         messages = (try? box.decode([ChatMessage].self, forKey: .messages)) ?? []
+        supersededAssistantMessageIDs =
+            (try? box.decode(Set<UUID>.self, forKey: .supersededAssistantMessageIDs)) ?? []
         if let decoded = try? box.decode(ReflectionContext.self, forKey: .context) {
             context = decoded
         } else if let legacy = try? box.decode(ContextCanvas.self, forKey: .canvas) {
@@ -2195,6 +3185,24 @@ struct ReflectionSession: Identifiable, Codable {
             ?? (card == nil ? .none : (stage == .cardIntroduction ? .selected : .displayed))
         cardDisplayReloadNonce =
             (try? box.decode(Int.self, forKey: .cardDisplayReloadNonce)) ?? 0
+        let migratedIncompleteCardConnection =
+            savedCardConnectionMigration == .incomplete
+        let ignoredLegacyCardConnectionConflict =
+            savedCardConnectionMigration == .canonicalConflictIgnored
+        let migratedGuidanceWithoutConnection =
+            cardGuidanceShared && semanticMemory.cardRealityConnection == nil
+        if migratedGuidanceWithoutConnection {
+            // Do not invent user evidence to preserve a contradictory legacy capability state.
+            // The transcript remains untouched; resume returns to the existing card-reflection
+            // recovery surface with guidance closed until a complete connection is committed.
+            cardGuidanceShared = false
+            pendingCardGuidanceTurn = false
+            cardGuidanceTransactionID = nil
+            if cardDisplayState == .displayed || card != nil {
+                protocolStage = .cardReflection
+                stage = .cardInterpretation
+            }
+        }
         structuredDisclosureAssistantTurns =
             (try? box.decode(Int.self, forKey: .structuredDisclosureAssistantTurns))
             ?? messages.filter {
@@ -2236,10 +3244,14 @@ struct ReflectionSession: Identifiable, Codable {
             ].contains(stage)
         lockedBaselineNarrative =
             try? box.decodeIfPresent(String.self, forKey: .lockedBaselineNarrative)
+        cardImageDevelopmentTurnCount =
+            (try? box.decode(Int.self, forKey: .cardImageDevelopmentTurnCount)) ?? 0
         cardConnectionAttemptCount =
             (try? box.decode(Int.self, forKey: .cardConnectionAttemptCount)) ?? 0
         cardConnectionScaffoldUsed =
             (try? box.decode(Bool.self, forKey: .cardConnectionScaffoldUsed)) ?? false
+        cardConnectionDeepeningUsed =
+            (try? box.decode(Bool.self, forKey: .cardConnectionDeepeningUsed)) ?? false
         cardConnectionScaffoldPending =
             (try? box.decode(Bool.self, forKey: .cardConnectionScaffoldPending)) ?? false
         cardConnectionUnavailable =
@@ -2253,7 +3265,9 @@ struct ReflectionSession: Identifiable, Codable {
             ?? (cardLifeConnection?.isEmpty == false && stage == .attributionReflection)
         cardConfirmedMapping = try? box.decodeIfPresent(String.self, forKey: .cardConfirmedMapping)
             ?? (cardMappingConfirmed ? cardLifeConnection : nil)
-        cardGuidanceMatch = try? box.decodeIfPresent(CardGuidanceMatch.self, forKey: .cardGuidanceMatch)
+        cardGroundingMatch =
+            (try? box.decodeIfPresent(CardGroundingMatch.self, forKey: .cardGroundingMatch))
+            ?? (try? box.decodeIfPresent(CardGroundingMatch.self, forKey: .cardGuidanceMatch))
         cardMeaningShiftResponse =
             try? box.decodeIfPresent(String.self, forKey: .cardMeaningShiftResponse)
         cardMeaningShiftCompleted =
@@ -2319,6 +3333,28 @@ struct ReflectionSession: Identifiable, Codable {
         hypotheses = (try? box.decode([Hypothesis].self, forKey: .hypotheses)) ?? []
         actionSuggestions = (try? box.decode([ActionSuggestion].self, forKey: .actionSuggestions)) ?? []
         studyEvents = (try? box.decode([StudyEvent].self, forKey: .studyEvents)) ?? []
+        if migratedIncompleteCardConnection,
+           !studyEvents.contains(where: { $0.action == "legacy_incomplete_card_connection" }) {
+            studyEvents.append(
+                .init(stage: stage, action: "legacy_incomplete_card_connection")
+            )
+        }
+        if migratedGuidanceWithoutConnection,
+           !studyEvents.contains(where: {
+               $0.action == "legacy_guidance_without_confirmed_connection"
+           }) {
+            studyEvents.append(
+                .init(stage: stage, action: "legacy_guidance_without_confirmed_connection")
+            )
+        }
+        if ignoredLegacyCardConnectionConflict,
+           !studyEvents.contains(where: {
+               $0.action == "legacy_card_connection_conflict_ignored"
+           }) {
+            studyEvents.append(
+                .init(stage: stage, action: "legacy_card_connection_conflict_ignored")
+            )
+        }
         studyMeasures = (try? box.decode(StudyMeasures.self, forKey: .studyMeasures)) ?? StudyMeasures()
         if context.cardInterpretation == nil {
             context.cardInterpretation = try? box.decodeIfPresent(String.self, forKey: .cardInterpretation)
@@ -2366,11 +3402,17 @@ struct ReflectionSession: Identifiable, Codable {
             forKey: .activeTrackingPresentationID
         )
         try box.encode(cardGuidanceShared, forKey: .cardGuidanceShared)
+        try box.encode(pendingCardGuidanceTurn, forKey: .pendingCardGuidanceTurn)
+        try box.encodeIfPresent(
+            cardGuidanceTransactionID,
+            forKey: .cardGuidanceTransactionID
+        )
         try box.encode(condition, forKey: .condition)
         try box.encodeIfPresent(studySequence, forKey: .studySequence)
         try box.encodeIfPresent(studyPeriod, forKey: .studyPeriod)
         try box.encode(eventDateIsUserSpecified, forKey: .eventDateIsUserSpecified)
         try box.encode(messages, forKey: .messages)
+        try box.encode(supersededAssistantMessageIDs, forKey: .supersededAssistantMessageIDs)
         try box.encode(context, forKey: .context)
         try box.encode(trackingCues, forKey: .trackingCues)
         try box.encodeIfPresent(contextualLoadInference, forKey: .contextualLoadInference)
@@ -2396,15 +3438,17 @@ struct ReflectionSession: Identifiable, Codable {
         try box.encode(contextConfirmationRevisionCount, forKey: .contextConfirmationRevisionCount)
         try box.encode(contextSummaryConfirmed, forKey: .contextSummaryConfirmed)
         try box.encodeIfPresent(lockedBaselineNarrative, forKey: .lockedBaselineNarrative)
+        try box.encode(cardImageDevelopmentTurnCount, forKey: .cardImageDevelopmentTurnCount)
         try box.encode(cardConnectionAttemptCount, forKey: .cardConnectionAttemptCount)
         try box.encode(cardConnectionScaffoldUsed, forKey: .cardConnectionScaffoldUsed)
         try box.encode(cardConnectionScaffoldPending, forKey: .cardConnectionScaffoldPending)
+        try box.encode(cardConnectionDeepeningUsed, forKey: .cardConnectionDeepeningUsed)
         try box.encode(cardConnectionUnavailable, forKey: .cardConnectionUnavailable)
         try box.encodeIfPresent(cardLifeConnection, forKey: .cardLifeConnection)
         try box.encodeIfPresent(cardCandidateMapping, forKey: .cardCandidateMapping)
         try box.encodeIfPresent(cardConfirmedMapping, forKey: .cardConfirmedMapping)
         try box.encode(cardMappingConfirmed, forKey: .cardMappingConfirmed)
-        try box.encodeIfPresent(cardGuidanceMatch, forKey: .cardGuidanceMatch)
+        try box.encodeIfPresent(cardGroundingMatch, forKey: .cardGroundingMatch)
         try box.encodeIfPresent(cardMeaningShiftResponse, forKey: .cardMeaningShiftResponse)
         try box.encode(cardMeaningShiftCompleted, forKey: .cardMeaningShiftCompleted)
         try box.encodeIfPresent(cardDerivedDeltaNarrative, forKey: .cardDerivedDeltaNarrative)

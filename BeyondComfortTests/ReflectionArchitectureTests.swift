@@ -303,67 +303,17 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         XCTAssertFalse(notReviewed.contains("UNREVIEWED_SLEEP_RECORD"))
     }
 
-    func testComputedPendingCueIsNeverSentWithoutAggregateHypothesis() {
-        let computedObservation = "最近睡眠时长中位数约为 6.4 小时，个人基线约为 7.1 小时，相差约 42 分钟（更少）"
-        let candidate = cue(computedObservation, relevance: .notReviewed)
-        let review = factory.dialoguePrompt(
-            state: .trackingReview,
-            route: .tenderStabilize,
-            context: ReflectionContext(),
-            analysis: nil,
-            card: nil,
-            trackingCues: [candidate],
-            nextQuestionGoal: "ask which parts of the bounded bundle fit",
-            recentMessages: []
-        )
-
-        XCTAssertTrue(review.system.localizedCaseInsensitiveContains("tentative"))
-        XCTAssertTrue(review.system.localizedCaseInsensitiveContains("measurement-free contextual hypothesis"))
-        XCTAssertFalse(review.user.contains("睡眠"))
-        XCTAssertFalse(review.user.contains(computedObservation))
-        XCTAssertFalse(review.user.localizedCaseInsensitiveContains("provenance"))
-        XCTAssertFalse(review.user.localizedCaseInsensitiveContains("sampleCount"))
-        XCTAssertFalse(prompt(cues: [candidate]).user.contains(computedObservation))
-    }
-
-    func testRelevantLegacyCueIsOmittedWithoutAggregateHypothesis() {
-        let text = prompt(cues: [cue("LEGACY_TRACKING_SECRET", relevance: .relevant)]).user
-        XCTAssertFalse(text.contains("LEGACY_TRACKING_SECRET"))
-        XCTAssertFalse(text.contains("User-confirmed background cue"))
-    }
-
-    func testTrackingPromptProhibitsMetricsAndSpecificEmotionInference() {
-        let text = factory.dialoguePrompt(
-            state: .trackingReview,
-            route: .explore,
-            context: ReflectionContext(),
-            analysis: nil,
-            card: nil,
-            trackingCues: [
-                cue("最近 HRV 比个人基线低 4 ms", relevance: .notReviewed, source: .healthHRV, metric: .heartRateVariability),
-                cue("日程记录不足", relevance: .notReviewed, source: .calendarLoad, metric: .calendarLoad),
-            ],
-            nextQuestionGoal: "present the bounded tracking background",
-            recentMessages: []
-        ).system.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
-
-        XCTAssertTrue(text.contains("measurement-free contextual hypothesis"))
-        XCTAssertTrue(text.contains("Do not create a separate tracking or relevance question"))
-        XCTAssertTrue(text.contains("measurements"))
-        XCTAssertTrue(text.contains("specific emotion"))
-    }
-
-    func testAggregateContextCueHidesEveryUnderlyingTrackingObservation() {
-        let hypothesis = "用户近期可能承受着比平时更多的压力，处理事情时可用的精力或应对余地可能有所减少。"
+    func testCompatibilityPromptUsesOnlyTypedAggregateContext() {
+        let hypothesis = "APPLICATION_AGGREGATE_CONTEXT"
         let evidence = DialoguePromptEvidence(
             contextualLoadCue: DialogueContextCue(
                 hypothesis: hypothesis,
                 confidence: .moderate,
                 relevance: .notReviewed,
-                usageBoundary: "不得提及测量、设备、指标或具体情绪。"
+                usageBoundary: "Preserve only the supplied semantic scope."
             )
         )
-        let prompt = factory.dialoguePrompt(
+        let value = factory.dialoguePrompt(
             state: .trackingReview,
             route: .explore,
             context: ReflectionContext(),
@@ -371,32 +321,32 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             card: nil,
             trackingCues: [
                 cue(
-                    "RAW_HRV_SECRET 最近 HRV 比个人基线低 4 ms",
+                    "RAW_TRACKING_OBSERVATION",
                     relevance: .notReviewed,
                     source: .healthHRV,
                     metric: .heartRateVariability
                 ),
             ],
             promptEvidence: evidence,
-            nextQuestionGoal: "connect the contextual hypothesis to the event",
+            nextQuestionGoal: "clarify one contextual relationship",
             recentMessages: []
         )
 
-        XCTAssertTrue(prompt.user.contains(hypothesis))
-        XCTAssertFalse(prompt.user.contains("RAW_HRV_SECRET"))
-        XCTAssertFalse(prompt.user.contains("4 ms"))
+        XCTAssertTrue(value.user.contains(hypothesis))
+        XCTAssertFalse(value.user.contains("RAW_TRACKING_OBSERVATION"))
+        XCTAssertTrue(value.system.contains("Contextual data is only a tentative background cue"))
     }
 
     func testCardImagePromptCannotReceiveAggregateContextCue() {
         let hypothesis = "CONTEXT_MUST_NOT_SHAPE_IMAGE_STORY"
-        let prompt = factory.dialoguePrompt(
+        let value = factory.dialoguePrompt(
             state: .cardInterpretation,
             route: .explore,
             context: ReflectionContext(),
             analysis: nil,
             card: ReflectionCard(
                 id: 1,
-                neutralLabel: "图像 2",
+                neutralLabel: "generic-image",
                 imageName: "2",
                 reflectiveThemes: "unused"
             ),
@@ -406,101 +356,54 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
                     hypothesis: hypothesis,
                     confidence: .moderate,
                     relevance: .relevant,
-                    usageBoundary: "measurement free"
+                    usageBoundary: "Preserve only the supplied semantic scope."
                 )
             ),
-            nextQuestionGoal: "ask one image-only question",
-            recentMessages: []
-        )
-
-        XCTAssertFalse(prompt.user.contains(hypothesis))
-    }
-
-    func testWriterPromptIncludesOnlyTheCurrentPhaseContract() {
-        let tracking = factory.dialoguePrompt(
-            state: .trackingReview,
-            route: .explore,
-            context: ReflectionContext(),
-            analysis: nil,
-            card: nil,
-            trackingCues: [],
-            nextQuestionGoal: "connect tracking with the confirmed situation",
-            recentMessages: []
-        ).system
-        XCTAssertTrue(tracking.contains("LEGACY TRACKING STATE:"))
-        XCTAssertTrue(tracking.contains("Do not create a separate tracking or relevance question"))
-        XCTAssertFalse(tracking.contains("CARD IMAGE:"))
-        XCTAssertFalse(tracking.contains("OPTIONAL PRACTICE:"))
-        XCTAssertFalse(tracking.contains("FINAL NARRATIVE:"))
-
-        let card = factory.dialoguePrompt(
-            state: .cardInterpretation,
-            route: .explore,
-            context: ReflectionContext(),
-            analysis: nil,
-            card: nil,
-            trackingCues: [],
             nextQuestionGoal: "develop one image relation",
             recentMessages: []
-        ).system
-        XCTAssertTrue(card.contains("CARD IMAGE:"))
-        XCTAssertFalse(card.contains("TRACKING:"))
-        XCTAssertFalse(card.contains("OPTIONAL PRACTICE:"))
-        XCTAssertFalse(card.contains("FINAL NARRATIVE:"))
-    }
-
-    func testWriterPromptEndsWithTheMinimalJSONContract() {
-        let system = factory.dialoguePrompt(
-            state: .emotionDisclosure,
-            route: .explore,
-            context: ReflectionContext(),
-            analysis: nil,
-            card: nil,
-            trackingCues: [],
-            nextQuestionGoal: "respond to the latest meaning",
-            recentMessages: []
-        ).system.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        XCTAssertTrue(system.contains("FINAL OUTPUT CONTRACT"))
-        XCTAssertTrue(system.hasSuffix("category, description, timing, and rationale."))
-        XCTAssertEqual(
-            system.components(separatedBy: "FINAL OUTPUT CONTRACT").count - 1,
-            1
         )
+
+        XCTAssertFalse(value.user.contains(hypothesis))
     }
 
-    func testTenderPromptRequiresNaturalProseInsteadOfFieldExport() {
-        let text = factory.dialoguePrompt(
-            state: .tenderGrounding,
-            route: .tenderStabilize,
-            context: ReflectionContext(),
-            analysis: nil,
-            card: nil,
-            trackingCues: [],
-            nextQuestionGoal: "write tender grounding",
-            recentMessages: []
-        ).system
+    func testCompatibilityDialoguePromptIsCompactAndDomainNeutral() {
+        let value = prompt(cues: [])
+        XCTAssertLessThan(value.system.count, 3_500)
+        XCTAssertTrue(value.system.contains("reported facts, self-evaluation"))
+        XCTAssertTrue(value.system.contains("at most one open question"))
+        XCTAssertTrue(value.system.contains(#"{"reflection":"","question":"","actionOptions":[]}"#))
+        XCTAssertTrue(value.user.contains("Application-owned state"))
+        XCTAssertTrue(value.user.contains("Required one-turn purpose"))
 
-        XCTAssertTrue(text.contains("not an exported field list"))
-        XCTAssertTrue(text.contains("avoid headings, repeated colons, duplicated phrases"))
-        XCTAssertTrue(text.contains("two or three connected spoken-Chinese sentences"))
+        for forbidden in [
+            "拖延", "论文", "投稿", "重要任务", "园丁", "木栏", "更努力",
+        ] {
+            XCTAssertFalse(value.system.localizedCaseInsensitiveContains(forbidden))
+        }
     }
 
-    func testAnalyzerSeparatesEventEmotionBodyAndSelfEvaluation() {
-        let text = factory.analyzerPrompt(
+    func testAnalyzerUsesGenericSemanticRelationsAndSwiftBoundary() {
+        let planning = ResponsePlanningContext(
+            state: .cardInterpretation,
+            workflowPhase: .cardAssociation,
+            allowedFunctions: [.developImageRelation, .closeWithoutQuestion],
+            shouldAskQuestion: true
+        )
+        let value = factory.analyzerPrompt(
             context: ReflectionContext(),
             messages: [
-                ChatMessage(role: .user, content: "组会上被批评后，我很羞愧，脸发热，也觉得自己特别差。"),
-            ]
-        ).system.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+                ChatMessage(role: .user, content: "用户提供的一段新信息")
+            ],
+            planningContext: planning
+        )
 
-        XCTAssertTrue(text.contains("eventDescription contains only the concrete occurrence"))
-        XCTAssertTrue(text.contains("Classify emotions, self-evaluations, bodily experiences"))
-        XCTAssertTrue(text.contains("semantic role"))
-        XCTAssertTrue(text.contains("not by a scenario-specific word list"))
-        XCTAssertTrue(text.contains("responsePlan is the private one-turn semantic plan"))
-        XCTAssertTrue(text.contains("Missing emotions never automatically require"))
-        XCTAssertTrue(text.contains("Swift will then use an emergency path"))
+        XCTAssertLessThan(value.system.count, 5_500)
+        XCTAssertTrue(value.system.contains("domain-neutral semantic structure"))
+        XCTAssertTrue(value.system.contains("observable episode facts"))
+        XCTAssertTrue(value.system.contains("semanticRelations"))
+        XCTAssertTrue(value.user.contains("Swift planning boundary"))
+        XCTAssertTrue(value.user.contains("developImageRelation"))
+        XCTAssertTrue(value.user.contains("closeWithoutQuestion"))
     }
 
     func testPromptProjectionCleansLegacyMixedEmotionAndBodyFields() {
@@ -515,7 +418,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             analysis: nil,
             card: nil,
             trackingCues: [],
-            nextQuestionGoal: "write tender grounding",
+            nextQuestionGoal: "write grounded reflection",
             recentMessages: []
         ).user
 
@@ -528,14 +431,14 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
     func testWriterReceivesOnlyTheLocallyValidatedResponsePlanAsTypedEvidence() {
         let plan = ResponsePlan(
             function: .clarifyPersonalMeaning,
-            focus: "失败和整体能力判断之间的关系",
-            evidence: ["测试一直失败", "能力不行"],
+            focus: "one confirmed semantic relationship",
+            evidence: ["literal user evidence"],
             relationKinds: [.selfEvaluation],
-            questionIntent: "询问整体判断背后的具体担心",
+            questionIntent: "clarify the supported relationship",
             shouldAskQuestion: true,
             confidence: 0.9
         )
-        let prompt = factory.dialoguePrompt(
+        let value = factory.dialoguePrompt(
             state: .selfJudgment,
             route: .explore,
             context: ReflectionContext(),
@@ -543,127 +446,17 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             card: nil,
             trackingCues: [],
             promptEvidence: DialoguePromptEvidence(responsePlan: plan),
-            nextQuestionGoal: "semantic plan",
+            nextQuestionGoal: "follow the validated semantic purpose",
             recentMessages: []
         )
 
-        XCTAssertTrue(prompt.user.contains("locally authorized by Swift"))
-        XCTAssertTrue(prompt.user.contains("clarifyPersonalMeaning"))
-        XCTAssertTrue(prompt.user.contains("测试一直失败"))
-        XCTAssertTrue(prompt.user.contains("shouldAskQuestion"))
-    }
-
-    func testAnalyzerReceivesSwiftAllowedFunctionsForAnOpenTurn() {
-        let planning = ResponsePlanningContext(
-            state: .cardInterpretation,
-            workflowPhase: .cardAssociation,
-            allowedFunctions: [.developImageRelation, .closeWithoutQuestion],
-            shouldAskQuestion: true
-        )
-        let prompt = factory.analyzerPrompt(
-            context: ReflectionContext(),
-            messages: [
-                ChatMessage(
-                    role: .user,
-                    content: "画面里一个人扶着门，外面放着一个包裹"
-                ),
-            ],
-            planningContext: planning
-        )
-
-        XCTAssertTrue(prompt.user.contains("Swift planning boundary"))
-        XCTAssertTrue(prompt.user.contains("developImageRelation"))
-        XCTAssertTrue(prompt.user.contains("closeWithoutQuestion"))
-        XCTAssertTrue(prompt.user.contains("Select only from"))
-        XCTAssertTrue(prompt.user.contains("do not tell you what the user means"))
-    }
-
-    func testDialoguePromptDoesNotRequireRepeatingEveryUserMessage() {
-        let text = prompt(cues: []).system
-            .components(separatedBy: .whitespacesAndNewlines)
+        XCTAssertTrue(value.user.contains("clarifyPersonalMeaning"))
+        XCTAssertTrue(value.user.contains("literal user evidence"))
+        XCTAssertTrue(value.user.contains("shouldAskQuestion"))
+        let system = value.system.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        XCTAssertTrue(text.contains("Never mechanically repeat"))
-        XCTAssertTrue(text.contains("briefly pick up one concrete detail"))
-        XCTAssertFalse(text.contains("Never repeat, summarize, or paraphrase"))
-        XCTAssertFalse(text.contains("Reflect one concrete phrase"))
-    }
-
-    func testDialoguePromptPrioritizesNaturalRelationalLanguage() {
-        let text = prompt(cues: []).system
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        XCTAssertTrue(text.contains("Do not optimize a user-facing turn only for theoretical completeness"))
-        XCTAssertTrue(text.contains("emotional naturalness, conversational rhythm, and grounded specificity"))
-        XCTAssertTrue(text.contains("ordinary spoken Chinese"))
-        XCTAssertTrue(text.contains("never like a questionnaire"))
-        XCTAssertTrue(text.contains("60–160 Chinese characters"))
-        XCTAssertTrue(text.contains("under 160 Chinese characters"))
-        XCTAssertFalse(text.contains("under 90 Chinese characters"))
-        XCTAssertTrue(text.contains("plain, warm, ordinary spoken Chinese"))
-        XCTAssertTrue(text.contains("literary, poetic, therapeutic, or vague phrases"))
-        XCTAssertTrue(text.contains("never as a separate relevance question"))
-
-        let readiness = factory.dialoguePrompt(
-            state: .readinessCheck,
-            route: .tenderStabilize,
-            context: ReflectionContext(),
-            analysis: nil,
-            card: nil,
-            trackingCues: [],
-            nextQuestionGoal: "invite a choice",
-            recentMessages: []
-        ).system
-        XCTAssertTrue(readiness.localizedCaseInsensitiveContains("whole-context confirmation"))
-        XCTAssertTrue(readiness.localizedCaseInsensitiveContains("whole summary"))
-        XCTAssertTrue(readiness.localizedCaseInsensitiveContains("not a readiness test"))
-        XCTAssertTrue(readiness.localizedCaseInsensitiveContains("do not mention") && readiness.contains("card"))
-    }
-
-    func testDialoguePromptStopsRepeatingCompletedQuestionFunctionsAcrossScenarios() {
-        let text = prompt(cues: []).system
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-
-        XCTAssertTrue(text.contains("A simple greeting such as hello/hi/你好 is social contact"))
-        XCTAssertTrue(text.contains("Count questions across BOTH reflection and question"))
-        XCTAssertTrue(text.contains("question function as the unit of dialogue"))
-        XCTAssertTrue(text.contains("do not ask a paraphrase merely to collect more detail"))
-        XCTAssertTrue(text.contains("Move to the next unresolved function"))
-        XCTAssertFalse(text.contains("特别期待会有效"))
-        XCTAssertFalse(text.contains("专业指导 or 技术指导"))
-        XCTAssertTrue(text.contains("technical UI state"))
-        XCTAssertTrue(text.contains("local image is displayed"))
-    }
-
-    func testGlobalLabelDoesNotBecomeAnUnsupportedMechanism() {
-        let text = prompt(cues: []).system
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-
-        XCTAssertTrue(text.contains("does not by itself reveal"))
-        XCTAssertTrue(text.contains("Use a mechanism only when"))
-        XCTAssertFalse(text.contains("The label “拖延” does not by itself"))
-
-        let fallback = RemoteDialogueGenerator().emergencyFallbackQuestion(for: .contextDisclosure)
-        XCTAssertFalse(fallback.contains("注意力"))
-        XCTAssertTrue(fallback.contains("现实情况"))
-
-        let analyzer = factory.analyzerPrompt(
-            context: ReflectionContext(),
-            messages: [ChatMessage(role: .user, content: "论文没交，我觉得自己很拖延")]
-        ).system
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        XCTAssertTrue(analyzer.contains("Do not infer a psychological mechanism from a global label"))
-        XCTAssertTrue(analyzer.contains("Classify emotions, self-evaluations, bodily experiences"))
+        XCTAssertTrue(system.contains("Follow the supplied typed response purpose"))
     }
 
     func testEmotionFallbackForAdvisorCriticismDoesNotUseProcrastinationTemplate() {
@@ -703,10 +496,12 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             nextQuestionGoal: "explore repair",
             recentMessages: []
         )
+        let system = generated.system.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
 
-        XCTAssertTrue(generated.system.contains("Every repair question must reuse the concrete action or missing communication"))
-        XCTAssertTrue(generated.system.contains("Rewrite abstract questions about responsibility"))
-        XCTAssertTrue(generated.system.contains("哪段关系需要重新说清楚"))
+        XCTAssertTrue(system.contains("Build every sentence from user-supported evidence"))
+        XCTAssertTrue(system.contains("Candid reflection is optional and requires concrete evidence"))
         XCTAssertTrue(generated.user.contains("答应当天回复同事，但后来忘了"))
 
         let rewritten = RemoteDialogueGenerator().concreteRepairQuestion(
@@ -731,7 +526,9 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         XCTAssertFalse(openFeeling.contains("身体状态"))
         XCTAssertEqual(cardAssociation, "沿着你刚才的说法，画面接下来可能会发生什么？")
         XCTAssertFalse(cardAssociation.contains("看到这张牌"))
-        XCTAssertTrue(cardBoundary.contains("贴近"))
+        XCTAssertTrue(cardBoundary.contains("哪一部分"))
+        XCTAssertFalse(cardBoundary.contains("贴近"))
+        XCTAssertFalse(cardBoundary.contains("准确"))
         XCTAssertEqual(cardBoundary.filter { $0 == "？" || $0 == "?" }.count, 1)
     }
 
@@ -845,7 +642,8 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             recentMessages: [ChatMessage(role: .user, content: "我在组会上被批评了")]
         )
 
-        XCTAssertTrue(prompt.system.contains("exactly one natural spoken-Chinese question"))
+        XCTAssertTrue(prompt.system.contains("Edit only the dialogue question"))
+        XCTAssertTrue(prompt.system.contains("one concise, natural Chinese question"))
         XCTAssertTrue(prompt.system.contains(#""reflection":"""#))
         XCTAssertTrue(prompt.user.contains("ask about the felt experience"))
         XCTAssertTrue(prompt.user.contains("我在组会上被批评了"))
@@ -879,20 +677,17 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             ]
         )
 
-        XCTAssertTrue(imagePhase.system.contains("exactly TWO image-focused assistant turns"))
-        XCTAssertTrue(imagePhase.system.contains("There is no normal third image question"))
-        XCTAssertTrue(imagePhase.system.contains("ONE extra card-specific image scaffold"))
-        XCTAssertTrue(imagePhase.system.contains("never ask another image question"))
-        XCTAssertTrue(generated.system.contains("completed their initial image story"))
-        XCTAssertTrue(generated.system.contains("OPTIONAL card-to-life connection"))
-        XCTAssertTrue(generated.system.contains("First deepen the real situation around that connection"))
-        XCTAssertTrue(generated.system.contains("Only after that answer may you ask whether"))
-        XCTAssertTrue(generated.system.contains("Only when a concrete fierce focus is present"))
+        let system = imagePhase.system.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        XCTAssertTrue(system.contains("person develops the image relation before any life relation"))
+        XCTAssertTrue(system.contains("only their accepted or revised mapping"))
+        XCTAssertTrue(system.contains("A card is a projective object"))
         XCTAssertTrue(generated.user.contains("reality connection"))
     }
 
     func testPromptContractKeepsNarrativeAndActionGatesInOrder() {
-        func system(for state: ReflectionState) -> String {
+        func prompt(for state: ReflectionState) -> LLMPrompt {
             factory.dialoguePrompt(
                 state: state,
                 route: .explore,
@@ -902,29 +697,23 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
                 trackingCues: [],
                 nextQuestionGoal: "follow only the current Swift gate",
                 recentMessages: []
-            ).system
+            )
         }
 
-        let tender = system(for: .tenderGrounding)
-        XCTAssertTrue(tender.contains("TENDER GROUNDING:"))
-        XCTAssertTrue(tender.contains("No tracking, card, or action yet"))
-
-        let tracking = system(for: .trackingReview)
-        XCTAssertTrue(tracking.contains("LEGACY TRACKING STATE:"))
-        XCTAssertTrue(tracking.contains("whole context summary"))
-        XCTAssertFalse(tracking.contains("OPTIONAL PRACTICE:"))
-
-        let narrative = system(for: .summary)
-        XCTAssertTrue(narrative.contains("FINAL NARRATIVE:"))
-        XCTAssertTrue(narrative.contains("stitch fields"))
-
-        let action = system(for: .actionSelection)
-        XCTAssertTrue(action.contains("OPTIONAL PRACTICE:"))
-        XCTAssertTrue(action.contains("The narrative is already confirmed"))
-
-        for scoped in [tender, tracking, narrative, action] {
-            XCTAssertTrue(scoped.contains("Swift alone owns state transitions"))
-            XCTAssertTrue(scoped.contains("Never announce or advance a phase"))
+        for state in [
+            ReflectionState.tenderGrounding,
+            .trackingReview,
+            .summary,
+            .actionSelection,
+        ] {
+            let scoped = prompt(for: state)
+            let system = scoped.system.components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            XCTAssertTrue(system.contains("Swift exclusively owns workflow state"))
+            XCTAssertTrue(system.contains("Follow the supplied typed response purpose"))
+            XCTAssertTrue(scoped.user.contains("Application-owned state: \(state.rawValue)"))
+            XCTAssertTrue(scoped.user.contains("follow only the current Swift gate"))
         }
     }
 
@@ -945,11 +734,10 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             ]
         )
 
-        XCTAssertTrue(generated.system.contains("想不到/没有了/有点难想到/没想到什么"))
-        XCTAssertTrue(generated.system.contains("never establishes a connection"))
-        XCTAssertTrue(generated.system.contains("ONE locally selected image-structure"))
-        XCTAssertTrue(generated.system.contains("ONE last optional reality connection"))
-        XCTAssertTrue(generated.system.contains("valid boundary"))
+        let system = generated.system.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        XCTAssertTrue(system.contains("Respect correction, refusal, no change, and uncertainty"))
 
         let guarded = RemoteDialogueGenerator().cardBoundaryTurn(
             for: .attributionReflection,
@@ -998,8 +786,8 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             nextQuestionGoal: "one meaningful detail",
             recentMessages: []
         ).system
-        XCTAssertTrue(text.contains("do not classify emotion"))
-        XCTAssertTrue(text.contains("Never provide an emotion menu"))
+        XCTAssertTrue(text.contains("Do not infer a cause, motive, emotion"))
+        XCTAssertTrue(text.contains("at most one open question"))
         XCTAssertFalse(text.contains("焦虑、羞愧"))
     }
 
@@ -1014,11 +802,11 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             nextQuestionGoal: "continue the story",
             recentMessages: []
         ).system
-        XCTAssertTrue(text.contains("open, natural question about what the person feels"))
-        XCTAssertTrue(text.contains("no obvious feeling"))
-        XCTAssertTrue(
-            text.lowercased().contains("do not require a bodily reaction")
-        )
+        let system = text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        XCTAssertTrue(system.contains("Build every sentence from user-supported evidence"))
+        XCTAssertTrue(system.contains("Respect correction, refusal, no change, and uncertainty"))
         XCTAssertFalse(text.contains("身体哪里最明显"))
     }
 
@@ -1475,7 +1263,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         let reply = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
         XCTAssertFalse(reply.contains("睡眠"))
         XCTAssertFalse(reply.localizedCaseInsensitiveContains("HRV"))
-        XCTAssertTrue(reply.contains("没有充分恢复") || reply.contains("可用的精力"))
+        XCTAssertTrue(reply.contains("有点累"))
         XCTAssertTrue(reply.contains("更难"))
         XCTAssertFalse(reply.contains("活动量和身体状态与平时有些不同"))
         XCTAssertEqual(reply.filter { $0 == "？" || $0 == "?" }.count, 1)
@@ -1545,7 +1333,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         let reply = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
         XCTAssertFalse(reply.contains("睡眠"))
         XCTAssertFalse(reply.contains("运动量"))
-        XCTAssertTrue(reply.contains("没有充分恢复") || reply.contains("可用的精力"))
+        XCTAssertTrue(reply.contains("有点累"))
         XCTAssertTrue(reply.contains("昨晚") || reply.contains("当时") || reply.contains("这件事"))
         XCTAssertEqual(model.session.stage, .readinessCheck)
         XCTAssertEqual(model.session.workflowPhase, .contextConfirmation)
@@ -1731,7 +1519,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         model.session.workflowPhase = .trackingReview
         let sleep = cue("睡眠比个人基线少 42 分钟", relevance: .notReviewed)
         let schedule = cue(
-            "日程占用比个人基线多 65 分钟",
+            "最近 7 天记录到 4 个定时日程，合计占用 6.5 小时",
             relevance: .notReviewed,
             source: .calendarLoad,
             metric: .calendarLoad
@@ -2045,12 +1833,195 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertEqual(inference.activation, .possiblyElevated)
         XCTAssertEqual(inference.energy, .possiblyReduced)
         XCTAssertTrue(inference.hasDialogueCue)
-        XCTAssertTrue(inference.dialogueHypothesis?.contains("可能承受着比平时更多的压力") == true)
+        XCTAssertEqual(
+            inference.dialogueHypothesis,
+            "用户最近可能有点累，压力也比平时大一些。"
+        )
         XCTAssertFalse(inference.dialogueHypothesis?.localizedCaseInsensitiveContains("HRV") == true)
         XCTAssertFalse(inference.dialogueHypothesis?.contains("心率") == true)
         XCTAssertFalse(inference.dialogueHypothesis?.contains("睡眠") == true)
         XCTAssertTrue(inference.supportingMetrics.contains(.heartRateVariability))
         XCTAssertTrue(inference.alternativeExplanations.contains { $0.contains("活动量增加") })
+    }
+
+    func testRecordedScheduleUsesDirectRecentWindowInsteadOfPersonalBaseline() async throws {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        func points(baseline: Double, recent: Double) -> [TrackingDataPoint] {
+            (-34 ... -7).map {
+                TrackingDataPoint(date: date($0, from: reference), value: baseline, count: 1)
+            } + (-6...0).map {
+                TrackingDataPoint(date: date($0, from: reference), value: recent, count: 1)
+            }
+        }
+        let analyzer = DeterministicSelfTrackingAnalyzer(calendar: calendar)
+        let analysis = try await analyzer.analyze(
+            eventDate: reference,
+            availableData: SelfTrackingDataset(
+                dailyMetrics: [.calendarLoad: points(baseline: 2, recent: 4)],
+                provenance: [:]
+            )
+        )
+
+        let inference = analysis.contextualLoadInference()
+
+        XCTAssertEqual(inference.state, .recordedScheduleContext)
+        XCTAssertEqual(inference.confidence, .moderate)
+        XCTAssertEqual(inference.activation, .unknown)
+        XCTAssertEqual(inference.energy, .unknown)
+        XCTAssertEqual(inference.supportingMetrics, [.calendarLoad])
+        XCTAssertEqual(
+            inference.dialogueHypothesis,
+            "用户最近有一些已经排定、会占用时间的安排。"
+        )
+        XCTAssertFalse(inference.dialogueHypothesis?.contains("累") == true)
+        XCTAssertFalse(inference.dialogueHypothesis?.contains("压力") == true)
+        XCTAssertTrue(inference.alternativeExplanations.contains { $0.contains("未写入日历") })
+    }
+
+    func testRecordedScheduleAndShorterSleepRemainDistinctContextClaims() async throws {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        func points(baseline: Double, recent: Double) -> [TrackingDataPoint] {
+            (-34 ... -7).map {
+                TrackingDataPoint(date: date($0, from: reference), value: baseline, count: 1)
+            } + (-6...0).map {
+                TrackingDataPoint(date: date($0, from: reference), value: recent, count: 1)
+            }
+        }
+        let analyzer = DeterministicSelfTrackingAnalyzer(calendar: calendar)
+        let analysis = try await analyzer.analyze(
+            eventDate: reference,
+            availableData: SelfTrackingDataset(
+                dailyMetrics: [
+                    .calendarLoad: points(baseline: 2, recent: 4),
+                    .sleepDuration: points(baseline: 8, recent: 6.8),
+                ],
+                provenance: [:]
+            )
+        )
+
+        let inference = analysis.contextualLoadInference()
+
+        XCTAssertEqual(inference.state, .possibleReducedRecovery)
+        XCTAssertEqual(Set(inference.supportingMetrics), Set([.calendarLoad, .sleepDuration]))
+        XCTAssertEqual(
+            inference.dialogueHypothesis,
+            "用户最近有一些已经排定、会占用时间的安排，也可能有点累。"
+        )
+        XCTAssertFalse(inference.dialogueHypothesis?.contains("压力") == true)
+    }
+
+    func testScheduleSleepAndCardiovascularAgreementMayTentativelyMentionPressure() async throws {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        func points(baseline: Double, recent: Double) -> [TrackingDataPoint] {
+            (-34 ... -7).map {
+                TrackingDataPoint(date: date($0, from: reference), value: baseline, count: 1)
+            } + (-6...0).map {
+                TrackingDataPoint(date: date($0, from: reference), value: recent, count: 1)
+            }
+        }
+        let analyzer = DeterministicSelfTrackingAnalyzer(calendar: calendar)
+        let analysis = try await analyzer.analyze(
+            eventDate: reference,
+            availableData: SelfTrackingDataset(
+                dailyMetrics: [
+                    .calendarLoad: points(baseline: 2, recent: 4),
+                    .sleepDuration: points(baseline: 8, recent: 6.8),
+                    .restingHeartRate: points(baseline: 64, recent: 72),
+                ],
+                provenance: [:]
+            )
+        )
+
+        let inference = analysis.contextualLoadInference()
+
+        XCTAssertEqual(inference.state, .possiblyElevated)
+        XCTAssertEqual(
+            Set(inference.supportingMetrics),
+            Set([.calendarLoad, .sleepDuration, .restingHeartRate])
+        )
+        XCTAssertEqual(
+            inference.dialogueHypothesis,
+            "用户最近有一些已经排定、会占用时间的安排，也可能有点累，压力也比平时大一些。"
+        )
+    }
+
+    func testRecordedScheduleCueDoesNotDependOnDirectionFromBaseline() async throws {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        let baseline = (-34 ... -7).map {
+            TrackingDataPoint(date: date($0, from: reference), value: 5, count: 1)
+        }
+        let recent = (-6...0).map {
+            TrackingDataPoint(date: date($0, from: reference), value: 1, count: 1)
+        }
+        let analyzer = DeterministicSelfTrackingAnalyzer(calendar: calendar)
+        let analysis = try await analyzer.analyze(
+            eventDate: reference,
+            availableData: SelfTrackingDataset(
+                dailyMetrics: [.calendarLoad: baseline + recent],
+                provenance: [:]
+            )
+        )
+
+        let inference = analysis.contextualLoadInference()
+
+        XCTAssertEqual(inference.state, .recordedScheduleContext)
+        XCTAssertEqual(
+            inference.dialogueHypothesis,
+            "用户最近有一些已经排定、会占用时间的安排。"
+        )
+        XCTAssertTrue(inference.hasDialogueCue)
+    }
+
+    func testEmptyRecordedScheduleProducesNoContextOrBusyClaim() async throws {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        let emptyHistory = (-34...0).map {
+            TrackingDataPoint(date: date($0, from: reference), value: 0, count: 0)
+        }
+        let analyzer = DeterministicSelfTrackingAnalyzer(calendar: calendar)
+        let analysis = try await analyzer.analyze(
+            eventDate: reference,
+            availableData: SelfTrackingDataset(
+                dailyMetrics: [.calendarLoad: emptyHistory],
+                provenance: [:]
+            )
+        )
+
+        let inference = analysis.contextualLoadInference()
+
+        XCTAssertEqual(inference.state, .insufficientEvidence)
+        XCTAssertNil(inference.dialogueHypothesis)
+        XCTAssertFalse(inference.hasDialogueCue)
+        XCTAssertFalse(inference.supportingMetrics.contains(.calendarLoad))
+    }
+
+    func testCalendarOccupiedTimeMergesOverlapsAndClipsToDay() {
+        let reference = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: reference)!
+        let intervals = [
+            DateInterval(
+                start: reference.addingTimeInterval(9 * 3_600),
+                end: reference.addingTimeInterval(11 * 3_600)
+            ),
+            DateInterval(
+                start: reference.addingTimeInterval(10 * 3_600),
+                end: reference.addingTimeInterval(12 * 3_600)
+            ),
+            DateInterval(
+                start: reference.addingTimeInterval(13 * 3_600),
+                end: reference.addingTimeInterval(14 * 3_600)
+            ),
+            DateInterval(
+                start: reference.addingTimeInterval(-3_600),
+                end: reference.addingTimeInterval(3_600)
+            ),
+        ]
+
+        let hours = CalendarOccupiedTimeCalculator.occupiedHours(
+            intervals: intervals,
+            within: DateInterval(start: reference, end: nextDay)
+        )
+
+        XCTAssertEqual(hours, 5, accuracy: 0.001)
     }
 
     func testSingleCardiovascularChangeCannotBecomePressureOrEmotionCue() async throws {
@@ -2102,7 +2073,7 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertEqual(inference.state, .possibleReducedRecovery)
         XCTAssertEqual(inference.activation, .unknown)
         XCTAssertEqual(inference.energy, .possiblyReduced)
-        XCTAssertTrue(inference.dialogueHypothesis?.contains("恢复") == true)
+        XCTAssertEqual(inference.dialogueHypothesis, "用户最近可能有点累。")
         XCTAssertFalse(inference.dialogueHypothesis?.contains("焦虑") == true)
         XCTAssertFalse(inference.dialogueHypothesis?.contains("难过") == true)
     }
@@ -2176,7 +2147,8 @@ final class SelfTrackingAnalysisTests: XCTestCase {
             ($0.metric, $0.neutralObservation)
         })
         XCTAssertTrue(try XCTUnwrap(observations[.sleepDuration]).contains("60 分钟"))
-        XCTAssertTrue(try XCTUnwrap(observations[.calendarLoad]).contains("180 分钟"))
+        XCTAssertTrue(try XCTUnwrap(observations[.calendarLoad]).contains("7 个定时日程"))
+        XCTAssertTrue(try XCTUnwrap(observations[.calendarLoad]).contains("35.0 小时"))
         XCTAssertTrue(try XCTUnwrap(observations[.steps]).contains("2000 步"))
         XCTAssertTrue(try XCTUnwrap(observations[.restingHeartRate]).contains("6.0 bpm"))
         XCTAssertTrue(try XCTUnwrap(observations[.heartRateVariability]).contains("10.0 ms"))
@@ -2325,35 +2297,79 @@ final class SelfTrackingAnalysisTests: XCTestCase {
 }
 
 final class ReflectionCardTests: XCTestCase {
+    func testLatestCardDesignTitlesAndImageMappingsStayInMajorArcanaOrder() {
+        let cards = CardService().allCards
+        XCTAssertEqual(cards.map(\.title), [
+            "旅人", "工匠", "显影者", "放下的照顾", "留出的开口", "传下来的图样",
+            "两处之间", "岔路与载重", "风未停", "暂时关上的门", "雨中的新摆法", "倾斜之后",
+            "倒置之后", "离开之前", "分水", "缠住门的藤", "旧痕新漏", "暮色中的补给",
+            "等待中的轮廓", "风筝升起之后", "旧物与晨钟", "最后一块",
+        ])
+        XCTAssertEqual(cards.map(\.imageName), [
+            "旅人", "工匠", "显影者", "放下的照顾", "留出的开口", "传下来的图样",
+            "两处之间", "岔路与载重", "风未停", "暂时关上的门", "雨中的新摆法", "倾斜之后",
+            "倒置之后", "离开之前", "分水", "缠住门的藤", "旧痕新漏", "暮色中的补给",
+            "等待中的轮廓", "风筝升起之后", "旧照片与晨钟", "最后一块",
+        ])
+    }
+
+    func testLegacyInheritedPatternCardUsesRevisedImageWithoutLosingSessionData() throws {
+        let legacyJSON = """
+        {
+          "id": 5,
+          "neutralLabel": "图像卡 06",
+          "title": "传下来的图样",
+          "imageName": "旧模与新形",
+          "reflectiveThemes": "旧会话保留的主题"
+        }
+        """
+
+        let card = try JSONDecoder().decode(ReflectionCard.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertEqual(card.id, 5)
+        XCTAssertEqual(card.title, "传下来的图样")
+        XCTAssertEqual(card.imageName, "传下来的图样")
+        XCTAssertEqual(card.reflectiveThemes, "旧会话保留的主题")
+        XCTAssertNil(card.referenceGuidance)
+        XCTAssertNotNil(CardService().canonicalReferenceGuidance(for: card))
+    }
+
+    func testRevisedCraftspersonGuidanceDoesNotInventAHelpingHand() throws {
+        let card = try XCTUnwrap(CardService().allCards.first { $0.title == "工匠" })
+        let guidance = try XCTUnwrap(card.visualGuidance)
+
+        XCTAssertEqual(card.imageName, "工匠")
+        XCTAssertTrue(guidance.visualAnchors.contains("未完成框架"))
+        XCTAssertTrue(guidance.visualAnchors.contains("方案"))
+        XCTAssertFalse(guidance.visualAnchors.contains("手"))
+        XCTAssertTrue(guidance.visualScaffolds.allSatisfy { !$0.question.contains("递来") })
+        XCTAssertTrue(guidance.prohibitedClaims.contains("缺少他人出现证明人物必须独自完成"))
+    }
+
     func testAllProjectiveCardImagesAreBundled() {
         let cards = CardService().allCards
         XCTAssertEqual(cards.count, 22)
         XCTAssertEqual(Set(cards.map(\.imageName)).count, 22)
         XCTAssertTrue(cards.allSatisfy { $0.neutralLabel.hasPrefix("图像卡") })
         XCTAssertTrue(cards.allSatisfy { $0.title != $0.neutralLabel })
-        XCTAssertTrue(cards.allSatisfy { !$0.reflectiveThemes.isEmpty })
+        XCTAssertTrue(cards.allSatisfy { $0.reflectiveThemes.isEmpty })
         XCTAssertTrue(cards.allSatisfy {
-            guard let guidance = $0.internalGuidance else { return false }
-            return !guidance.coreTension.isEmpty
-                && !guidance.tenderLenses.isEmpty
-                && !guidance.fierceLenses.isEmpty
+            guard let guidance = $0.visualGuidance else { return false }
+            return !guidance.observableRelation.isEmpty
                 && !guidance.visualAnchors.isEmpty
-                && !guidance.possibleDirections.isEmpty
+                && !guidance.visualAnchors.contains("人")
                 && !guidance.prohibitedClaims.isEmpty
+                && !guidance.visualScaffolds.isEmpty
         })
         XCTAssertTrue(cards.allSatisfy {
-            guard let supplement = $0.internalGuidance?.selfCompassion else { return false }
-            return !supplement.secondaryDimensions.isEmpty
-                && !supplement.selfKindnessCandidates.isEmpty
-                && !supplement.commonHumanityCandidates.isEmpty
-                && !supplement.mindfulnessCandidates.isEmpty
-                && !supplement.candidateQuestion.isEmpty
-                && !supplement.activationHint.isEmpty
+            guard let reference = $0.referenceGuidance else { return false }
+            return reference.relations.count == 2
+                && reference.relations.allSatisfy {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                && !reference.activationBoundary.isEmpty
+                && !reference.prohibitedClaims.isEmpty
         })
-        XCTAssertEqual(
-            Set(cards.compactMap { $0.internalGuidance?.selfCompassion?.primaryDimension }).count,
-            SelfCompassionDimension.allCases.count
-        )
 
         for card in cards {
             let url = Bundle.main.url(forResource: card.imageName, withExtension: "png", subdirectory: "Resources/card")
@@ -2361,6 +2377,107 @@ final class ReflectionCardTests: XCTestCase {
                 ?? Bundle.main.url(forResource: card.imageName, withExtension: "png")
             XCTAssertNotNil(url, "Missing \(card.imageName).png")
         }
+    }
+
+    func testCardReferenceRelationshipsAreClosedQuestionLensesAndRoundTrip() throws {
+        let cards = CardService().allCards
+        let craft = try XCTUnwrap(cards.first { $0.title == "工匠" })
+        let inheritedPattern = try XCTUnwrap(cards.first { $0.title == "传下来的图样" })
+        let crossroads = try XCTUnwrap(cards.first { $0.title == "岔路与载重" })
+        let care = try XCTUnwrap(cards.first { $0.title == "放下的照顾" })
+        let dividedWater = try XCTUnwrap(cards.first { $0.title == "分水" })
+        let vine = try XCTUnwrap(cards.first { $0.title == "缠住门的藤" })
+        let completion = try XCTUnwrap(cards.first { $0.title == "最后一块" })
+        let craftReference = try XCTUnwrap(craft.referenceGuidance)
+        let inheritedPatternReference = try XCTUnwrap(inheritedPattern.referenceGuidance)
+        let crossroadsReference = try XCTUnwrap(crossroads.referenceGuidance)
+        let careReference = try XCTUnwrap(care.referenceGuidance)
+        let dividedWaterReference = try XCTUnwrap(dividedWater.referenceGuidance)
+        let vineReference = try XCTUnwrap(vine.referenceGuidance)
+        let completionReference = try XCTUnwrap(completion.referenceGuidance)
+
+        XCTAssertEqual(
+            craftReference.relations,
+            ["已有材料与下一步行动之间的关系", "多个可行方案与尚未确定的组合方式之间的关系"]
+        )
+        XCTAssertTrue(
+            craftReference.prohibitedClaims.contains("不能要求用户寻求画面中并不存在的外部帮助")
+        )
+        XCTAssertEqual(
+            inheritedPatternReference.relations,
+            ["既有图样与当前制作条件之间的关系", "借用他人经验与形成个人判断之间的关系"]
+        )
+        XCTAssertTrue(
+            inheritedPatternReference.prohibitedClaims.contains("不能预设传统必须被遵循或打破")
+        )
+        XCTAssertEqual(
+            crossroadsReference.relations,
+            ["前进方向与当前携带内容之间的关系", "已经装载、暂时放下与是否重新带走之间的关系"]
+        )
+        XCTAssertTrue(
+            crossroadsReference.prohibitedClaims.contains("不能把停顿解释为逃避、犹豫或缺乏方向")
+        )
+        XCTAssertEqual(
+            careReference.relations,
+            ["提供照顾与实际需要之间的关系", "给出支持与是否接受支持之间的关系"]
+        )
+        XCTAssertTrue(careReference.prohibitedClaims.contains("不能直接说用户需要被照顾"))
+        XCTAssertEqual(
+            dividedWaterReference.relations,
+            ["同一来源与不同接收容量之间的关系", "已经流向各处的投入与各处实际需要之间的关系"]
+        )
+        XCTAssertTrue(
+            dividedWaterReference.prohibitedClaims.contains("不能假定平均分配就是公平")
+        )
+        XCTAssertEqual(
+            vineReference.relations,
+            ["曾经支持生长的路径与后来影响通行之间的关系", "保留已有生长与重新引导、松开或局部处理之间的关系"]
+        )
+        XCTAssertTrue(
+            vineReference.prohibitedClaims.contains("不能说用户必须彻底切断某种模式")
+        )
+        XCTAssertTrue(
+            completionReference.relations.contains("继续完善与决定完成之间的关系")
+        )
+        XCTAssertTrue(
+            completionReference.prohibitedClaims.contains("不能把停止修改等同于降低标准")
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ReflectionCard.self,
+            from: JSONEncoder().encode(completion)
+        )
+        XCTAssertEqual(decoded.referenceGuidance, completion.referenceGuidance)
+    }
+
+    func testCanonicalCardReferenceIgnoresStoredCopiesAndRejectsMismatchedSources() throws {
+        let service = CardService()
+        let canonicalCard = try XCTUnwrap(service.allCards.first)
+        let canonicalReference = try XCTUnwrap(canonicalCard.referenceGuidance)
+        let untrustedCopy = ReflectionCard(
+            id: canonicalCard.id,
+            neutralLabel: canonicalCard.neutralLabel,
+            title: canonicalCard.title,
+            imageName: canonicalCard.imageName,
+            referenceGuidance: .init(
+                relations: ["不属于当前卡牌的关系"],
+                activationBoundary: "不可信边界",
+                prohibitedClaims: ["不可信限制"]
+            )
+        )
+
+        XCTAssertEqual(
+            service.canonicalReferenceGuidance(for: untrustedCopy),
+            canonicalReference
+        )
+
+        let mismatchedSource = ReflectionCard(
+            id: canonicalCard.id,
+            neutralLabel: canonicalCard.neutralLabel,
+            title: canonicalCard.title,
+            imageName: "另一个图像资源"
+        )
+        XCTAssertNil(service.canonicalReferenceGuidance(for: mismatchedSource))
     }
 
     func testCardSelectionIsLocalAndAcceptsNoRouteInput() {
@@ -2373,21 +2490,21 @@ final class ReflectionCardTests: XCTestCase {
         }
     }
 
-    func testGuidanceRequiresImageRealityAndCardTensionIntersection() throws {
-        let door = try XCTUnwrap(CardService().allCards.first { $0.title == "半开的门" })
-        let matcher = CardGuidanceMatcher()
+    func testGroundingRequiresVisibleAnchorAndSharedUserRelations() throws {
+        let door = try XCTUnwrap(CardService().allCards.first { $0.title == "留出的开口" })
+        let matcher = CardGroundingMatcher()
 
         let match = matcher.match(
             card: door,
-            userImageNarrative: "门外的人快走了，里面的人还扶着门把手。",
+            userImageNarrative: "一个人在书桌和门口之间调整屏风，门外的人拿着文件等待。",
             semanticRelations: [
                 SemanticRelation(
                     kind: .imageStructure,
-                    source: "门仍然半开着，门外的人正在离开",
+                    source: "屏风在书桌和门口之间留出开口",
                     relation: "同时保留",
-                    target: "距离和未完成的回应",
+                    target: "工作空间的边界和未完成的回应",
                     concepts: [.boundary, .communication],
-                    evidence: ["门外的人快走了"],
+                    evidence: ["屏风没有完全封住门口"],
                     status: .userStated,
                     confidence: 0.9
                 ),
@@ -2404,22 +2521,22 @@ final class ReflectionCardTests: XCTestCase {
             ]
         )
         XCTAssertTrue(try XCTUnwrap(match).matchedVisualAnchors.contains("门"))
-        XCTAssertTrue(try XCTUnwrap(match).candidateDirections.contains("边界"))
-        XCTAssertTrue(try XCTUnwrap(match).candidateDirections.contains("沟通"))
+        XCTAssertTrue(try XCTUnwrap(match).matchedConcepts?.contains(.boundary) == true)
+        XCTAssertTrue(try XCTUnwrap(match).matchedConcepts?.contains(.communication) == true)
         XCTAssertNotNil(match?.imageRelation)
         XCTAssertNotNil(match?.realityRelation)
 
         XCTAssertNil(matcher.match(
             card: door,
-            userImageNarrative: "门外的人快走了，里面的人还扶着门把手。",
+            userImageNarrative: "一个人在书桌和门口之间调整屏风，门外的人拿着文件等待。",
             semanticRelations: [
                 SemanticRelation(
                     kind: .imageStructure,
-                    source: "门内与门外",
+                    source: "屏风两侧",
                     relation: "形成",
                     target: "距离",
                     concepts: [.boundary],
-                    evidence: ["门外的人快走了"],
+                    evidence: ["屏风没有完全封住门口"],
                     status: .userStated,
                     confidence: 0.9
                 ),
@@ -2437,60 +2554,46 @@ final class ReflectionCardTests: XCTestCase {
         ))
     }
 
-    func testDifferentCardsExposeDifferentTenderAndFierceDirectionsAfterIntersection() throws {
+    func testCardsExposeVisualRelationsButNoPerCardTenderOrFierceMeaning() throws {
         let cards = CardService().allCards
-        let door = try XCTUnwrap(cards.first { $0.title == "半开的门" })
-        let vessel = try XCTUnwrap(cards.first { $0.title == "裂痕与器皿" })
-        let matcher = CardGuidanceMatcher()
+        let door = try XCTUnwrap(cards.first { $0.title == "留出的开口" })
+        let vessel = try XCTUnwrap(cards.first { $0.title == "旧痕新漏" })
 
-        let doorMatch = matcher.match(
-            card: door,
-            userImageNarrative: "门停在半开的位置，门内外还隔着一段距离",
-            semanticRelations: semanticPair(
-                image: "门内和门外 保留 一段距离",
-                reality: "保护自己 同时留下 尚未完成的沟通",
-                concepts: [.boundary, .communication]
-            )
+        XCTAssertNotEqual(
+            door.visualGuidance?.observableRelation,
+            vessel.visualGuidance?.observableRelation
         )
-        let vesselMatch = matcher.match(
-            card: vessel,
-            userImageNarrative: "器皿有一道裂痕，旁边的手正在处理裂缝",
-            semanticRelations: semanticPair(
-                image: "裂痕 已经造成 需要处理的影响",
-                reality: "一个具体行为 已经造成 需要修复的影响",
-                concepts: [.responsibility, .repair]
+        for card in [door, vessel] {
+            let encoded = String(
+                decoding: try JSONEncoder().encode(card),
+                as: UTF8.self
             )
-        )
-
-        XCTAssertNotNil(doorMatch)
-        XCTAssertNotNil(vesselMatch)
-        XCTAssertNotEqual(doorMatch?.candidateDirections, vesselMatch?.candidateDirections)
-        XCTAssertNotNil(doorMatch?.selectedTenderLensID)
-        XCTAssertNotNil(doorMatch?.selectedFierceLensID)
-        XCTAssertNotNil(vesselMatch?.selectedTenderLensID)
-        XCTAssertNotNil(vesselMatch?.selectedFierceLensID)
-        XCTAssertNotEqual(doorMatch?.selectedTenderLensID, vesselMatch?.selectedTenderLensID)
-        XCTAssertNotEqual(doorMatch?.selectedFierceLensID, vesselMatch?.selectedFierceLensID)
-        XCTAssertNotEqual(door.internalGuidance?.tenderLenses, vessel.internalGuidance?.tenderLenses)
-        XCTAssertNotEqual(door.internalGuidance?.fierceLenses, vessel.internalGuidance?.fierceLenses)
+            XCTAssertFalse(encoded.contains("coreTension"))
+            XCTAssertFalse(encoded.contains("tenderLenses"))
+            XCTAssertFalse(encoded.contains("fierceLenses"))
+            XCTAssertFalse(encoded.contains("selfCompassion"))
+            XCTAssertFalse(encoded.contains("possibleDirections"))
+        }
+        XCTAssertFalse(SystemReflectionApproaches.standard.tender.isEmpty)
+        XCTAssertFalse(SystemReflectionApproaches.standard.fierce.isEmpty)
     }
 
-    func testSameCardFormsDifferentGuidanceMatchesInDifferentRealityStructures() throws {
-        let door = try XCTUnwrap(CardService().allCards.first { $0.title == "半开的门" })
-        let matcher = CardGuidanceMatcher()
+    func testSameCardGroundingReflectsDifferentUserRealityStructures() throws {
+        let door = try XCTUnwrap(CardService().allCards.first { $0.title == "留出的开口" })
+        let matcher = CardGroundingMatcher()
         let image = SemanticRelation(
             kind: .imageStructure,
-            source: "门停在半开的位置",
+            source: "屏风在门口留出开口",
             relation: "同时保留",
             target: "距离和未完成的回应",
             concepts: [.boundary, .communication],
-            evidence: ["门停在半开的位置"],
+            evidence: ["屏风在门口留出开口"],
             status: .userStated,
             confidence: 0.9
         )
         let boundaryMatch = matcher.match(
             card: door,
-            userImageNarrative: "门停在半开的位置",
+            userImageNarrative: "屏风在门口留出开口",
             semanticRelations: [
                 image,
                 SemanticRelation(
@@ -2507,7 +2610,7 @@ final class ReflectionCardTests: XCTestCase {
         )
         let communicationMatch = matcher.match(
             card: door,
-            userImageNarrative: "门停在半开的位置",
+            userImageNarrative: "屏风在门口留出开口",
             semanticRelations: [
                 image,
                 SemanticRelation(
@@ -2523,38 +2626,98 @@ final class ReflectionCardTests: XCTestCase {
             ]
         )
 
-        XCTAssertEqual(boundaryMatch?.candidateDirections, ["边界"])
-        XCTAssertEqual(communicationMatch?.candidateDirections, ["沟通"])
+        XCTAssertEqual(boundaryMatch?.matchedConcepts, [.boundary])
+        XCTAssertEqual(communicationMatch?.matchedConcepts, [.communication])
         XCTAssertNotEqual(boundaryMatch?.realityRelation, communicationMatch?.realityRelation)
-        XCTAssertNotNil(boundaryMatch?.selectedTenderLensID)
-        XCTAssertNotNil(communicationMatch?.selectedTenderLensID)
     }
 
-    func testLegacyCardGuidanceMatchWithoutSelectedLensIDsStillDecodes() throws {
-        let current = CardGuidanceMatch(
-            matchedVisualAnchors: ["门"],
-            candidateDirections: ["边界"],
-            imageRelation: "画面里保留距离",
-            realityRelation: "现实中保留距离",
-            matchedConcepts: [.boundary],
-            selectedTenderLensID: "card:1:tender:0",
-            selectedFierceLensID: "card:1:fierce:0",
-            selectedSelfCompassionCandidateID: "card:1:self:selfKindness:0"
+    func testLegacyCardGuidanceFieldsAreIgnoredWhenGroundingMatchDecodes() throws {
+        let legacyJSON = """
+        {
+          "matchedVisualAnchors": ["门"],
+          "candidateDirections": ["边界"],
+          "imageRelation": "画面里保留距离",
+          "realityRelation": "现实中保留距离",
+          "matchedConcepts": ["boundary"],
+          "selectedTenderLensID": "card:1:tender:0",
+          "selectedFierceLensID": "card:1:fierce:0",
+          "selectedSelfCompassionCandidateID": "card:1:self:selfKindness:0"
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(
+            CardGroundingMatch.self,
+            from: Data(legacyJSON.utf8)
         )
-        let encoded = try JSONEncoder().encode(current)
+        XCTAssertEqual(decoded.matchedVisualAnchors, ["门"])
+        XCTAssertEqual(decoded.matchedConcepts, [.boundary])
+        let reencoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
+        XCTAssertFalse(reencoded.contains("candidateDirections"))
+        XCTAssertFalse(reencoded.contains("selectedTenderLensID"))
+    }
+
+    func testLegacyCardMetadataKeepsOnlyVisualFieldsAfterDecoding() throws {
+        let legacyJSON = """
+        {
+          "id": 4,
+          "neutralLabel": "图像卡 05",
+          "title": "留出的开口",
+          "imageName": "留出的开口",
+          "reflectiveThemes": "旧的心理主题",
+          "internalGuidance": {
+            "coreTension": "旧的预设核心意义",
+            "tenderLenses": ["旧的温和方向"],
+            "fierceLenses": ["旧的直面方向"],
+            "visualAnchors": ["屏风", "门"],
+            "possibleDirections": ["边界"],
+            "prohibitedClaims": ["不要宣布固定牌义"],
+            "visualScaffolds": [
+              {
+                "requiredAnchorGroups": [["屏风"], ["门"]],
+                "question": "屏风和门之间接下来可能发生什么？"
+              }
+            ]
+          }
+        }
+        """
+
+        let card = try JSONDecoder().decode(ReflectionCard.self, from: Data(legacyJSON.utf8))
+        let visual = try XCTUnwrap(card.visualGuidance)
+        XCTAssertEqual(visual.observableRelation, "")
+        XCTAssertEqual(visual.visualAnchors, ["屏风", "门"])
+        XCTAssertEqual(visual.visualScaffolds.count, 1)
+        XCTAssertEqual(visual.prohibitedClaims, ["不要宣布固定牌义"])
+
+        let reencoded = String(decoding: try JSONEncoder().encode(card), as: UTF8.self)
+        XCTAssertTrue(reencoded.contains("visualGuidance"))
+        XCTAssertFalse(reencoded.contains("internalGuidance"))
+        XCTAssertFalse(reencoded.contains("coreTension"))
+        XCTAssertFalse(reencoded.contains("tenderLenses"))
+        XCTAssertFalse(reencoded.contains("fierceLenses"))
+        XCTAssertFalse(reencoded.contains("possibleDirections"))
+    }
+
+    func testLegacySessionGroundingKeyMigratesWithoutLosingUserRelations() throws {
+        var session = ReflectionSession()
+        session.cardGroundingMatch = CardGroundingMatch(
+            matchedVisualAnchors: ["门"],
+            imageRelation: "画面里保留一个开口",
+            realityRelation: "现实里也保留一个回应入口",
+            matchedConcepts: [.communication]
+        )
+        let encoded = try JSONEncoder().encode(session)
         var object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
-        object.removeValue(forKey: "selectedTenderLensID")
-        object.removeValue(forKey: "selectedFierceLensID")
-        object.removeValue(forKey: "selectedSelfCompassionCandidateID")
+        object["cardGuidanceMatch"] = object.removeValue(forKey: "cardGroundingMatch")
         let legacyData = try JSONSerialization.data(withJSONObject: object)
 
-        let decoded = try JSONDecoder().decode(CardGuidanceMatch.self, from: legacyData)
+        let decoded = try JSONDecoder().decode(ReflectionSession.self, from: legacyData)
+        XCTAssertEqual(decoded.cardGroundingMatch, session.cardGroundingMatch)
 
-        XCTAssertNil(decoded.selectedTenderLensID)
-        XCTAssertNil(decoded.selectedFierceLensID)
-        XCTAssertNil(decoded.selectedSelfCompassionCandidateID)
+        let reencoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
+        XCTAssertTrue(reencoded.contains("cardGroundingMatch"))
+        XCTAssertFalse(reencoded.contains("cardGuidanceMatch"))
     }
 
     func testCardDeltaPromptUsesTypedBoundaryAndOmitsBaselineFieldsAndPreCardTranscript() {
@@ -2616,14 +2779,13 @@ final class ReflectionCardTests: XCTestCase {
     }
 
     @MainActor
-    func testSelectedCardTenderLensProducesDifferentVisibleQuestionFunctions() async throws {
+    func testSystemTenderApproachRespondsToDifferentUserOwnedMappings() async throws {
         let cards = CardService().allCards
-        let door = try XCTUnwrap(cards.first { $0.title == "半开的门" })
-        let vessel = try XCTUnwrap(cards.first { $0.title == "裂痕与器皿" })
+        let door = try XCTUnwrap(cards.first { $0.title == "留出的开口" })
+        let vessel = try XCTUnwrap(cards.first { $0.title == "旧痕新漏" })
 
         func resumedModel(
             card: ReflectionCard,
-            tenderLensIndex: Int,
             imageRelation: String,
             realityRelation: String
         ) -> ReflectionViewModel {
@@ -2640,19 +2802,15 @@ final class ReflectionCardTests: XCTestCase {
             saved.cardConfirmedMapping = "两种关系有一个可以修改或拒绝的对应"
             saved.cardLifeConnection = saved.cardConfirmedMapping
             saved.hasUserAuthoredCardConnection = true
-            saved.cardGuidanceMatch = CardGuidanceMatch(
-                matchedVisualAnchors: card.internalGuidance?.visualAnchors.prefix(1).map { $0 } ?? [],
-                candidateDirections: card.internalGuidance?.possibleDirections.prefix(1).map { $0 } ?? [],
+            saved.cardGroundingMatch = CardGroundingMatch(
+                matchedVisualAnchors: card.visualGuidance?.visualAnchors.prefix(1).map { $0 } ?? [],
                 imageRelation: imageRelation,
                 realityRelation: realityRelation,
-                matchedConcepts: [.boundary],
-                selectedTenderLensID: "card:\(card.id):tender:\(tenderLensIndex)",
-                selectedFierceLensID: nil,
-                selectedSelfCompassionCandidateID: nil
+                matchedConcepts: [.boundary]
             )
             let model = ReflectionViewModel(
                 analyzer: StaticAnalyzer(),
-                dialogueGenerator: SelectedTenderLensDialogueGenerator()
+                dialogueGenerator: UserOwnedTenderApproachDialogueGenerator()
             )
             model.resume(
                 ResumableReflection(
@@ -2667,15 +2825,13 @@ final class ReflectionCardTests: XCTestCase {
 
         let doorModel = resumedModel(
             card: door,
-            tenderLensIndex: 0,
-            imageRelation: "门停在半开的位置",
+            imageRelation: "屏风在门口留出开口",
             realityRelation: "现实中也在保留距离"
         )
         let vesselModel = resumedModel(
             card: vessel,
-            tenderLensIndex: 0,
-            imageRelation: "器皿有一道需要处理的裂痕",
-            realityRelation: "现实中有一个具体影响需要面对"
+            imageRelation: "旧水渍处出现一道需要处理的新裂缝",
+            realityRelation: "现实中有一个具体损失需要修复"
         )
         for _ in 0..<60 {
             let doorHasReply = doorModel.session.messages.contains { $0.role == .assistant }
@@ -2688,11 +2844,11 @@ final class ReflectionCardTests: XCTestCase {
 
         let doorQuestion = doorModel.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
         let vesselQuestion = vesselModel.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
-        XCTAssertTrue(doorQuestion.contains("保持距离"), "door reply: \(doorQuestion)")
-        XCTAssertTrue(vesselQuestion.contains("具体影响"), "vessel reply: \(vesselQuestion)")
+        XCTAssertTrue(doorQuestion.contains("边界"), "door reply: \(doorQuestion)")
+        XCTAssertTrue(vesselQuestion.contains("具体损失"), "vessel reply: \(vesselQuestion)")
         XCTAssertNotEqual(doorQuestion, vesselQuestion)
-        XCTAssertFalse(doorQuestion.contains("做错一件事"))
-        XCTAssertFalse(vesselQuestion.contains("拒绝不等于"))
+        XCTAssertFalse(doorQuestion.contains("混乱不等于"))
+        XCTAssertFalse(vesselQuestion.contains("控制欲强"))
     }
 
     func testCardPromptContainsNoDiagnosticMeaning() {
@@ -2707,11 +2863,12 @@ final class ReflectionCardTests: XCTestCase {
             nextQuestionGoal: "observation",
             recentMessages: []
         )
-        XCTAssertTrue(prompt.user.contains("Do not provide a meaning"))
+        XCTAssertTrue(prompt.system.contains("A card is a projective object"))
+        XCTAssertTrue(prompt.system.contains("An image cannot prove anything about the person"))
         XCTAssertFalse(prompt.user.localizedCaseInsensitiveContains("avoiding responsibility"))
     }
 
-    func testSelfCompassionDimensionsAreGlobalAndNotAVisibleChecklist() {
+    func testSelfCompassionIsOperationalizedWithoutADimensionChecklist() {
         let factory = ReflectionPromptFactory()
         let prompt = factory.dialoguePrompt(
             state: .trackingReview,
@@ -2723,15 +2880,20 @@ final class ReflectionCardTests: XCTestCase {
             nextQuestionGoal: "describe the supplied tracking context",
             recentMessages: []
         )
-        XCTAssertTrue(prompt.system.contains("Self-kindness"))
-        XCTAssertTrue(prompt.system.contains("Common humanity"))
-        XCTAssertTrue(prompt.system.contains("Mindfulness"))
-        XCTAssertTrue(prompt.system.contains("across the conversation"))
-        XCTAssertTrue(prompt.system.contains("candidate context"))
-        XCTAssertTrue(prompt.system.contains("final narrative only"))
+        XCTAssertFalse(prompt.system.contains("Self-kindness"))
+        XCTAssertFalse(prompt.system.contains("Common humanity"))
+        XCTAssertFalse(prompt.system.contains("Mindfulness"))
+        XCTAssertTrue(prompt.system.contains("Tender acknowledges difficulty and limits"))
+        XCTAssertTrue(prompt.system.contains("limits whole-person judgment without denying what happened"))
+        XCTAssertTrue(prompt.system.contains("Contextual data is only a tentative background cue"))
+        XCTAssertTrue(prompt.system.contains("only their accepted or revised mapping"))
         let analyzerPrompt = factory.analyzerPrompt(context: ReflectionContext(), messages: [])
-        XCTAssertTrue(analyzerPrompt.system.contains("three self-compassion dimensions"))
-        XCTAssertTrue(analyzerPrompt.system.contains("evidence-discipline constraints"))
+        let analyzerSystem = analyzerPrompt.system.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        XCTAssertFalse(analyzerPrompt.system.contains("three self-compassion dimensions"))
+        XCTAssertTrue(analyzerSystem.contains("Separate observable episode facts"))
+        XCTAssertTrue(analyzerSystem.contains("Evidence arrays contain only short literal fragments"))
     }
 
     @MainActor
@@ -2780,7 +2942,7 @@ final class ReflectionCardTests: XCTestCase {
         XCTAssertFalse(prompt.user.contains("STORED_THEME_MUST_NOT_APPEAR"))
     }
 
-    func testCardCandorIsUserLedAndActionsUseOnlyCareRepairOrChange() {
+    func testLegacyCardPromptKeepsCandorUserLedAndActionSwiftAuthorized() {
         var context = ReflectionContext()
         context.cardInterpretation = "女士正在安抚狗"
         let candor = ReflectionPromptFactory().dialoguePrompt(
@@ -2792,11 +2954,13 @@ final class ReflectionCardTests: XCTestCase {
             trackingCues: [],
             nextQuestionGoal: "card-mediated candid question",
             recentMessages: []
-        ).system
+        ).system.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
 
-        XCTAssertTrue(candor.contains("interpretive lens"))
-        XCTAssertTrue(candor.contains("concrete fierce focus"))
-        XCTAssertTrue(candor.contains("tracking data as evidence"))
+        XCTAssertTrue(candor.contains("Candid reflection is optional and requires concrete evidence"))
+        XCTAssertTrue(candor.contains("only their accepted or revised mapping"))
+        XCTAssertTrue(candor.contains("Contextual data is only a tentative background cue"))
         XCTAssertFalse(candor.contains("OPTIONAL PRACTICE:"))
 
         let action = ReflectionPromptFactory().dialoguePrompt(
@@ -2809,8 +2973,9 @@ final class ReflectionCardTests: XCTestCase {
             nextQuestionGoal: "offer the authorized practice",
             recentMessages: []
         ).system
-        XCTAssertTrue(action.contains("care, repair, protect, or change"))
-        XCTAssertTrue(action.contains("OPTIONAL PRACTICE:"))
+        XCTAssertTrue(action.contains("actionOptions is empty unless Swift"))
+        XCTAssertTrue(action.contains("explicitly authorizes action selection"))
+        XCTAssertFalse(action.contains("OPTIONAL PRACTICE:"))
     }
 
     func testNoRouteSpecificCardQuestionBeforeUserNarrative() {
@@ -2825,16 +2990,20 @@ final class ReflectionCardTests: XCTestCase {
             nextQuestionGoal: "first card narrative",
             recentMessages: []
         )
+        let system = prompt.system.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
         XCTAssertFalse(prompt.system.contains("有什么需要被挡在外面"))
-        XCTAssertTrue(prompt.system.contains("看到这张牌，你觉得画面里正在发生什么？"))
+        XCTAssertFalse(prompt.user.contains("边界"))
+        XCTAssertTrue(system.contains("the person develops the image relation"))
     }
 
-    func testCardFollowUpContainsOnlyOneNarrativeQuestion() {
+    func testCardFollowUpPromptIsRouteNeutralAndAllowsOnlyOneQuestion() {
         var context = ReflectionContext()
         context.cardInterpretation = "一个人想往前走，但还没有决定方向"
         let card = ReflectionCard(id: 1, neutralLabel: "图像 2", imageName: "2", reflectiveThemes: "unused")
-        for route in CompassionRoute.allCases {
-            let system = ReflectionPromptFactory().dialoguePrompt(
+        let systems = CompassionRoute.allCases.map { route in
+            ReflectionPromptFactory().dialoguePrompt(
                 state: .attributionReflection,
                 route: route,
                 context: context,
@@ -2844,10 +3013,11 @@ final class ReflectionCardTests: XCTestCase {
                 nextQuestionGoal: "one narrative question",
                 recentMessages: []
             ).system
-            XCTAssertTrue(system.contains("completed their initial image story"), "route: \(route)")
-            XCTAssertTrue(system.contains("do not add another image question"), "route: \(route)")
-            XCTAssertTrue(system.localizedCaseInsensitiveContains("First deepen the real situation around that connection"), "route: \(route)")
         }
+        XCTAssertEqual(Set(systems).count, 1)
+        XCTAssertTrue(systems.allSatisfy { $0.contains("asking at most one open question") })
+        XCTAssertTrue(systems.allSatisfy { $0.contains("only their accepted or revised mapping") })
+        XCTAssertTrue(systems.allSatisfy { $0.contains("require agreement") })
     }
 
     @MainActor
@@ -2903,14 +3073,14 @@ final class ReflectionCardTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "不同建议和有限时间构成了已经确认的现实背景。"
-        model.session.card = CardService().allCards.first { $0.title == "未定之步" }
+        model.session.card = CardService().allCards.first { $0.title == "旅人" }
         model.session.cardDrawRecord = CardDrawRecord(
             sessionID: model.session.id,
             cardID: "1",
             drawnAt: .now,
             routeBeforeDraw: .tenderStabilize
         )
-        model.session.context.cardInterpretation = "画面里一个人站在两条路之间"
+        model.session.context.cardInterpretation = "画面里一个人一只脚在岸上，另一只脚踩上通往小船的木板"
         model.draft = "和我的事没有联系"
 
         model.send()
@@ -2974,11 +3144,11 @@ final class ReflectionCardTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "这段现实情况已经由用户确认。"
-        model.session.card = CardService().allCards.first { $0.title == "裂痕与器皿" }
+        model.session.card = CardService().allCards.first { $0.title == "旧痕新漏" }
         model.session.context.cardInterpretation =
-            "一个器皿出现裂缝，少量水正渗到旁边的布上"
+            "天花板旧水渍处出现新裂缝，雨水正漏进下面的桶里"
         model.session.messages.append(
-            ChatMessage(role: .user, content: "一个器皿出现裂缝，少量水正渗到旁边的布上")
+            ChatMessage(role: .user, content: "天花板旧水渍处出现新裂缝，雨水正漏进下面的桶里")
         )
         model.draft = "有点想不到"
 
@@ -2988,17 +3158,17 @@ final class ReflectionCardTests: XCTestCase {
         XCTAssertTrue(model.session.cardConnectionScaffoldPending)
         XCTAssertEqual(model.session.workflowPhase, .cardConnection)
         let scaffold = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
-        XCTAssertTrue(scaffold.contains("裂缝"))
-        XCTAssertTrue(scaffold.contains("接下来"))
+        XCTAssertTrue(scaffold.contains("旧水渍"))
+        XCTAssertTrue(scaffold.contains("新出现的裂缝"))
         XCTAssertFalse(scaffold.contains("代表"))
 
-        model.draft = "布能先接住渗出的水，但裂缝之后会不会扩大还不知道"
+        model.draft = "桶能先接住漏水，但新裂缝之后会不会扩大还不知道"
         model.send()
         await waitForModelIdle(model)
 
         XCTAssertFalse(model.session.cardConnectionScaffoldPending)
         XCTAssertEqual(model.session.workflowPhase, .cardConnection)
-        XCTAssertTrue(model.session.context.cardInterpretation?.contains("裂缝之后会不会扩大") == true)
+        XCTAssertTrue(model.session.context.cardInterpretation?.contains("新裂缝之后会不会扩大") == true)
         XCTAssertNil(model.session.cardLifeConnection)
 
         model.draft = "项目里我能处理自己的分析，但跨部门的数据什么时候给我，不是我能决定的"
@@ -3029,11 +3199,11 @@ final class ReflectionCardTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "这段现实情况已经由用户确认。"
-        model.session.card = CardService().allCards.first { $0.title == "可转向的车" }
+        model.session.card = CardService().allCards.first { $0.title == "岔路与载重" }
         model.session.context.eventDescription = "昨晚妈妈又问了一遍已经解释过的报销问题，我语气很冲"
-        model.session.context.cardInterpretation = "一辆装着货物的小车来到弯道，人物还握着转向杆"
+        model.session.context.cardInterpretation = "一辆装着箱子的三轮车停在岔路前，人物仍扶着车"
         model.session.messages.append(
-            ChatMessage(role: .user, content: "一辆装着货物的小车来到弯道，人物还握着转向杆")
+            ChatMessage(role: .user, content: "一辆装着箱子的三轮车停在岔路前，人物仍扶着车")
         )
         model.session.trackingContextLinkResponse = "最近睡得短一些，事情堆着时更难保持耐心"
         model.draft = "这让我想到住院和报销不可能一下子都处理完，但昨晚回应妈妈的方式仍可以调整"
@@ -3053,7 +3223,8 @@ final class ReflectionCardTests: XCTestCase {
 
         let visible = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
         XCTAssertTrue(visible.contains(candidate))
-        XCTAssertTrue(visible.contains("贴近吗"))
+        XCTAssertTrue(visible.contains("最明显的是哪一部分"))
+        XCTAssertFalse(visible.contains("贴近吗"))
     }
 
     @MainActor
@@ -3067,11 +3238,11 @@ final class ReflectionCardTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "这段现实情况已经由用户确认。"
-        model.session.card = CardService().allCards.first { $0.title == "可转向的车" }
+        model.session.card = CardService().allCards.first { $0.title == "岔路与载重" }
         model.session.context.eventDescription = "我昨晚对妈妈语气很冲"
-        model.session.context.cardInterpretation = "一辆小车来到弯道，人物还握着可以调整方向的把手"
+        model.session.context.cardInterpretation = "一辆装着箱子的三轮车停在岔路前，人物仍可以调整方向"
         model.session.messages.append(
-            ChatMessage(role: .user, content: "一辆小车来到弯道，人物还握着可以调整方向的把手")
+            ChatMessage(role: .user, content: "一辆装着箱子的三轮车停在岔路前，人物仍可以调整方向")
         )
         model.draft = "这让我想到我可以先处理昨晚语气很冲这件事"
 
@@ -3101,11 +3272,11 @@ final class ReflectionCardTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "这段现实情况已经由用户确认。"
-        model.session.card = CardService().allCards.first { $0.title == "可转向的车" }
+        model.session.card = CardService().allCards.first { $0.title == "岔路与载重" }
         model.session.context.eventDescription = "我昨晚对妈妈语气很冲"
-        model.session.context.cardInterpretation = "一辆小车来到弯道，人物还握着可以调整方向的把手"
+        model.session.context.cardInterpretation = "一辆装着箱子的三轮车停在岔路前，人物仍可以调整方向"
         model.session.messages.append(
-            ChatMessage(role: .user, content: "一辆小车来到弯道，人物还握着可以调整方向的把手")
+            ChatMessage(role: .user, content: "一辆装着箱子的三轮车停在岔路前，人物仍可以调整方向")
         )
         model.draft = "这让我想到昨晚和妈妈说话的方式"
 
@@ -3122,7 +3293,7 @@ final class ReflectionCardTests: XCTestCase {
         XCTAssertFalse(model.session.cardMappingConfirmed)
         XCTAssertNil(model.session.cardCandidateMapping)
         XCTAssertNil(model.session.cardConfirmedMapping)
-        XCTAssertNil(model.session.cardGuidanceMatch)
+        XCTAssertNil(model.session.cardGroundingMatch)
         XCTAssertTrue(model.session.studyEvents.contains { $0.action == "card_candidate_mapping_rejected" })
     }
 
@@ -3135,11 +3306,11 @@ final class ReflectionCardTests: XCTestCase {
         model.session.condition = .cardMediated
         model.session.stage = .attributionReflection
         model.session.workflowPhase = .cardConnection
-        model.session.card = CardService().allCards.first { $0.title == "裂痕与器皿" }
+        model.session.card = CardService().allCards.first { $0.title == "旧痕新漏" }
         model.session.context.eventDescription = "论文系统一直调不好，时间快来不及了"
         model.session.context.selfJudgment = "我能力不行"
-        model.session.context.cardInterpretation = "一个器皿有很大的裂缝，旁边有一捆绳子；可能用绳子把裂缝捆起来"
-        let mapping = "我调模型也是修修补补却没有效果，就像绳子捆住罐子，裂缝还是在"
+        model.session.context.cardInterpretation = "旧水渍处又出现新裂缝，一人检查源头，另一人先把书移走"
+        let mapping = "我调模型也像一边检查旧问题，一边先保护还没受影响的结果"
         model.draft = mapping
 
         model.send()
@@ -3260,7 +3431,7 @@ final class ReflectionCardTests: XCTestCase {
 
         XCTAssertEqual(cards.count, 22)
         for card in cards {
-            let scaffolds = card.internalGuidance?.visualScaffolds ?? []
+            let scaffolds = card.visualGuidance?.visualScaffolds ?? []
             XCTAssertFalse(scaffolds.isEmpty, "\(card.title) 缺少画面内 scaffold")
             XCTAssertTrue(scaffolds.allSatisfy { !$0.requiredAnchorGroups.isEmpty })
             XCTAssertTrue(scaffolds.allSatisfy { $0.requiredAnchorGroups.allSatisfy { !$0.isEmpty } })
@@ -3273,7 +3444,7 @@ final class ReflectionCardTests: XCTestCase {
     }
 
     @MainActor
-    func testTurnableCartUsesCardSpecificImageScaffoldBeforeRetryingRealityConnection() async {
+    func testForkedLoadUsesCardSpecificImageScaffoldBeforeRetryingRealityConnection() async {
         let model = ReflectionViewModel(
             analyzer: StaticAnalyzer(),
             dialogueGenerator: StaticDialogueGenerator()
@@ -3281,9 +3452,9 @@ final class ReflectionCardTests: XCTestCase {
         model.session.condition = .cardMediated
         model.session.stage = .attributionReflection
         model.session.workflowPhase = .cardConnection
-        model.session.card = CardService().allCards.first { $0.title == "可转向的车" }
+        model.session.card = CardService().allCards.first { $0.title == "岔路与载重" }
         model.session.context.cardInterpretation =
-            "画面里有一辆装着货物的小车，来到弯道，人物握着转向杆"
+            "画面里有一辆装着箱子的三轮车，停在分叉道路前"
         model.draft = "我一下子有点想不到"
 
         model.send()
@@ -3291,11 +3462,11 @@ final class ReflectionCardTests: XCTestCase {
 
         XCTAssertTrue(model.session.cardConnectionScaffoldPending)
         var reply = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
-        XCTAssertTrue(reply.contains("这辆车接下来可能怎样转向"))
+        XCTAssertTrue(reply.contains("车停在分叉处时"))
         XCTAssertFalse(reply.contains("局部可控"))
         XCTAssertFalse(reply.contains("小步行动"))
 
-        model.draft = "货物还在车上，但人物可以先转向或停靠"
+        model.draft = "一边道路更平坦，另一边更短，但载重让转向也需要时间"
         model.send()
         await waitForModelIdle(model)
 
@@ -3315,10 +3486,10 @@ final class ReflectionCardTests: XCTestCase {
         model.session.condition = .cardMediated
         model.session.stage = .attributionReflection
         model.session.workflowPhase = .cardConnection
-        model.session.card = CardService().allCards.first { $0.title == "可转向的车" }
-        // The person mentioned a cart, but neither a turn/handle nor cargo. A card-specific
+        model.session.card = CardService().allCards.first { $0.title == "岔路与载重" }
+        // The person mentioned a cart, but neither a fork/road nor cargo. A card-specific
         // question must not introduce those absent elements.
-        model.session.context.cardInterpretation = "画面里有一辆小车，旁边还有一条普通道路"
+        model.session.context.cardInterpretation = "画面里只有一辆三轮车"
         model.draft = "我有点想不到"
 
         model.send()
@@ -3326,8 +3497,8 @@ final class ReflectionCardTests: XCTestCase {
 
         let reply = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
         XCTAssertTrue(model.session.cardConnectionScaffoldPending)
-        XCTAssertFalse(reply.contains("接下来可能怎样转向"))
-        XCTAssertFalse(reply.contains("车上的东西会怎样影响"))
+        XCTAssertFalse(reply.contains("车停在分叉处时"))
+        XCTAssertFalse(reply.contains("车上的载重可能怎样影响"))
     }
 
     @MainActor
@@ -3339,18 +3510,18 @@ final class ReflectionCardTests: XCTestCase {
         model.session.condition = .cardMediated
         model.session.stage = .attributionReflection
         model.session.workflowPhase = .cardConnection
-        model.session.card = CardService().allCards.first { $0.title == "可转向的车" }
-        // This story has a cart and cargo, but no turning structure. The first scaffold is not
+        model.session.card = CardService().allCards.first { $0.title == "岔路与载重" }
+        // This story has a cart and cargo, but no fork or road. The first scaffold is not
         // eligible, so selection must continue to the second card-specific question.
-        model.session.context.cardInterpretation = "有一辆小车，车上装着一些货物"
+        model.session.context.cardInterpretation = "有一辆三轮车，车上装着一些箱子"
         model.draft = "想不到"
 
         model.send()
         await waitForModelIdle(model)
 
         let reply = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
-        XCTAssertTrue(reply.contains("车上的东西会怎样影响它接下来的方向"))
-        XCTAssertFalse(reply.contains("这辆车接下来可能怎样转向"))
+        XCTAssertTrue(reply.contains("车上的载重可能怎样影响它接下来的方向和速度"))
+        XCTAssertFalse(reply.contains("车停在分叉处时"))
     }
 
     @MainActor
@@ -3760,7 +3931,7 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.session.condition = .cardMediated
         model.session.stage = .cardInterpretation
         model.session.workflowPhase = .cardObservation
-        model.draft = "画面里一个人扶着半开的门，门外放着一个包裹"
+        model.draft = "画面里一个人正在调整屏风，门外还有一个拿着文件的人"
 
         model.send()
         await waitForModelIdle(model)
@@ -3939,7 +4110,7 @@ final class ReflectionStateMachineTests: XCTestCase {
             model.session.messages.last(where: { $0.role == .user })?.id
         )
         let deterministicCard = try XCTUnwrap(
-            CardService().allCards.first { $0.title == "未定之步" }
+            CardService().allCards.first { $0.title == "旅人" }
         )
         model.session.card = deterministicCard
         model.session.context.selectedCardID = String(deterministicCard.id)
@@ -3951,9 +4122,9 @@ final class ReflectionStateMachineTests: XCTestCase {
         XCTAssertTrue(model.session.messages.last?.content.contains("画面里正在发生什么") == true)
         XCTAssertEqual(model.session.messages.last?.replyToMessageID, confirmationMessageID)
 
-        await sendAndWait("画面里一个人站在两条路之间", to: model)
+        await sendAndWait("画面里一个人一只脚在岸上，另一只脚踩上通往小船的木板", to: model)
         XCTAssertEqual(model.session.workflowPhase, .cardAssociation)
-        await sendAndWait("他像是还没有决定先走哪一边", to: model)
+        await sendAndWait("旅行袋还留在岸上，他像是还没有决定是否完全上船", to: model)
         XCTAssertEqual(model.session.workflowPhase, .cardConnection)
 
         let imageQuestions = model.session.messages.filter {
@@ -3983,17 +4154,21 @@ final class ReflectionStateMachineTests: XCTestCase {
 
         model.session.trackingCues = [workflowTrackingCue()]
         await sendAndWait("符合", to: model)
-        XCTAssertEqual(model.session.workflowPhase, .trackingReview)
-
-        await sendAndWait("这条睡眠背景可能让我当时更难集中注意力", to: model)
+        XCTAssertEqual(model.session.stage, .readinessCheck)
         XCTAssertEqual(model.session.workflowPhase, .contextConfirmation)
+        XCTAssertTrue(model.session.trackingReviewCompleted)
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "tracking_context_folded_into_context_summary"
+            }
+        )
 
         await sendAndWait("符合", to: model)
         XCTAssertEqual(model.session.workflowPhase, .contextConfirmation)
         await sendAndWait("抽卡", to: model)
         XCTAssertEqual(model.session.workflowPhase, .cardDisplay)
         let deterministicCard = try XCTUnwrap(
-            CardService().allCards.first { $0.title == "未定之步" }
+            CardService().allCards.first { $0.title == "旅人" }
         )
         model.session.card = deterministicCard
         model.session.context.selectedCardID = String(deterministicCard.id)
@@ -4001,9 +4176,9 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.cardDidDisplay(cardID: cardID)
         XCTAssertEqual(model.session.workflowPhase, .cardObservation)
 
-        await sendAndWait("画面里一个人站在两条路中间", to: model)
+        await sendAndWait("画面里一个人一只脚在岸上，另一只脚踩上通往小船的木板", to: model)
         XCTAssertEqual(model.session.workflowPhase, .cardAssociation)
-        await sendAndWait("他像是不知道应该先走哪一边", to: model)
+        await sendAndWait("旅行袋还留在岸上，他像是还没有决定是否完全上船", to: model)
         XCTAssertEqual(model.session.workflowPhase, .cardConnection)
         await sendAndWait("这让我想到自己面对两个不同建议，不知道该先听谁", to: model)
         XCTAssertEqual(model.session.workflowPhase, .cardMappingConfirmation)
@@ -4074,11 +4249,15 @@ final class ReflectionStateMachineTests: XCTestCase {
 
         model.session.trackingCues = [workflowTrackingCue()]
         await sendAndWait("符合", to: model)
-        XCTAssertEqual(model.session.workflowPhase, .trackingReview)
-        XCTAssertNil(model.session.card)
-
-        await sendAndWait("这条睡眠背景可能让我更难开始分析", to: model)
+        XCTAssertEqual(model.session.stage, .readinessCheck)
         XCTAssertEqual(model.session.workflowPhase, .contextConfirmation)
+        XCTAssertTrue(model.session.trackingReviewCompleted)
+        XCTAssertNil(model.session.card)
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "tracking_context_folded_into_context_summary"
+            }
+        )
 
         await sendAndWait("符合", to: model)
         XCTAssertEqual(model.session.stage, .attributionReflection)
@@ -4140,7 +4319,9 @@ final class ReflectionStateMachineTests: XCTestCase {
         XCTAssertEqual(Set(normalizedQuestions).count, normalizedQuestions.count)
 
         let actions = model.session.studyEvents.map(\.action)
-        let tracking = try XCTUnwrap(actions.firstIndex(of: "tracking_review_completed"))
+        let tracking = try XCTUnwrap(
+            actions.firstIndex(of: "tracking_context_folded_into_context_summary")
+        )
         let directCandid = try XCTUnwrap(actions.firstIndex(of: "direct_candid_reflection_started"))
         let circumstances = try XCTUnwrap(actions.firstIndex(of: "candid_circumstances_completed"))
         let agency = try XCTUnwrap(actions.firstIndex(of: "candid_agency_completed"))
@@ -4331,11 +4512,14 @@ final class ReflectionStateMachineTests: XCTestCase {
         XCTAssertNil(model.session.card)
         XCTAssertNil(model.session.cardDrawRecord)
         XCTAssertFalse(model.session.studyEvents.contains { $0.action == "card_drawn_uniform_random" })
-        XCTAssertTrue(model.session.messages.last?.content.contains("是否准确") == true)
+        let reply = model.session.messages.last?.content ?? ""
+        XCTAssertTrue(reply.contains("最想继续说哪一部分"))
+        XCTAssertFalse(reply.contains("是否准确"))
+        XCTAssertFalse(reply.contains("贴切"))
     }
 
     @MainActor
-    func testCardRequestAfterLegacyContextConfirmationRestoresTrackingReview() async {
+    func testCardRequestAfterLegacyContextConfirmationCompletesTrackingGateAndReturnsToSummary() async {
         let model = ReflectionViewModel(analyzer: StaticAnalyzer(), dialogueGenerator: StaticDialogueGenerator())
         let pending = workflowTrackingCue()
         model.session.stage = .readinessCheck
@@ -4348,13 +4532,24 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.send()
         await waitForModelIdle(model)
 
-        XCTAssertEqual(model.session.stage, .trackingReview)
-        XCTAssertEqual(model.session.workflowPhase, .trackingReview)
-        XCTAssertFalse(model.session.trackingReviewCompleted)
+        XCTAssertEqual(model.session.stage, .readinessCheck)
+        XCTAssertEqual(model.session.workflowPhase, .contextConfirmation)
+        XCTAssertTrue(model.session.trackingReviewCompleted)
+        XCTAssertFalse(model.session.contextSummaryConfirmed)
         XCTAssertNil(model.session.card)
         XCTAssertTrue(
             model.session.studyEvents.contains {
                 $0.action == "card_request_deferred_until_tracking_review"
+            }
+        )
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "tracking_context_folded_into_context_summary"
+            }
+        )
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "context_confirmation_after_tracking_and_repair"
             }
         )
     }
@@ -4400,9 +4595,9 @@ final class ReflectionStateMachineTests: XCTestCase {
         legacy.stage = .attributionReflection
         legacy.workflowPhase = .cardMeaningShift
         legacy.contextSummaryConfirmed = true
-        legacy.card = CardService().allCards.first { $0.title == "半开的门" }
+        legacy.card = CardService().allCards.first { $0.title == "留出的开口" }
         legacy.cardDisplayState = .displayed
-        legacy.context.cardInterpretation = "门停在半开的位置"
+        legacy.context.cardInterpretation = "屏风在书桌与门口之间留出一个开口"
         legacy.cardMappingConfirmed = true
         legacy.cardConfirmedMapping = "画面里的距离和现实中的距离有些相似"
         legacy.cardLifeConnection = legacy.cardConfirmedMapping
@@ -4477,11 +4672,11 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "不同建议和有限时间构成了已经确认的现实背景。"
-        model.session.card = CardService().allCards.first { $0.title == "未定之步" }
+        model.session.card = CardService().allCards.first { $0.title == "旅人" }
         model.session.context.eventDescription = "导师和同学给了两个不同建议"
-        model.session.context.cardInterpretation = "画面中间的人站在两条路之间"
+        model.session.context.cardInterpretation = "画面中的人一只脚在岸上，另一只脚踩上通往小船的木板"
         model.session.messages = [
-            ChatMessage(role: .user, content: "画面中间的人站在两条路之间"),
+            ChatMessage(role: .user, content: "画面中的人一只脚在岸上，另一只脚踩上通往小船的木板"),
         ]
         model.draft = "这让我想到自己不知道该先听谁的"
 
@@ -4619,9 +4814,8 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.session.lockedBaselineNarrative = "最近睡眠比平时短一些，但这只是已经确认的背景。"
         model.session.cardMappingConfirmed = true
         model.session.cardConfirmedMapping = "画面里持续发号施令的关系，和现实里不断催促自己的关系有些相似"
-        model.session.cardGuidanceMatch = CardGuidanceMatch(
+        model.session.cardGroundingMatch = CardGroundingMatch(
             matchedVisualAnchors: ["人"],
-            candidateDirections: ["行动"],
             imageRelation: "一个人不断发号施令",
             realityRelation: "自己不断催促自己",
             matchedConcepts: [.action]
@@ -4672,9 +4866,8 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.session.context.cardInterpretation = "画面里一部分停住，另一部分还可以移动"
         model.session.cardMappingConfirmed = true
         model.session.cardConfirmedMapping = "画面里两部分的关系和现实中不同控制范围的关系有些相似"
-        model.session.cardGuidanceMatch = CardGuidanceMatch(
+        model.session.cardGroundingMatch = CardGroundingMatch(
             matchedVisualAnchors: ["移动"],
-            candidateDirections: ["控制"],
             imageRelation: "不能整体移动的部分 与 可以移动的部分 并存",
             realityRelation: "暂时不能改变的条件 与 可以调整的回应 并存",
             matchedConcepts: [.control, .constraint]
@@ -4720,7 +4913,7 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "现实背景已经确认。"
-        model.session.card = CardService().allCards.first { $0.title == "半开的门" }
+        model.session.card = CardService().allCards.first { $0.title == "留出的开口" }
         model.session.context.cardInterpretation = "一个人站着发号施令"
         model.session.messages.append(
             ChatMessage(role: .user, content: "一个人站着发号施令")
@@ -4751,7 +4944,7 @@ final class ReflectionStateMachineTests: XCTestCase {
         model.session.workflowPhase = .cardConnection
         model.session.contextSummaryConfirmed = true
         model.session.lockedBaselineNarrative = "现实背景已经确认。"
-        model.session.card = CardService().allCards.first { $0.title == "半开的门" }
+        model.session.card = CardService().allCards.first { $0.title == "留出的开口" }
         model.session.context.cardInterpretation = "一个人背后有一对翅膀"
         model.session.messages.append(
             ChatMessage(role: .user, content: "一个人背后有一对翅膀")
@@ -4766,9 +4959,9 @@ final class ReflectionStateMachineTests: XCTestCase {
         XCTAssertFalse(response.contains("代表"))
         XCTAssertFalse(response.contains("暗示"))
         XCTAssertFalse(response.contains("意味着"))
-        XCTAssertNil(model.session.cardGuidanceMatch)
+        XCTAssertNil(model.session.cardGroundingMatch)
         XCTAssertTrue(model.session.studyEvents.contains {
-            $0.action == "card_candidate_mapping_without_guidance_intersection"
+            $0.action == "card_candidate_mapping_without_user_grounding"
         })
         XCTAssertTrue(model.session.studyEvents.contains {
             $0.action == "card_candidate_mapping_writer_output_rejected"
@@ -5464,13 +5657,13 @@ private struct SemanticCardMappingAnalyzer: ContextAnalyzing {
         analysis.semanticRelations = [
             SemanticRelation(
                 kind: .imageRealityMapping,
-                source: "绳子捆住罐子，裂缝还是在",
+                source: "一边检查旧问题，一边先保护未受影响的书",
                 relation: "对应",
-                target: "调模型也是修修补补却没有效果",
+                target: "调模型时同时检查旧问题并保护现有结果",
                 concepts: [.problemSolving, .selfEvaluation],
                 evidence: [
-                    "绳子捆住罐子，裂缝还是在",
-                    "调模型也是修修补补却没有效果",
+                    "一边检查旧问题",
+                    "先保护还没受影响的结果",
                 ],
                 status: .userStated,
                 confidence: 0.92
@@ -5936,10 +6129,9 @@ private struct CrossStageResponsePlanDialogueGenerator: DialogueGenerating {
     }
 }
 
-/// Simulates the Writer while asserting that Swift supplied one exact locally selected Tender
-/// direction rather than the whole card catalogue. The resulting user-visible questions differ
-/// by reflective function, not merely by card metadata.
-private struct SelectedTenderLensDialogueGenerator: DialogueGenerating {
+/// Simulates the Writer while asserting that the same system-wide Tender method responds to the
+/// person's own mapping. No card-specific psychological direction is available to this stub.
+private struct UserOwnedTenderApproachDialogueGenerator: DialogueGenerating {
     func generate(
         state: ReflectionState,
         route: CompassionRoute,
@@ -5950,19 +6142,19 @@ private struct SelectedTenderLensDialogueGenerator: DialogueGenerating {
         nextQuestionGoal: String,
         messages: [ChatMessage]
     ) async throws -> DialogueTurn {
-        if nextQuestionGoal.contains("保持距离可能是在保护安全、精力或尊严"),
-           !nextQuestionGoal.contains("拒绝不等于冷漠或自私") {
+        if nextQuestionGoal.contains(SystemReflectionApproaches.standard.tender),
+           nextQuestionGoal.contains("现实中也在保留距离") {
             return DialogueTurn(
-                reflection: "保持距离可能也在保护你当时能承受的范围。",
-                question: "在这段距离里，当时最需要先被保护的是什么？",
+                reflection: "设置边界可能也在保护你当时能承受的范围。",
+                question: "这个边界当时最需要先保护什么？",
                 actionOptions: []
             )
         }
-        if nextQuestionGoal.contains("做错一件事不等于整个人失败"),
-           !nextQuestionGoal.contains("羞愧可以被看见") {
+        if nextQuestionGoal.contains(SystemReflectionApproaches.standard.tender),
+           nextQuestionGoal.contains("现实中有一个具体损失需要修复") {
             return DialogueTurn(
-                reflection: "先把整个人的判断放下，眼前是一个具体影响。",
-                question: "这个具体影响里，哪一部分让你当时最难受？",
+                reflection: "先不把混乱扩大成对整个人的判断，眼前有一项具体损失。",
+                question: "这个具体损失里，哪一部分当时最需要先被承认？",
                 actionOptions: []
             )
         }

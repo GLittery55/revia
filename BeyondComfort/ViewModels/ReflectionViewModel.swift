@@ -23,7 +23,10 @@ private enum ProtocolCommitFailure: Error {
 }
 
 private enum ProtocolRetryRoute {
-    case planner(correction: String)
+    case planner(
+        correction: String,
+        permissions: ReflectionProtocolPermissions
+    )
     case writer(
         request: LLMTurnControllerRequest,
         originalPlan: LLMTurnResponsePlan,
@@ -43,6 +46,8 @@ private struct ProtocolCorrectionPayload: Encodable {
     let allowedStages: [String]
     let allowedActions: [String]
     let allowedReplyIntents: [String]
+    let missingConditions: [String]
+    let forbiddenOperations: [String]
     let allowedEnumValues: [String: [String]]
     let validReferences: [String: String]
     let mustPreserve: [String]
@@ -178,16 +183,17 @@ final class ReflectionViewModel: ObservableObject {
     private let analyzer: any ContextAnalyzing
     private let dialogueGenerator: any DialogueGenerating
     private let turnController: any ReflectionTurnControlling
+    private let simpleGentleReflectionGenerator: any SimpleGentleReflectionGenerating
     private let protocolController = ReflectionProtocolController()
     private let stateMachine = ReflectionStateMachine()
     private let workflowStateMachine = ReflectionWorkflowStateMachine()
     private let disclosureResolver = AdaptiveDisclosureResolver()
     private let cards = CardService()
-    private let cardGuidanceMatcher = CardGuidanceMatcher()
+    private let cardGroundingMatcher = CardGroundingMatcher()
     private let responsePlanValidator = ResponsePlanValidator()
     private let practiceResolver = CompassionatePracticeResolver()
     private let safety = SafetyService()
-    private let store = SessionStore()
+    private let store: SessionStore
     private let health = HealthKitService()
     private let calendar = CalendarService()
     /// Live scenario tests inject already-cleaned, synthetic tracking cues. Disabling the
@@ -215,6 +221,20 @@ final class ReflectionViewModel: ObservableObject {
 
     private let minimumStructuredDisclosureAssistantTurns = 3
     private let maximumStructuredDisclosureAssistantTurns = 5
+    private let simpleGentleControlCompletionOfferTurn = 4
+    private let simpleGentleControlSoftBoundaryTurn = 8
+
+    var canCompleteSimpleGentleControl: Bool {
+        session.usesSimpleGentleControl &&
+            session.stage != .completed &&
+            simpleGentleControlUserTurnCount >= simpleGentleControlCompletionOfferTurn
+    }
+
+    var hasReachedSimpleGentleControlSoftBoundary: Bool {
+        session.usesSimpleGentleControl &&
+            session.stage != .completed &&
+            simpleGentleControlUserTurnCount >= simpleGentleControlSoftBoundaryTurn
+    }
 
     /// User-meaning turns require a fresh, evidence-checked Analyzer plan. Swift-controlled turns
     /// include fixed notices, confirmations, experiment gates, tracking presentation, safety,
@@ -235,6 +255,7 @@ final class ReflectionViewModel: ObservableObject {
         )
         case protocolPlanner(
             correction: String,
+            permissions: ReflectionProtocolPermissions,
             recoveryMessageID: UUID?,
             userMessageID: UUID?
         )
@@ -258,11 +279,16 @@ final class ReflectionViewModel: ObservableObject {
         analyzer: any ContextAnalyzing = RemoteContextAnalyzer(),
         dialogueGenerator: any DialogueGenerating = RemoteDialogueGenerator(),
         turnController: any ReflectionTurnControlling = RemoteReflectionTurnController(),
+        simpleGentleReflectionGenerator: any SimpleGentleReflectionGenerating =
+            RemoteSimpleGentleReflectionGenerator(),
+        sessionStore: SessionStore = SessionStore(),
         preparesContextDataAutomatically: Bool = true
     ) {
         self.analyzer = analyzer
         self.dialogueGenerator = dialogueGenerator
         self.turnController = turnController
+        self.simpleGentleReflectionGenerator = simpleGentleReflectionGenerator
+        self.store = sessionStore
         self.preparesContextDataAutomatically = preparesContextDataAutomatically
         session.messages = []
         session.studyEvents = [.init(stage: .welcome, action: "session_started")]
@@ -297,6 +323,18 @@ final class ReflectionViewModel: ObservableObject {
             return
         }
         guard session.stage == .welcome else { return }
+        if session.usesSimpleGentleControl {
+            session.protocolStage = .directReflection
+            session.stage = .eventDisclosure
+            session.workflowPhase = .structuredDisclosure
+            session.dialogueProgress.currentState = .eventDisclosure
+            session.structuredDisclosureAssistantTurns = 1
+            session.studyEvents.append(
+                .init(stage: .eventDisclosure, action: "simple_gentle_control_started")
+            )
+            addAssistant("你好，我在这里。最近有什么事想聊聊吗？可以从刚发生的一件事说起。")
+            return
+        }
         if session.usesLLMTurnController {
             session.protocolStage = .contextualDisclosure
             session.stage = .eventDisclosure
@@ -349,7 +387,9 @@ final class ReflectionViewModel: ObservableObject {
         draft = ""
         clearRetry()
         let userMessageID = addUser(text)
-        updateTrackingAnchorIfUserSpecifiedDate(in: text)
+        if !session.usesSimpleGentleControl {
+            updateTrackingAnchorIfUserSpecifiedDate(in: text)
+        }
         if safety.requiresInterrupt(text) { interruptForSafety(replyingTo: userMessageID); return }
         // A safety flag may already have been produced by the analyzer before a user chooses a
         // card or answers a gate. Do not let a feature request route around that interrupt.
@@ -362,8 +402,27 @@ final class ReflectionViewModel: ObservableObject {
             return
         }
 
+        if session.usesSimpleGentleControl {
+            launchPersistedModelResponse(replyingTo: userMessageID) { model in
+                await model.processSimpleGentleControlTurn(replyingTo: userMessageID)
+            }
+            return
+        }
+
         if session.usesLLMTurnController {
-            launchResponse(replyingTo: userMessageID) { model in
+            if acceptExplicitProtocolCardConsentIfNeeded(
+                text,
+                replyingTo: userMessageID
+            ) {
+                return
+            }
+            if acceptExplicitProtocolCardMappingIfNeeded(
+                text,
+                replyingTo: userMessageID
+            ) {
+                return
+            }
+            launchPersistedModelResponse(replyingTo: userMessageID) { model in
                 await model.processProtocolTurn(trigger: .userMessage)
             }
             return
@@ -575,6 +634,7 @@ final class ReflectionViewModel: ObservableObject {
         session.hasUserAuthoredCardConnection = false
         session.hasCompletedAttributionExchange = false
         session.hasPresentedIntegratedNarrative = false
+        session.cardImageDevelopmentTurnCount = 0
         session.cardConnectionAttemptCount = 0
         session.cardConnectionScaffoldUsed = false
         session.cardConnectionScaffoldPending = false
@@ -584,7 +644,7 @@ final class ReflectionViewModel: ObservableObject {
         session.cardConfirmedMapping = nil
         session.cardMappingConfirmed = false
         session.cardGuidanceShared = false
-        session.cardGuidanceMatch = nil
+        session.cardGroundingMatch = nil
         session.cardMeaningShiftResponse = nil
         session.cardMeaningShiftCompleted = false
         session.cardDerivedDeltaNarrative = nil
@@ -624,10 +684,21 @@ final class ReflectionViewModel: ObservableObject {
             session.studyEvents.append(
                 .init(stage: .cardInterpretation, action: "random_card_image_displayed")
             )
+            session.semanticMemory.nextPrompt = .openQuestion(
+                purpose: "card_image_observation",
+                focus: "the person's own account of what is happening in the displayed image"
+            )
+            addAssistant(
+                "这张卡是随机抽取的，也没有固定答案。先只看画面，你觉得这里正在发生什么？",
+                replyingTo: replyToMessageID
+            )
+            session.studyEvents.append(
+                .init(
+                    stage: .cardInterpretation,
+                    action: "card_observation_invitation_presented_locally"
+                )
+            )
             scheduleCloudSync(action: "random_card_image_displayed")
-            launchResponse(replyingTo: replyToMessageID) { model in
-                await model.processProtocolTurn(trigger: .cardDisplayed)
-            }
             return
         }
         guard session.stage == .cardIntroduction,
@@ -786,6 +857,7 @@ final class ReflectionViewModel: ObservableObject {
             }
         case .protocolPlanner(
             let correction,
+            let permissions,
             let recoveryMessageID,
             let userMessageID
         ):
@@ -793,7 +865,8 @@ final class ReflectionViewModel: ObservableObject {
             launchResponse(replyingTo: userMessageID) { model in
                 await model.processProtocolTurn(
                     trigger: .protocolCorrection,
-                    initialCorrection: correction
+                    initialCorrection: correction,
+                    initialPermissions: permissions
                 )
             }
         case .protocolWriter(
@@ -830,6 +903,10 @@ final class ReflectionViewModel: ObservableObject {
     }
 
     func prepareRequiredContextData() async {
+        guard !session.usesSimpleGentleControl else {
+            contextDataStatus = "本次对照组对话不使用个人追踪数据"
+            return
+        }
         if didRequestContextData {
             while isPreparingContextData {
                 do {
@@ -941,6 +1018,10 @@ final class ReflectionViewModel: ObservableObject {
     }
 
     func refreshContextData() async {
+        guard !session.usesSimpleGentleControl else {
+            contextDataStatus = "本次对照组对话不使用个人追踪数据"
+            return
+        }
         let requestedSessionID = session.id
         if isLoadingContextData {
             while isLoadingContextData {
@@ -1013,6 +1094,13 @@ final class ReflectionViewModel: ObservableObject {
         if !isEndingFromCurrentResponse {
             cancelActiveResponse(removePartialReply: true)
         }
+        if session.usesSimpleGentleControl {
+            completeSimpleGentleControl(
+                action: "simple_gentle_control_ended_from_menu",
+                acknowledgement: "好，这次就先到这里。已经留下的内容会按现在的样子保留。"
+            )
+            return
+        }
         if session.usesLLMTurnController {
             setProtocolStage(.complete, action: "coarse_protocol_session_ended_by_user")
             addAssistant("好，这次就先到这里。已经留下的内容会按现在的样子保留。")
@@ -1035,6 +1123,14 @@ final class ReflectionViewModel: ObservableObject {
 
     private func endEarly(replyingTo userMessageID: UUID) {
         cancelActiveResponse(removePartialReply: true)
+        if session.usesSimpleGentleControl {
+            completeSimpleGentleControl(
+                action: "simple_gentle_control_ended_by_user_message",
+                replyingTo: userMessageID,
+                acknowledgement: "好，这次就先到这里。已经留下的内容会按现在的样子保留。"
+            )
+            return
+        }
         if session.usesLLMTurnController {
             setProtocolStage(.complete, action: "coarse_protocol_session_ended_by_user")
             addAssistant(
@@ -1056,6 +1152,15 @@ final class ReflectionViewModel: ObservableObject {
             }
         }
         addAssistant("好，这次就先到这里。你可以保存或删除已经留下的记录。", replyingTo: userMessageID)
+    }
+
+    func finishSimpleGentleControl() {
+        guard canCompleteSimpleGentleControl, !isTyping, !isStreamingResponse else { return }
+        cancelActiveResponse(removePartialReply: true)
+        completeSimpleGentleControl(
+            action: "simple_gentle_control_completion_offer_accepted",
+            acknowledgement: "好，这次就先到这里。已经留下的内容会按现在的样子保留。"
+        )
     }
     func restart() {
         resumeCandidate = nil
@@ -1104,8 +1209,36 @@ final class ReflectionViewModel: ObservableObject {
         isPaused = false
         session.studyEvents.append(.init(stage: session.stage, action: "session_resumed"))
         scheduleCloudSync(action: "session_resumed", delay: .zero)
+        if session.usesSimpleGentleControl {
+            if let last = session.messages.last, last.role == .user,
+               !session.messages.contains(where: {
+                   $0.role == .assistant && $0.replyToMessageID == last.id
+               }) {
+                launchResponse(replyingTo: last.id) { model in
+                    await model.processSimpleGentleControlTurn(replyingTo: last.id)
+                }
+            }
+            return
+        }
         if session.usesLLMTurnController {
             if session.cardDisplayState == .selected || session.cardDisplayState == .loadFailed {
+                return
+            }
+            if session.pendingCardGuidanceTurn,
+               session.cardGuidanceShared,
+               let lastUser = session.messages.last(where: { $0.role == .user }),
+               !session.messages.contains(where: {
+                   $0.role == .assistant && $0.replyToMessageID == lastUser.id
+               }) {
+                session.studyEvents.append(
+                    .init(
+                        stage: session.stage,
+                        action: "pending_card_guidance_turn_resumed"
+                    )
+                )
+                launchResponse(replyingTo: lastUser.id) { model in
+                    await model.processProtocolTurn(trigger: .cardGuidanceAvailable)
+                }
                 return
             }
             if let last = session.messages.last, last.role == .user,
@@ -1366,11 +1499,128 @@ final class ReflectionViewModel: ObservableObject {
         } catch { saveNotice = "导出准备失败" }
     }
 
+    // MARK: - Prompt-only gentle active control
+
+    private func processSimpleGentleControlTurn(
+        replyingTo userMessageID: UUID
+    ) async {
+        let expectedSessionID = session.id
+        let expectedStage = session.stage
+        guard session.usesSimpleGentleControl else { return }
+        let turnNumber = simpleGentleControlUserTurnCount
+        let startedAt = Date()
+        session.studyEvents.append(
+            .init(
+                stage: session.stage,
+                action: "simple_gentle_control_turn_\(turnNumber)_requested"
+            )
+        )
+        isTyping = true
+        defer { finishTypingForCurrentResponse() }
+
+        do {
+            let result = try await simpleGentleReflectionGenerator.generate(
+                recentMessages: session.messages
+            )
+            guard responseContextIsCurrent(
+                expectedSessionID: expectedSessionID,
+                expectedStage: expectedStage
+            ), session.usesSimpleGentleControl else { return }
+            addAssistant(result.reply, replyingTo: userMessageID)
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "simple_gentle_control_reply_presented")
+            )
+            session.studyEvents.append(
+                .init(
+                    stage: session.stage,
+                    action: "simple_gentle_control_turn_\(turnNumber)_reply_presented"
+                )
+            )
+            if result.generationAttempts > 1 {
+                session.studyEvents.append(
+                    .init(
+                        stage: session.stage,
+                        action: "simple_gentle_control_reply_regenerated_once"
+                    )
+                )
+            }
+            appendSimpleGentleControlLatencyEvent(since: startedAt)
+            if turnNumber == simpleGentleControlCompletionOfferTurn {
+                session.studyEvents.append(
+                    .init(
+                        stage: session.stage,
+                        action: "simple_gentle_control_completion_offer_available"
+                    )
+                )
+            }
+            if turnNumber == simpleGentleControlSoftBoundaryTurn {
+                session.studyEvents.append(
+                    .init(
+                        stage: session.stage,
+                        action: "simple_gentle_control_soft_boundary_reached"
+                    )
+                )
+            }
+            llmStatus = "AI 反思服务已连接"
+        } catch {
+            guard responseContextIsCurrent(
+                expectedSessionID: expectedSessionID,
+                expectedStage: expectedStage
+            ), session.usesSimpleGentleControl else { return }
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "simple_gentle_control_reply_failed")
+            )
+            session.studyEvents.append(
+                .init(
+                    stage: session.stage,
+                    action: "simple_gentle_control_turn_\(turnNumber)_reply_failed"
+                )
+            )
+            appendSimpleGentleControlLatencyEvent(since: startedAt)
+            addAssistant(
+                "刚才没有顺利接上。你愿意的话，可以换一种方式继续。",
+                replyingTo: userMessageID
+            )
+            llmStatus = "AI 反思服务暂时不可用"
+        }
+    }
+
+    private var simpleGentleControlUserTurnCount: Int {
+        session.messages.lazy.filter { $0.role == .user }.count
+    }
+
+    private func appendSimpleGentleControlLatencyEvent(since start: Date) {
+        let milliseconds = min(
+            120_000,
+            max(0, Int(Date().timeIntervalSince(start) * 1_000))
+        )
+        session.studyEvents.append(
+            .init(
+                stage: session.stage,
+                action: "simple_gentle_control_reply_latency_ms_\(milliseconds)"
+            )
+        )
+    }
+
+    private func completeSimpleGentleControl(
+        action: String,
+        replyingTo userMessageID: UUID? = nil,
+        acknowledgement: String? = nil
+    ) {
+        guard session.usesSimpleGentleControl,
+              session.protocolStage != .complete else { return }
+        setProtocolStage(.complete, action: action)
+        if let acknowledgement {
+            addAssistant(acknowledgement, replyingTo: userMessageID)
+        }
+    }
+
     // MARK: - Coarse LLM TurnController protocol
 
     private func processProtocolTurn(
         trigger: LLMTurnTrigger,
-        initialCorrection: String? = nil
+        initialCorrection: String? = nil,
+        initialPermissions: ReflectionProtocolPermissions? = nil
     ) async {
         let expectedSessionID = session.id
         let expectedProtocolStage = session.protocolStage
@@ -1379,7 +1629,8 @@ final class ReflectionViewModel: ObservableObject {
 
         let initialRequest = makeProtocolTurnRequest(
             trigger: trigger,
-            correction: initialCorrection
+            correction: initialCorrection,
+            permissionsOverride: initialPermissions
         )
         let firstResult = await requestValidatedProtocolTurn(initialRequest)
         guard responseContextIsCurrent(expectedSessionID: expectedSessionID),
@@ -1417,10 +1668,15 @@ final class ReflectionViewModel: ObservableObject {
                 violation,
                 prefix: "coarse_protocol_regeneration_reason"
             )
-            let correction = structuredProtocolCorrection(for: violation)
+            let repairPermissions = protocolRepairPermissions(for: violation)
+            let correction = structuredProtocolCorrection(
+                for: violation,
+                permissions: repairPermissions
+            )
             let retryRequest = makeProtocolTurnRequest(
                 trigger: .protocolCorrection,
-                correction: correction
+                correction: correction,
+                permissionsOverride: repairPermissions
             )
             switch await requestValidatedProtocolTurn(retryRequest) {
             case .success(let response):
@@ -1428,6 +1684,124 @@ final class ReflectionViewModel: ObservableObject {
             case .failure(let finalError):
                 guard responseContextIsCurrent(expectedSessionID: expectedSessionID),
                       session.protocolStage == expectedProtocolStage else { return }
+                if finalError as? ReflectionProtocolViolation == .disclosureShouldAdvance {
+                    // A correction may atomically fill the relation that it was originally
+                    // authorized to ask about. That is monotonic progress, not another bad user
+                    // turn. Give the Planner one final, forward-only contract so the completed
+                    // evidence becomes a summary instead of surfacing a technical interruption.
+                    session.studyEvents.append(
+                        .init(
+                            stage: session.stage,
+                            action: "coarse_protocol_forward_recovery_requested"
+                        )
+                    )
+                    appendProtocolFailureDiagnostic(
+                        finalError,
+                        prefix: "coarse_protocol_forward_recovery_reason"
+                    )
+                    let forwardPermissions = protocolRepairPermissions(for: finalError)
+                    let forwardRequest = makeProtocolTurnRequest(
+                        trigger: .protocolCorrection,
+                        correction: structuredProtocolCorrection(
+                            for: finalError,
+                            permissions: forwardPermissions
+                        ),
+                        permissionsOverride: forwardPermissions
+                    )
+                    switch await requestValidatedProtocolTurn(forwardRequest) {
+                    case .success(let response):
+                        validated = response
+                    case .failure(let recoveryError):
+                        guard responseContextIsCurrent(expectedSessionID: expectedSessionID),
+                              session.protocolStage == expectedProtocolStage else { return }
+                        if let attempt = recoveryError as? ProtocolTurnAttemptFailure,
+                           case .writerFailedTwice(
+                               let writerError,
+                               let writerRequest,
+                               let originalPlan,
+                               let validatedPlan
+                           ) = attempt {
+                            presentRecoverableProtocolPause(
+                                error: writerError,
+                                action: "coarse_protocol_forward_writer_failed",
+                                retry: .writer(
+                                    request: writerRequest,
+                                    originalPlan: originalPlan,
+                                    validatedPlan: validatedPlan
+                                )
+                            )
+                        } else {
+                            let recoveryPermissions = protocolRepairPermissions(
+                                for: recoveryError
+                            )
+                            presentRecoverableProtocolPause(
+                                error: recoveryError,
+                                action: "coarse_protocol_forward_recovery_failed",
+                                retry: .planner(
+                                    correction: structuredProtocolCorrection(
+                                        for: recoveryError,
+                                        permissions: recoveryPermissions
+                                    ),
+                                    permissions: recoveryPermissions
+                                )
+                            )
+                        }
+                        return
+                    }
+                    break
+                }
+                if isRecoverableProtocolContractFailure(finalError) {
+                    // One final, narrowed LLM repair absorbs malformed typed objects across every
+                    // stage instead of exposing an implementation error to a study participant.
+                    // This is bounded: provider outages and persistence failures do not loop, and
+                    // Swift still validates the repaired operation before anything is committed.
+                    session.studyEvents.append(
+                        .init(
+                            stage: session.stage,
+                            action: "coarse_protocol_continuity_recovery_requested"
+                        )
+                    )
+                    appendProtocolFailureDiagnostic(
+                        finalError,
+                        prefix: "coarse_protocol_continuity_recovery_reason"
+                    )
+                    let continuityPermissions = protocolRepairPermissions(for: finalError)
+                    let continuityRequest = makeProtocolTurnRequest(
+                        trigger: .protocolCorrection,
+                        correction: structuredProtocolCorrection(
+                            for: finalError,
+                            permissions: continuityPermissions
+                        ),
+                        permissionsOverride: continuityPermissions
+                    )
+                    switch await requestValidatedProtocolTurn(continuityRequest) {
+                    case .success(let response):
+                        validated = response
+                        session.studyEvents.append(
+                            .init(
+                                stage: session.stage,
+                                action: "coarse_protocol_continuity_recovery_succeeded"
+                            )
+                        )
+                    case .failure(let recoveryError):
+                        guard responseContextIsCurrent(expectedSessionID: expectedSessionID),
+                              session.protocolStage == expectedProtocolStage else { return }
+                        let recoveryPermissions = protocolRepairPermissions(for: recoveryError)
+                        presentRecoverableProtocolPause(
+                            error: recoveryError,
+                            action: "coarse_protocol_continuity_recovery_failed",
+                            retry: .planner(
+                                correction: structuredProtocolCorrection(
+                                    for: recoveryError,
+                                    permissions: recoveryPermissions
+                                ),
+                                permissions: recoveryPermissions
+                            )
+                        )
+                        return
+                    }
+                    break
+                }
                 let diagnosticError: Error
                 let failureAction: String
                 if let attempt = finalError as? ProtocolTurnAttemptFailure,
@@ -1451,13 +1825,18 @@ final class ReflectionViewModel: ObservableObject {
                 } else {
                     diagnosticError = finalError
                     failureAction = "coarse_protocol_response_failed_twice"
+                    let finalRepairPermissions = protocolRepairPermissions(
+                        for: diagnosticError
+                    )
                     presentRecoverableProtocolPause(
                         error: diagnosticError,
                         action: failureAction,
                         retry: .planner(
                             correction: structuredProtocolCorrection(
-                                for: diagnosticError
-                            )
+                                for: diagnosticError,
+                                permissions: finalRepairPermissions
+                            ),
+                            permissions: finalRepairPermissions
                         )
                     )
                 }
@@ -1501,16 +1880,29 @@ final class ReflectionViewModel: ObservableObject {
         }
 
         if validated.localAction.kind == .shareCardGuidance {
-            applyProtocolMemoryAndTracking(from: validated)
-            session.cardGuidanceShared = true
-            session.studyEvents.append(
-                .init(stage: session.stage, action: "card_guidance_context_authorized")
-            )
-            scheduleCloudSync(action: "card_guidance_context_authorized")
+            do {
+                try await applyValidatedProtocolResponse(
+                    validated,
+                    appendVisibleReply: false
+                )
+            } catch {
+                presentRecoverableProtocolPause(
+                    error: error,
+                    action: "card_guidance_authorization_commit_failed",
+                    retry: .commit(
+                        response: validated,
+                        appendVisibleReply: false,
+                        continuation: .cardGuidanceAvailable
+                    )
+                )
+                return
+            }
+            guard session.pendingCardGuidanceTurn else { return }
 
             let guidanceRequest = makeProtocolTurnRequest(
                 trigger: .cardGuidanceAvailable,
-                correction: nil
+                correction: nil,
+                permissionsOverride: nil
             )
             switch await requestValidatedProtocolTurn(guidanceRequest) {
             case .success(let guidedResponse):
@@ -1523,9 +1915,14 @@ final class ReflectionViewModel: ObservableObject {
                     violation,
                     prefix: "card_guidance_regeneration_reason"
                 )
+                let repairPermissions = protocolRepairPermissions(for: violation)
                 let retry = makeProtocolTurnRequest(
                     trigger: .protocolCorrection,
-                    correction: structuredProtocolCorrection(for: violation)
+                    correction: structuredProtocolCorrection(
+                        for: violation,
+                        permissions: repairPermissions
+                    ),
+                    permissionsOverride: repairPermissions
                 )
                 switch await requestValidatedProtocolTurn(retry) {
                 case .success(let guidedResponse):
@@ -1548,13 +1945,18 @@ final class ReflectionViewModel: ObservableObject {
                             )
                         )
                     } else {
+                        let finalRepairPermissions = protocolRepairPermissions(
+                            for: finalError
+                        )
                         presentRecoverableProtocolPause(
                             error: finalError,
                             action: "card_guidance_response_failed_twice",
                             retry: .planner(
                                 correction: structuredProtocolCorrection(
-                                    for: finalError
-                                )
+                                    for: finalError,
+                                    permissions: finalRepairPermissions
+                                ),
+                                permissions: finalRepairPermissions
                             )
                         )
                     }
@@ -1564,6 +1966,19 @@ final class ReflectionViewModel: ObservableObject {
         }
 
         await commitValidatedProtocolResponseOrPause(validated)
+    }
+
+    /// Contract and decoding defects are model-output problems that can usually be repaired with
+    /// the same LLM under narrower permissions. Provider availability and persistence errors are
+    /// operational failures; retrying the semantic protocol cannot repair them and would only
+    /// make the participant wait longer.
+    private func isRecoverableProtocolContractFailure(_ error: Error) -> Bool {
+        guard session.protocolVersion >= ReflectionSession.currentProtocolVersion else {
+            return false
+        }
+        if error is ReflectionProtocolViolation { return true }
+        if error is LLMTurnControllerClientError { return true }
+        return false
     }
 
     private func requestValidatedProtocolTurn(
@@ -1600,10 +2015,13 @@ final class ReflectionViewModel: ObservableObject {
 
             func recordNonBlockingWarnings() {
                 for warning in nonBlockingWarnings {
+                    let action = warning == .redundantConfirmedConnectionPatch
+                        ? warning.rawValue
+                        : "coarse_protocol_soft_warning_\(warning.rawValue)"
                     session.studyEvents.append(
                         .init(
                             stage: session.stage,
-                            action: "coarse_protocol_soft_warning_\(warning.rawValue)"
+                            action: action
                         )
                     )
                 }
@@ -1611,7 +2029,7 @@ final class ReflectionViewModel: ObservableObject {
 
             // Local card capability operations are deliberately silent. Drawing first waits for
             // the image to become visible, then the cardDisplayed turn produces the one observation
-            // reply. Guidance authorization similarly waits for a fresh guidance-aware turn.
+            // reply. User-grounded relation authorization similarly waits for a fresh reading turn.
             // Generating wording here would create two competing assistant bubbles.
             if [.drawRandomCard, .shareCardGuidance].contains(
                 validatedPlan.localAction.kind
@@ -1770,10 +2188,13 @@ final class ReflectionViewModel: ObservableObject {
                 validatedPlan: validatedPlan,
                 for: session
             ) {
+                let action = warning == .redundantConfirmedConnectionPatch
+                    ? warning.rawValue
+                    : "coarse_protocol_soft_warning_\(warning.rawValue)"
                 session.studyEvents.append(
                     .init(
                         stage: session.stage,
-                        action: "coarse_protocol_soft_warning_\(warning.rawValue)"
+                        action: action
                     )
                 )
             }
@@ -1799,6 +2220,7 @@ final class ReflectionViewModel: ObservableObject {
     ) -> LLMTurnControllerRequest {
         LLMTurnControllerRequest(
             trigger: .protocolCorrection,
+            protocolVersion: request.protocolVersion,
             protocolStage: request.protocolStage,
             condition: request.condition,
             permissions: request.permissions,
@@ -1820,6 +2242,9 @@ final class ReflectionViewModel: ObservableObject {
         let target = plan.nextPrompt?.target?.rawValue
             ?? plan.memoryUpdate.pendingConfirmationTarget?.rawValue
             ?? "none"
+        let disclosureTarget = plan.nextPrompt?.disclosureTarget?.rawValue ?? "none"
+        let episodeFields = plan.memoryUpdate.episodeStructure?
+            .explicitlyProvidedFieldNames.joined(separator: ",") ?? "none"
         let nextKind = plan.nextPrompt?.kind.rawValue ?? "legacy"
         let resolvedTarget = plan.resolvedConfirmation?.target.rawValue ?? "none"
         let clear: String
@@ -1835,10 +2260,12 @@ final class ReflectionViewModel: ObservableObject {
             "intent_\(plan.replyIntent.rawValue)",
             "action_\(plan.localAction.kind.rawValue)",
             "next_\(nextKind)",
+            "disclosure_\(disclosureTarget)",
             "target_\(target)",
             "resolved_\(resolvedTarget)",
             "clear_\(clear)",
             "assessments_\(assessmentCount)",
+            "episode_fields_\(episodeFields)",
         ].joined(separator: "_")
         session.studyEvents.append(
             .init(stage: session.stage, action: String(action.prefix(220)))
@@ -1847,9 +2274,11 @@ final class ReflectionViewModel: ObservableObject {
 
     private func makeProtocolTurnRequest(
         trigger: LLMTurnTrigger,
-        correction: String?
+        correction: String?,
+        permissionsOverride: ReflectionProtocolPermissions? = nil
     ) -> LLMTurnControllerRequest {
-        let permissions = protocolController.permissions(for: session)
+        let permissions = permissionsOverride
+            ?? protocolController.permissions(for: session)
         // New sessions never create a separate tracking presentation. The measurement-free
         // aggregate below is folded into an ordinary synthesis instead of becoming a relevance
         // question. Keep the legacy array empty so a Planner cannot select presentTrackingCue.
@@ -1894,38 +2323,35 @@ final class ReflectionViewModel: ObservableObject {
             }
 
         let cardContext: LLMTurnCardContext?
-        if let card = session.card, session.cardDisplayState == .displayed {
-            let guidance = card.internalGuidance
+        if let card = session.card,
+           session.cardDisplayState == .displayed,
+           !session.cardWasSetAside {
+            let guidance = card.visualGuidance
+            let postMappingGuidanceAvailable = session.cardGuidanceShared
+                && protocolController.effectiveCardRealityConnection(for: session) != nil
             cardContext = LLMTurnCardContext(
                 imageIsDisplayed: true,
+                imageDevelopmentTurnCount: session.cardImageDevelopmentTurnCount,
                 connectionAttemptCount: session.cardConnectionAttemptCount,
                 connectionScaffoldUsed: session.cardConnectionScaffoldUsed,
                 connectionUnavailable: session.cardConnectionUnavailable,
+                realityAnchor: protocolCardRealityAnchor(),
                 visualScaffolds: session.cardConnectionScaffoldUsed
                     ? []
                     : eligibleProtocolCardScaffolds(
                         guidance?.visualScaffolds ?? []
                     ),
-                connectionGuidance: session.cardConnectionScaffoldUsed ? nil : guidance.map {
-                    LLMTurnCardConnectionGuidance(
-                        relationalTension: $0.coreTension,
-                        candidateDirections: $0.possibleDirections
-                    )
-                },
-                publicTheme: session.cardGuidanceShared ? card.reflectiveThemes : nil,
-                coreTension: session.cardGuidanceShared ? guidance?.coreTension : nil,
-                tenderDirections: session.cardGuidanceShared ? (guidance?.tenderLenses ?? []) : [],
-                fierceDirections: session.cardGuidanceShared ? (guidance?.fierceLenses ?? []) : [],
-                selfKindnessDirections: session.cardGuidanceShared
-                    ? (guidance?.selfCompassion?.selfKindnessCandidates ?? [])
-                    : [],
-                commonHumanityDirections: session.cardGuidanceShared
-                    ? (guidance?.selfCompassion?.commonHumanityCandidates ?? [])
-                    : [],
-                mindfulnessDirections: session.cardGuidanceShared
-                    ? (guidance?.selfCompassion?.mindfulnessCandidates ?? [])
-                    : [],
-                prohibitedClaims: guidance?.prohibitedClaims ?? []
+                reflectionApproaches: postMappingGuidanceAvailable
+                    ? SystemReflectionApproaches.standard
+                    : nil,
+                referenceGuidance: postMappingGuidanceAvailable
+                    ? cards.canonicalReferenceGuidance(for: card)
+                    : nil,
+                prohibitedClaims: [
+                    "画面不能证明现实中的原因、动机、情绪、人格、能力、责任、限制、需求或结果",
+                    "在用户接受或修订现实映射前，只能比较用户描述的画面动作或关系与已确认的现实动作、过程或结果；不得使用卡牌内涵深化解释",
+                    "Reality Connection 只能使用 realityAnchor 中的当前焦点事件；不得要求用户搜索另一段生活经历来让卡牌成立",
+                ]
             )
         } else {
             cardContext = nil
@@ -1933,10 +2359,14 @@ final class ReflectionViewModel: ObservableObject {
 
         return LLMTurnControllerRequest(
             trigger: trigger,
+            protocolVersion: session.protocolVersion,
             protocolStage: session.protocolStage,
             condition: session.condition,
             permissions: permissions,
-            recentMessages: session.messages.suffix(18).map {
+            recentMessages: session.messages
+                .filter { !session.supersededAssistantMessageIDs.contains($0.id) }
+                .suffix(18)
+                .map {
                 LLMTurnTranscriptItem(role: $0.role, content: $0.content)
             },
             semanticMemory: session.semanticMemory.plannerFacingProjection(),
@@ -1948,6 +2378,35 @@ final class ReflectionViewModel: ObservableObject {
             card: cardContext,
             protocolCorrection: correction
         )
+    }
+
+    /// Projects only the already committed focal episode into card work. This is a source and
+    /// scope boundary, not a semantic choice: the LLM still decides which observable relation is
+    /// useful and how to ask about it. Empty, duplicate, and uncommitted material never becomes a
+    /// substitute life story for the card.
+    private func protocolCardRealityAnchor() -> LLMTurnCardRealityAnchor? {
+        guard let episode = session.semanticMemory.episodeStructure else { return nil }
+
+        func cleaned(_ values: [String]) -> [String] {
+            var seen = Set<String>()
+            return values.compactMap { value in
+                let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !clean.isEmpty, seen.insert(clean).inserted else { return nil }
+                return clean
+            }
+        }
+
+        let anchor = LLMTurnCardRealityAnchor(
+            concreteFacts: cleaned(episode.concreteFacts),
+            eventProcess: cleaned(
+                episode.behaviorEvidence
+                    + episode.possibleContributors
+                    + episode.contextualConstraints
+                    + episode.controllableParts
+            ),
+            impacts: cleaned(episode.impacts)
+        )
+        return anchor.hasContent ? anchor : nil
     }
 
     /// Card-specific scaffolds remain local affordances. The model receives only questions whose
@@ -2025,8 +2484,18 @@ final class ReflectionViewModel: ObservableObject {
     ) async throws {
         let sessionBeforeCommit = session
         let previousStage = session.protocolStage
+        let presentsContextualizedCardReading =
+            previousStage == .cardReflection &&
+            response.replyIntent == .presentCardReading &&
+            (
+                session.protocolVersion < ReflectionSession.currentProtocolVersion ||
+                response.memoryUpdate.contextCueOffered == true
+            ) &&
+            protocolContextualLoadCue() != nil
         let committedNextPrompt = applyProtocolMemoryAndTracking(from: response)
-        if previousStage == .tenderConfirmation,
+        applyCurrentContextRelationship(from: response.memoryUpdate)
+        if session.protocolVersion < ReflectionSession.currentProtocolVersion,
+           previousStage == .tenderConfirmation,
            let resolvedConfirmation = response.resolvedConfirmation,
            resolvedConfirmation.target == .tenderSummary,
            [TurnConfirmationDecision.revised, .rejected].contains(resolvedConfirmation.decision),
@@ -2046,15 +2515,33 @@ final class ReflectionViewModel: ObservableObject {
                 action: "protocol_transition_\(previousStage.rawValue)_to_\(response.requestedStage.rawValue)_intent_\(response.replyIntent.rawValue)"
             )
         )
+        if presentsContextualizedCardReading {
+            session.studyEvents.append(
+                .init(
+                    stage: session.stage,
+                    action: "contextualized_card_reading_candidate_presented"
+                )
+            )
+            if session.protocolVersion >= ReflectionSession.currentProtocolVersion,
+               session.contextualLoadInference?.relevance == .notReviewed {
+                // Presentation alone never confirms relevance. Keep the cue out of the final
+                // narrative unless a later user response supplies a typed relationship.
+                session.contextualLoadInference?.relevance = .offered
+                session.studyEvents.append(
+                    .init(stage: session.stage, action: "contextual_cue_offered_after_card_mapping")
+                )
+            }
+        }
 
         if previousStage == .tenderConfirmation,
            [.cardConsent, .directReflection].contains(response.requestedStage) {
             session.tenderGroundingConfirmed = true
             session.contextSummaryConfirmed = true
-            if session.contextualLoadInference?.hasDialogueCue == true,
+            if session.protocolVersion < ReflectionSession.currentProtocolVersion,
+               session.contextualLoadInference?.hasDialogueCue == true,
                session.contextualLoadInference?.relevance == .notReviewed {
-                // The contextual clause was part of the ordinary tender synthesis the person
-                // accepted; no separate tracking-relevance question is required.
+                // Preserve the saved behavior of older in-progress sessions. Current sessions do
+                // not expose or confirm context during Tender.
                 session.contextualLoadInference?.relevance = .relevant
             }
             if let tender = session.semanticMemory.tenderUnderstanding,
@@ -2062,9 +2549,45 @@ final class ReflectionViewModel: ObservableObject {
                 session.lockedBaselineNarrative = tender
             }
         }
+        if session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
+           previousStage == .contextualDisclosure,
+           [.cardConsent, .directReflection].contains(response.requestedStage) {
+            // Tender is an internal readiness boundary in the current protocol. The visible
+            // response is a brief conversational bridge, not a summary that asks for approval.
+            session.tenderGroundingConfirmed = true
+            session.contextSummaryConfirmed = true
+            session.reflectionReadiness = .reflectionOpen
+            if let tender = session.semanticMemory.tenderUnderstanding,
+               !tender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                session.lockedBaselineNarrative = tender
+            }
+            session.studyEvents.append(
+                .init(
+                    stage: session.stage,
+                    action: "tender_grounding_established_without_summary_gate"
+                )
+            )
+        }
         if response.requestedStage == .directReflection,
            session.reflectionReadiness == .needsTender {
             session.reflectionReadiness = .reflectionOpen
+        }
+        if previousStage == .cardReflection,
+           response.resolvedConfirmation?.target == .cardMapping,
+           let decision = response.resolvedConfirmation?.decision,
+           [.revised, .rejected].contains(decision),
+           let correctedTender = session.semanticMemory.tenderUnderstanding,
+           !correctedTender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // A correction to the candidate reading becomes the new real-world baseline before
+            // the fresh direct-reflection continuation. The superseded candidate remains only in
+            // the audit transcript and cannot organize later Tender, candid, or practice work.
+            session.lockedBaselineNarrative = correctedTender
+            session.studyEvents.append(
+                .init(
+                    stage: session.stage,
+                    action: "card_correction_replaced_reflection_baseline"
+                )
+            )
         }
         if response.replyIntent == .presentFinalNarrative {
             session.reflectionReadiness = .narrativeReady
@@ -2084,9 +2607,33 @@ final class ReflectionViewModel: ObservableObject {
             session.dialogueProgress.currentState = .cardIntroduction
             drawCard(replyingTo: ReflectionResponseContext.userMessageID)
         case .shareCardGuidance:
-            // Handled before this method so the first visible response can already use the newly
-            // authorized catalogue instead of producing two assistant bubbles.
-            break
+            guard protocolController.effectiveCardRealityConnection(for: session) != nil else {
+                throw ReflectionProtocolViolation.shareGuidanceWithoutConfirmedConnection
+            }
+            let transactionID = currentCardGuidanceTransactionID()
+            if session.cardGuidanceTransactionID == transactionID,
+               session.cardGuidanceShared,
+               !session.pendingCardGuidanceTurn {
+                session.studyEvents.append(
+                    .init(stage: session.stage, action: "duplicate_transaction_ignored")
+                )
+            } else {
+                session.cardGuidanceShared = true
+                session.pendingCardGuidanceTurn = true
+                session.cardGuidanceTransactionID = transactionID
+                session.studyEvents.append(
+                    .init(stage: session.stage, action: "card_guidance_context_authorized")
+                )
+                session.studyEvents.append(
+                    .init(stage: session.stage, action: "silent_transaction_committed")
+                )
+                if response.reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == "local_card_guidance_authorization" {
+                    session.studyEvents.append(
+                        .init(stage: session.stage, action: "silent_empty_reply_accepted")
+                    )
+                }
+            }
         case .completeSession:
             session.finalNarrativeConfirmed =
                 session.semanticMemory.finalNarrative?.isEmpty == false
@@ -2095,15 +2642,6 @@ final class ReflectionViewModel: ObservableObject {
             session.studyEvents.append(
                 .init(stage: session.stage, action: "coarse_protocol_completion_committed")
             )
-            do {
-                try await store.save(session)
-            } catch {
-                session = sessionBeforeCommit
-                session.studyEvents.append(
-                    .init(stage: session.stage, action: "coarse_protocol_persistence_rollback")
-                )
-                throw ProtocolCommitFailure.persistenceFailed
-            }
         }
 
         if let committedNextPrompt {
@@ -2117,12 +2655,30 @@ final class ReflectionViewModel: ObservableObject {
         if appendVisibleReply, response.localAction.kind != .drawRandomCard {
             appendProtocolAssistant(response.reply)
         }
+        if response.replyIntent == .presentCardReading {
+            session.pendingCardGuidanceTurn = false
+        }
+        do {
+            try await store.save(session)
+        } catch {
+            session = sessionBeforeCommit
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "coarse_protocol_persistence_rollback")
+            )
+            throw ProtocolCommitFailure.persistenceFailed
+        }
         scheduleCloudSync(action: "coarse_protocol_turn_completed")
     }
 
-    /// Protocol-v2 card limits are based only on committed typed intents. Swift does not inspect
-    /// the person's words or decide whether a connection is meaningful; it merely stops exposing
-    /// another scaffold after the one permitted scaffold and final connection invitation.
+    private func currentCardGuidanceTransactionID() -> String {
+        let userTurnID = ReflectionResponseContext.userMessageID
+            ?? session.messages.last(where: { $0.role == .user })?.id
+            ?? session.id
+        return "card-guidance-\(session.id.uuidString)-\(userTurnID.uuidString)"
+    }
+
+    /// Connection attempts count typed semantic outcomes, never assistant questions or technical
+    /// retries. Swift does not inspect dialogue text to decide whether a connection was formed.
     private func updateProtocolCardConnectionCapabilities(
         after response: LLMTurnControllerResponse,
         previousStage: ReflectionProtocolStage
@@ -2130,25 +2686,52 @@ final class ReflectionViewModel: ObservableObject {
         guard previousStage == .cardReflection else { return }
 
         switch response.replyIntent {
-        case .inviteCardConnection:
-            session.cardConnectionAttemptCount += 1
-            if session.cardConnectionAttemptCount >= 2 {
-                session.cardConnectionScaffoldPending = false
+        case .developCardImage:
+            if response.memoryUpdate.cardConnectionOutcome == .noConnectionFound
+                || session.cardConnectionAttemptCount >= 1 {
+                session.cardConnectionScaffoldUsed = true
+                session.cardConnectionScaffoldPending = true
+            } else {
+                session.cardImageDevelopmentTurnCount += 1
+                session.studyEvents.append(
+                    .init(
+                        stage: session.stage,
+                        action: "card_image_development_turn_\(session.cardImageDevelopmentTurnCount)_committed"
+                    )
+                )
             }
-        case .developCardImage where session.cardConnectionAttemptCount >= 1:
-            session.cardConnectionScaffoldUsed = true
-            session.cardConnectionScaffoldPending = true
+        case .deepenCardConnection:
+            session.cardConnectionDeepeningUsed = true
+            session.cardConnectionScaffoldPending = false
         case .authorizeCardGuidance, .presentCardReading:
             session.cardConnectionScaffoldPending = false
         case .directCandidReflection
             where response.requestedStage == .directReflection
                 && !isCardMappingResolutionTransition(response)
-                && session.semanticMemory.cardRealityMapping?
-                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false:
+                && protocolController.effectiveCardRealityConnection(for: session) == nil:
             session.cardConnectionUnavailable = true
             session.cardWasSetAside = true
             session.cardConnectionScaffoldPending = false
         default:
+            break
+        }
+
+        switch response.memoryUpdate.cardConnectionOutcome {
+        case .noConnectionFound, .candidateRejected:
+            session.cardConnectionAttemptCount += 1
+            if session.cardConnectionAttemptCount >= 2 {
+                session.cardConnectionScaffoldPending = false
+            }
+        case .connectionConfirmed:
+            session.cardConnectionScaffoldPending = false
+            session.cardConnectionScaffoldUsed = false
+            session.cardConnectionUnavailable = false
+            session.cardWasSetAside = false
+        case .userRequestedSkip:
+            session.cardConnectionScaffoldPending = false
+            session.cardConnectionUnavailable = true
+            session.cardWasSetAside = true
+        case .partialConnection, .none:
             break
         }
     }
@@ -2244,17 +2827,43 @@ final class ReflectionViewModel: ObservableObject {
 
         if let resolution = response.resolvedConfirmation,
            resolution.target == .cardMapping {
+            if [.revised, .rejected].contains(resolution.decision),
+               let superseded = session.messages.last(where: { $0.role == .assistant }) {
+                // Keep the visible message in the research transcript while ensuring that the
+                // correction—not the superseded candidate—is the only interpretation available
+                // to every later Planner, Writer, and Critic request.
+                session.supersededAssistantMessageIDs.insert(superseded.id)
+                session.studyEvents.append(
+                    .init(
+                        stage: session.stage,
+                        action: "card_candidate_\(resolution.decision.rawValue)_excluded_from_evidence"
+                    )
+                )
+            }
             switch resolution.decision {
-            case .accepted, .revised:
+            case .accepted:
                 session.cardMappingConfirmed = true
                 session.cardWasSetAside = false
                 if session.cardConfirmedMapping?.isEmpty != false {
-                    session.cardConfirmedMapping = session.semanticMemory.cardRealityMapping
+                    session.cardConfirmedMapping = protocolController
+                        .effectiveCardRealityConnection(for: session)?.realityMapping
                 }
+            case .revised:
+                session.cardMappingConfirmed = true
+                session.cardWasSetAside = false
+                session.cardConfirmedMapping = response.memoryUpdate.cardNegotiatedMeaning
+                    ?? protocolController.effectiveCardRealityConnection(for: session)?.realityMapping
             case .rejected, .declined:
                 session.cardMappingConfirmed = false
                 session.cardConfirmedMapping = nil
                 session.cardWasSetAside = true
+                session.cardConnectionUnavailable = true
+                session.cardGuidanceShared = false
+                session.cardCandidateMapping = nil
+                session.cardGroundingMatch = nil
+                session.cardMeaningShiftResponse = nil
+                session.cardMeaningShiftCompleted = false
+                session.cardDerivedDeltaNarrative = nil
             case .unclear, .related, .partlyRelated, .unrelated, .uncertain:
                 break
             }
@@ -2268,6 +2877,11 @@ final class ReflectionViewModel: ObservableObject {
                 if proposed.target == .trackingRelationship,
                    let newlyPresentedBatchID {
                     referenceID = newlyPresentedBatchID
+                } else if proposed.target == .cardRealityConnection,
+                          let pending = update.pendingCardRealityConnection
+                            ?? session.semanticMemory.pendingCardRealityConnection,
+                          pending.isStructurallyComplete {
+                    referenceID = pending.id.uuidString
                 } else {
                     referenceID = UUID().uuidString
                 }
@@ -2340,34 +2954,116 @@ final class ReflectionViewModel: ObservableObject {
             : cue.neutralDescription
     }
 
-    /// Protocol-v2 receives context as one hypothesis, never as a separate presentation that
-    /// demands a relevance response. Before confirmation it is available only inside the tender
-    /// synthesis. After the person accepts that whole synthesis, it may support later reflection,
-    /// except while the card image is still being interpreted on its own.
+    /// Current card sessions keep context silent through disclosure, Tender, consent, image
+    /// observation, and the person's first image-to-life mapping. A single measurement-free cue
+    /// becomes available only for the post-mapping candidate reading. Presentation changes its
+    /// local state to `offered`, never `relevant`; only a later user-authored relationship can
+    /// authorize it for the final narrative.
     private func protocolContextualLoadCue() -> DialogueContextCue? {
         guard let inference = session.contextualLoadInference,
               inference.hasDialogueCue,
               let hypothesis = inference.dialogueHypothesis else {
             return nil
         }
+        if session.protocolVersion < ReflectionSession.currentProtocolVersion {
+            switch inference.relevance {
+            case .notReviewed:
+                guard session.protocolStage == .contextualDisclosure else { return nil }
+            case .offered:
+                return nil
+            case .relevant:
+                switch session.protocolStage {
+                case .cardReflection:
+                    guard session.condition.usesCard,
+                          session.cardGuidanceShared,
+                          session.semanticMemory.cardImageRelation?
+                            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+                          session.semanticMemory.cardRealityMapping?
+                            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+                        return nil
+                    }
+                case .contextualDisclosure, .cardConsent, .complete:
+                    return nil
+                default:
+                    break
+                }
+            case .uncertain, .irrelevant:
+                return nil
+            }
+            return DialogueContextCue(
+                hypothesis: userFacingContextualHypothesis(hypothesis),
+                confidence: inference.confidence,
+                relevance: inference.relevance,
+                usageBoundary: "旧会话兼容：只能保留 hypothesis 的原始语义，不能扩展为原因、诊断、能力、情绪、免责、责任或建议。"
+            )
+        }
+        let effectiveConnection = protocolController.effectiveCardRealityConnection(for: session)
         switch inference.relevance {
         case .notReviewed:
-            guard session.protocolStage == .contextualDisclosure else { return nil }
+            guard session.protocolStage == .cardReflection,
+                  session.condition.usesCard,
+                  session.cardGuidanceShared,
+                  effectiveConnection != nil else {
+                return nil
+            }
+        case .offered:
+            // Expose it once more only while interpreting the response to the card reading that
+            // offered it. If the person does not address it, later reflection sees only the
+            // stored `offered` state and must not repeat the cue.
+            guard session.protocolStage == .cardReflection else {
+                return nil
+            }
         case .relevant:
-            guard ![
-                ReflectionProtocolStage.contextualDisclosure,
-                .cardConsent,
-                .cardReflection,
-                .complete,
-            ].contains(session.protocolStage) else { return nil }
+            switch session.protocolStage {
+            case .cardReflection:
+                guard session.condition.usesCard,
+                      session.cardGuidanceShared,
+                      effectiveConnection != nil else {
+                    return nil
+                }
+            case .contextualDisclosure, .cardConsent, .complete:
+                return nil
+            default:
+                break
+            }
         case .uncertain, .irrelevant:
             return nil
         }
+        let groundedHypothesis = session.semanticMemory.contextRelationship?.userInterpretation?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return DialogueContextCue(
-            hypothesis: userFacingContextualHypothesis(hypothesis),
+            hypothesis: groundedHypothesis?.isEmpty == false
+                ? groundedHypothesis!
+                : userFacingContextualHypothesis(hypothesis),
             confidence: inference.confidence,
             relevance: inference.relevance,
-            usageBoundary: "只可作为整段理解中的一句不确定背景，不得单独询问是否符合，不得提及测量、数据、设备、指标或具体情绪，也不得用于解释原因、减免责任或提出健康建议。"
+            usageBoundary: "只有在用户已经建立 confirmed cardRealityConnection 后，才可将这条线索暂定地并置一次。它不能建立或替代图像—现实连接，也不是原因、诊断、能力、情绪、免责、责任或行动证据；不得展示数据来源。没有用户回应时保持 offered，只有 contextRelationship 中 related/partlyRelated 且带有用户解释的关系可进入最终叙事。"
+        )
+    }
+
+    /// Converts only an explicit typed relationship into later context availability. Merely
+    /// mentioning a contextual fact, or accepting a broad summary, never marks it relevant.
+    private func applyCurrentContextRelationship(
+        from update: TurnSemanticMemoryUpdate
+    ) {
+        guard session.protocolVersion >= ReflectionSession.internalTenderProtocolVersion,
+              let relationship = update.contextRelationship,
+              session.contextualLoadInference?.hasDialogueCue == true else {
+            return
+        }
+        switch relationship.relevance {
+        case .related, .partlyRelated:
+            session.contextualLoadInference?.relevance = .relevant
+        case .unrelated:
+            session.contextualLoadInference?.relevance = .irrelevant
+        case .uncertain:
+            session.contextualLoadInference?.relevance = .uncertain
+        }
+        session.studyEvents.append(
+            .init(
+                stage: session.stage,
+                action: "context_relationship_\(relationship.relevance.rawValue)_recorded"
+            )
         )
     }
 
@@ -2467,9 +3163,10 @@ final class ReflectionViewModel: ObservableObject {
         )
         let userMessageID = ReflectionResponseContext.userMessageID
         switch route {
-        case .planner(let correction):
+        case .planner(let correction, let permissions):
             retryTarget = .protocolPlanner(
                 correction: correction,
+                permissions: permissions,
                 recoveryMessageID: recoveryMessageID,
                 userMessageID: userMessageID
             )
@@ -2510,8 +3207,237 @@ final class ReflectionViewModel: ObservableObject {
         }
     }
 
-    private func structuredProtocolCorrection(for error: Error) -> String {
-        let permissions = protocolController.permissions(for: session)
+    private func protocolRepairPermissions(
+        for error: Error
+    ) -> ReflectionProtocolPermissions {
+        let base = protocolController.permissions(for: session)
+        func narrowed(
+            stages: [ReflectionProtocolStage],
+            actions: [TurnLocalActionKind],
+            intents: [TurnReplyIntent],
+            disclosurePurposes: [TurnDisclosureQuestionPurpose]? = nil,
+            disclosureTargets: [TurnDisclosureQuestionTarget]? = nil
+        ) -> ReflectionProtocolPermissions {
+            ReflectionProtocolPermissions(
+                currentStage: base.currentStage,
+                allowedStages: stages,
+                allowedActions: actions,
+                allowedReplyIntents: intents,
+                allowedDisclosurePurposes:
+                    disclosurePurposes ?? base.allowedDisclosurePurposes,
+                allowedDisclosureTargets:
+                    disclosureTargets ?? base.allowedDisclosureTargets,
+                allowedOperations: base.allowedOperations.filter {
+                    stages.contains($0.requestedStage)
+                        && actions.contains($0.localAction)
+                        && intents.contains($0.replyIntent)
+                }
+            )
+        }
+        guard let violation = error as? ReflectionProtocolViolation else {
+            return base
+        }
+
+        if session.protocolStage == .cardReflection,
+           !session.cardGuidanceShared {
+            let repairsConnectionBoundary: Bool
+            switch violation {
+            case .connectionSourceWithoutContent,
+                 .incompleteCardRealityConnection,
+                 .shareGuidanceWithoutConfirmedConnection,
+                 .legacyCardConnectionPatchNotAllowed:
+                repairsConnectionBoundary = true
+            default:
+                repairsConnectionBoundary = false
+            }
+            if repairsConnectionBoundary {
+                // Recovery can ask one smaller in-scope connection question or set the card aside.
+                // A complete connection patch is promoted to the silent guidance successor even
+                // though that dependent action is deliberately absent from these initial repair
+                // permissions.
+                return narrowed(
+                    stages: base.allowedStages.filter {
+                        [.cardReflection, .directReflection, .safetySupport].contains($0)
+                    },
+                    actions: [.none],
+                    intents: base.allowedReplyIntents.filter {
+                        [
+                            .developCardImage, .inviteCardConnection,
+                            .directCandidReflection, .safetySupport,
+                        ].contains($0)
+                    }
+                )
+            }
+            if violation == .invalidPreGuidanceConnectionConfirmation {
+                return narrowed(
+                    stages: base.allowedStages.filter {
+                        [.cardReflection, .directReflection, .safetySupport].contains($0)
+                    },
+                    actions: [.none],
+                    intents: base.allowedReplyIntents.filter {
+                        [.inviteCardConnection, .directCandidReflection, .safetySupport]
+                            .contains($0)
+                    }
+                )
+            }
+            let attemptedReadingBeforeAuthorization: Bool
+            switch violation {
+            case .illegalReplyIntent, .illegalLocalAction, .invalidNextPrompt,
+                 .missingRequiredMemoryField(.cardNegotiatedMeaning):
+                attemptedReadingBeforeAuthorization = true
+            default:
+                attemptedReadingBeforeAuthorization = false
+            }
+            if attemptedReadingBeforeAuthorization {
+                // A rejected premature reading must not be retried under the same permissions.
+                // Remove only that impossible operation. Existing image-development,
+                // connection, set-aside, and safety paths remain available when the latest answer
+                // did not actually contain a usable mapping.
+                return narrowed(
+                    stages: base.allowedStages,
+                    actions: base.allowedActions,
+                    intents: base.allowedReplyIntents.filter { $0 != .presentCardReading }
+                )
+            }
+        }
+
+        guard session.protocolStage == .contextualDisclosure else { return base }
+
+        if case .repeatedQuestionPurpose(let purpose, let target) = violation {
+            return narrowed(
+                stages: base.allowedStages,
+                actions: base.allowedActions,
+                intents: base.allowedReplyIntents,
+                disclosurePurposes: base.allowedDisclosurePurposes.filter { $0 != purpose },
+                disclosureTargets: base.allowedDisclosureTargets.filter { $0 != target }
+            )
+        }
+
+        let mustContinueDisclosure: Bool
+        switch violation {
+        case .incompleteEpisodeStructure:
+            mustContinueDisclosure = true
+        case .missingRequiredMemoryField(let field):
+            if session.protocolVersion >= ReflectionSession.currentProtocolVersion {
+                mustContinueDisclosure = field == .episodeStructure
+            } else {
+                mustContinueDisclosure = [
+                    .selfCriticismStatus,
+                    .selfCriticalStatement,
+                    .selfCriticismLink,
+                    .episodeStructure,
+                    .contextRelationship,
+                ].contains(field)
+            }
+        default:
+            mustContinueDisclosure = false
+        }
+        if mustContinueDisclosure {
+            return narrowed(
+                stages: base.allowedStages.filter {
+                    [.contextualDisclosure, .safetySupport].contains($0)
+                },
+                actions: [.none],
+                intents: base.allowedReplyIntents.filter {
+                    [.exploreContext, .safetySupport].contains($0)
+                }
+            )
+        }
+
+        if case .invalidDisclosureQuestionTarget = violation {
+            // Re-evaluate the cumulative state after the repair patch. The latest answer may
+            // legitimately fill more than the initially expected relation, so the bounded retry
+            // may either ask the remaining disclosure target or advance to the summary. It may do
+            // neither a card transition nor any later reflection operation.
+            return narrowed(
+                stages: base.allowedStages.filter {
+                    [
+                        .contextualDisclosure, .cardConsent,
+                        .tenderConfirmation, .safetySupport,
+                    ].contains($0)
+                },
+                actions: [.none],
+                intents: base.allowedReplyIntents.filter {
+                    [
+                        .exploreContext, .inviteCardConsent,
+                        .presentTenderSummary, .safetySupport,
+                    ].contains($0)
+                }
+            )
+        }
+
+        if violation == .disclosureShouldAdvance {
+            let forwardIntent: TurnReplyIntent = session.condition.usesCard
+                ? .inviteCardConsent : .presentTenderSummary
+            let forwardStage: ReflectionProtocolStage = session.condition.usesCard
+                ? .cardConsent : .tenderConfirmation
+            return narrowed(
+                stages: base.allowedStages.filter {
+                    $0 == forwardStage || $0 == .safetySupport
+                },
+                actions: [.none],
+                intents: base.allowedReplyIntents.filter {
+                    $0 == forwardIntent || $0 == .safetySupport
+                }
+            )
+        }
+        return base
+    }
+
+    private func protocolMissingConditions(for error: Error) -> [String] {
+        guard let violation = error as? ReflectionProtocolViolation else { return [] }
+        switch violation {
+        case .incompleteEpisodeStructure(let requirements):
+            return requirements.map { "episodeStructure.\($0.rawValue)" }
+        case .missingRequiredMemoryField(let field):
+            if session.protocolStage == .cardReflection,
+               !session.cardGuidanceShared,
+               field == .cardNegotiatedMeaning {
+                return [
+                    "cardGuidanceShared requires a confirmed cardRealityConnection"
+                ]
+            }
+            return ["semanticMemory.\(field.rawValue)"]
+        case .invalidDisclosureQuestionTarget(let expected):
+            return [
+                "committedStatePreferredTarget=\(expected.rawValue)",
+                "advanceIfCumulativePatchCompletesDisclosureGate",
+            ]
+        case .repeatedQuestionPurpose(let purpose, let target):
+            return [
+                "receivedDisclosurePurpose=\(purpose.rawValue)",
+                "completedDisclosureTarget=\(target.rawValue)",
+                "duplicateQuestionFunctionForbidden",
+            ]
+        case .disclosureShouldAdvance:
+            return ["conditionBridgeRequired"]
+        case .connectionSourceWithoutContent:
+            return [
+                "cardRealityConnection.imageRelation",
+                "cardRealityConnection.realityMapping",
+                "cardRealityConnection.source",
+                "cardRealityConnection.status=confirmed",
+            ]
+        case .incompleteCardRealityConnection:
+            return ["completeAtomicCardRealityConnection"]
+        case .shareGuidanceWithoutConfirmedConnection:
+            return ["confirmedCardRealityConnectionRequiredBeforeGuidance"]
+        case .invalidPreGuidanceConnectionConfirmation:
+            return ["matchingPendingCardRealityConnectionRequired"]
+        case .legacyCardConnectionPatchNotAllowed:
+            return ["useCanonicalCardRealityConnectionOnly"]
+        case .confirmedCardConnectionIsImmutable:
+            return ["preserveConfirmedCardRealityConnectionUnchanged"]
+        default:
+            return []
+        }
+    }
+
+    private func structuredProtocolCorrection(
+        for error: Error,
+        permissions: ReflectionProtocolPermissions
+    ) -> String {
+        let originalPermissions = protocolController.permissions(for: session)
         let currentPrompt = session.semanticMemory.nextPrompt
         var references: [String: String] = [:]
         if let target = currentPrompt?.target {
@@ -2530,6 +3456,18 @@ final class ReflectionViewModel: ObservableObject {
         if let cardID = session.card?.id {
             references["selectedLocalCardID"] = String(cardID)
         }
+        if let pendingID = session.semanticMemory.pendingCardRealityConnection?.id {
+            references["pendingCardRealityConnectionID"] = pendingID.uuidString
+        }
+        let allowedDisclosureTargets: [String]
+        if let violation = error as? ReflectionProtocolViolation,
+           case .invalidDisclosureQuestionTarget(let expected) = violation {
+            // The retry contract must narrow the rejected choice itself, not merely describe the
+            // problem while continuing to advertise every enum value as allowed.
+            allowedDisclosureTargets = [expected.rawValue]
+        } else {
+            allowedDisclosureTargets = permissions.allowedDisclosureTargets.map(\.rawValue)
+        }
 
         let payload = ProtocolCorrectionPayload(
             component: "planner",
@@ -2538,8 +3476,28 @@ final class ReflectionViewModel: ObservableObject {
             allowedStages: permissions.allowedStages.map(\.rawValue),
             allowedActions: permissions.allowedActions.map(\.rawValue),
             allowedReplyIntents: permissions.allowedReplyIntents.map(\.rawValue),
+            missingConditions: protocolMissingConditions(for: error),
+            forbiddenOperations: [
+                originalPermissions.allowedStages
+                    .filter { !permissions.allowedStages.contains($0) }
+                    .map { "requestedStage=\($0.rawValue)" },
+                originalPermissions.allowedActions
+                    .filter { !permissions.allowedActions.contains($0) }
+                    .map { "localAction=\($0.rawValue)" },
+                originalPermissions.allowedReplyIntents
+                    .filter { !permissions.allowedReplyIntents.contains($0) }
+                    .map { "replyIntent=\($0.rawValue)" },
+            ].flatMap { $0 },
             allowedEnumValues: [
                 "nextPrompt.kind": TurnNextPromptKind.allCases.map(\.rawValue),
+                "nextPrompt.disclosurePurpose":
+                    permissions.allowedDisclosurePurposes.map(\.rawValue),
+                "nextPrompt.disclosureTarget": allowedDisclosureTargets,
+                "nextPrompt.disclosureReopenReason":
+                    TurnDisclosureReopenReason.allCases.map(\.rawValue),
+                "eventDisclosureOutcome": TurnEventDisclosureOutcome.allCases.map(\.rawValue),
+                "reflectionFocusKind": TurnReflectionFocusKind.allCases.map(\.rawValue),
+                "tenderGroundingKind": TurnTenderGroundingKind.allCases.map(\.rawValue),
                 "confirmation.target": TurnConfirmationTarget.allCases.map(\.rawValue),
                 "confirmation.decision": TurnConfirmationDecision.allCases.map(\.rawValue),
                 "practiceKind": TurnPracticeKind.allCases.map(\.rawValue),
@@ -2548,6 +3506,9 @@ final class ReflectionViewModel: ObservableObject {
                     .map(\.rawValue),
                 "noActionReason": TurnNoActionReason.allCases.map(\.rawValue),
                 "tracking.relevance": TurnTrackingRelevance.allCases.map(\.rawValue),
+                "cardRealityConnection.source": TurnCardRealityMappingSource.allCases.map(\.rawValue),
+                "cardRealityConnection.status": TurnCardRealityConnectionStatus.allCases.map(\.rawValue),
+                "cardConnectionOutcome": TurnCardConnectionOutcome.allCases.map(\.rawValue),
             ],
             validReferences: references,
             mustPreserve: [
@@ -2577,6 +3538,8 @@ final class ReflectionViewModel: ObservableObject {
             allowedStages: [plan.requestedStage.rawValue],
             allowedActions: [plan.localAction.kind.rawValue],
             allowedReplyIntents: [plan.replyIntent.rawValue],
+            missingConditions: [],
+            forbiddenOperations: [],
             allowedEnumValues: [:],
             validReferences: [:],
             mustPreserve: [
@@ -2616,6 +3579,8 @@ final class ReflectionViewModel: ObservableObject {
             case .illegalReplyIntent: return "illegal_reply_intent"
             case .missingRequiredMemoryField(let field):
                 return "missing_required_memory_\(field.rawValue)"
+            case .incompleteEpisodeStructure(let requirements):
+                return "incomplete_episode_structure_\(requirements.map(\.rawValue).joined(separator: "_"))"
             case .writerIntentMismatch: return "writer_intent_mismatch"
             case .unknownTrackingCue: return "unknown_tracking_cue"
             case .duplicateTrackingCue: return "duplicate_tracking_cue"
@@ -2623,17 +3588,46 @@ final class ReflectionViewModel: ObservableObject {
             case .missingNoActionReason: return "missing_no_action_reason"
             case .conflictingMemoryPatch: return "conflicting_memory_patch"
             case .invalidNextPrompt: return "invalid_next_prompt"
+            case .repeatedQuestionPurpose: return "resolved_relation_reopened"
+            case .invalidDisclosureQuestionTarget(let expected):
+                return "invalid_disclosure_question_target_expected_\(expected.rawValue)"
+            case .disclosureShouldAdvance: return "disclosure_should_advance"
             case .invalidConfirmationResolution: return "invalid_confirmation_resolution"
             case .unknownConfirmationReference: return "unknown_confirmation_reference"
+            case .invalidCardReferenceSelection: return "invalid_card_reference_selection"
+            case .connectionSourceWithoutContent:
+                return "connection_source_without_content"
+            case .incompleteCardRealityConnection:
+                return "incomplete_card_reality_connection"
+            case .shareGuidanceWithoutConfirmedConnection:
+                return "share_guidance_without_confirmed_connection"
+            case .invalidPreGuidanceConnectionConfirmation:
+                return "invalid_pre_guidance_connection_confirmation"
+            case .legacyCardConnectionPatchNotAllowed:
+                return "legacy_card_connection_patch_not_allowed"
+            case .confirmedCardConnectionIsImmutable:
+                return "confirmed_card_connection_is_immutable"
             }
         }
         return "provider_or_unclassified_generation_failure"
     }
 
     private func protocolCorrectionDescription(_ error: Error) -> String {
+        let currentTarget = session.semanticMemory.nextPrompt?.target
+            ?? session.semanticMemory.pendingConfirmationTarget
         if let clientError = error as? LLMTurnControllerClientError {
             switch clientError {
             case .plannerDecoding(let diagnostic):
+                if session.protocolStage == .cardReflection,
+                   currentTarget == .cardMapping,
+                   session.semanticMemory.cardNegotiatedMeaning?.isEmpty == false {
+                    return """
+                    The prior Planner JSON for the pending cardMapping could not be decoded at \
+                    \(diagnostic.keyPath). Repair the complete confirmation transaction, not only \
+                    that one field. \
+                    \(ReflectionPromptFactory.pendingCardMappingProtocolCorrection)
+                    """
+                }
                 if diagnostic.keyPath.hasSuffix("clearPendingQuestionPurpose") {
                     return """
                     The prior Planner JSON could not be decoded at \
@@ -2664,11 +3658,22 @@ final class ReflectionViewModel: ObservableObject {
                     diagnostic.keyPath.hasSuffix("target") {
                     return """
                     A confirmation target must be exactly trackingRelationship, tenderSummary, \
-                    cardConsent, cardMapping, finalNarrative, or practice.
+                    cardConsent, cardRealityConnection, cardMapping, finalNarrative, or practice.
                     """
                 }
                 if diagnostic.invalidNextPromptKind != nil ||
                     diagnostic.keyPath.hasSuffix("nextPrompt.kind") {
+                    if session.protocolStage == .contextualDisclosure,
+                       diagnostic.invalidNextPromptKind == "inviteCardConsent" {
+                        return """
+                        inviteCardConsent is a replyIntent, never a nextPrompt.kind. If the episode \
+                        evidence gate is complete, return replyIntent=inviteCardConsent, \
+                        requestedStage=cardConsent, localAction.kind=none, and \
+                        nextPrompt.kind=confirmationRequest with \
+                        target=cardConsent. Otherwise remain in contextualDisclosure with exactly \
+                        one openQuestion. Do not write or offer a card/exercise inside exploreContext.
+                        """
+                    }
                     return """
                     nextPrompt.kind must be exactly none, openQuestion, or confirmationRequest, \
                     with only the fields allowed by that tagged shape.
@@ -2703,8 +3708,29 @@ final class ReflectionViewModel: ObservableObject {
             }
         }
         if let violation = error as? ReflectionProtocolViolation {
-            let currentTarget = session.semanticMemory.nextPrompt?.target
-                ?? session.semanticMemory.pendingConfirmationTarget
+            if session.protocolStage == .cardReflection,
+               !session.cardGuidanceShared {
+                switch violation {
+                case .illegalReplyIntent, .illegalLocalAction, .invalidNextPrompt,
+                     .missingRequiredMemoryField(.cardNegotiatedMeaning):
+                    return """
+                    A candidate card reading is not authorized yet, so do not use \
+                    presentCardReading and do not create cardNegotiatedMeaning or a cardMapping \
+                    confirmation. Re-read the latest user answer in relation to the visible card \
+                    connection question. If the person supplied an image-to-life relationship, \
+                    return one complete memoryUpdate.cardRealityConnection with non-empty \
+                    imageRelation and realityMapping, the supported source, and status=confirmed, \
+                    without adding a hidden cause or fixed card meaning. Do not request \
+                    authorizeCardGuidance or shareCardGuidance; Swift derives that silent successor. \
+                    If the latest answer does not \
+                    supply a usable relationship, do not invent one; use only another operation \
+                    still listed in the narrowed permissions, including setting the card aside \
+                    when appropriate.
+                    """
+                default:
+                    break
+                }
+            }
 
             if session.protocolStage == .cardReflection,
                currentTarget == .cardMapping,
@@ -2715,15 +3741,6 @@ final class ReflectionViewModel: ObservableObject {
                      .invalidConfirmationResolution,
                      .missingRequiredMemoryField(.cardNegotiatedMeaning):
                     return ReflectionPromptFactory.pendingCardMappingProtocolCorrection
-                default:
-                    break
-                }
-            }
-
-            if currentTarget == .trackingRelationship {
-                switch violation {
-                case .missingRequiredMemoryField(.tenderUnderstanding):
-                    return ReflectionPromptFactory.trackingToTenderObjectProtocolCorrection
                 default:
                     break
                 }
@@ -2773,11 +3790,11 @@ final class ReflectionViewModel: ObservableObject {
                 }
                 if session.protocolStage == .cardReflection,
                    session.cardGuidanceShared,
-                   session.semanticMemory.cardRealityMapping?.isEmpty == false,
+                   protocolController.effectiveCardRealityConnection(for: session) != nil,
                    session.semanticMemory.cardNegotiatedMeaning?.isEmpty != false {
                     return """
-                    Bounded card guidance is already authorized for a grounded image-to-reality \
-                    mapping. Stay in cardReflection and use presentCardReading now. Store the \
+                    The user-grounded image-to-reality relation is already authorized. Stay in \
+                    cardReflection and use presentCardReading now. Store the \
                     substantive, tentative reading in cardNegotiatedMeaning and create a \
                     cardMapping confirmationRequest. Do not skip to final narrative or emit only \
                     an acknowledgement.
@@ -2798,6 +3815,98 @@ final class ReflectionViewModel: ObservableObject {
                 """
             case .missingRequiredMemoryField(let field):
                 switch field {
+                case .situationUnderstanding:
+                    if session.protocolStage == .contextualDisclosure {
+                        return """
+                        The attempted condition bridge omitted a compact real-world \
+                        situationUnderstanding. Recompose it only from the confirmed event, \
+                        behavior or omission, impact, supplied contributor or constraint, and any \
+                        explicit uncertainty already present in the dialogue. In the same plan, \
+                        preserve the complete episodeStructure and any supported optional Tender memory, \
+                        then use the permitted condition bridge. Do not ask another question and \
+                        do not visibly offer a card or exercise through exploreContext.
+                        """
+                    }
+                    return """
+                    A user correction to the pending card reading must replace the compact real-world \
+                    situationUnderstanding in the same confirmation-only transaction. Use the \
+                    person's latest correction, not the rejected candidate, and preserve an unknown \
+                    cause as unknown.
+                    """
+                case .selfCriticismStatus:
+                    return """
+                    Before leaving contextualDisclosure, classify only what the person actually \
+                    expressed as present, absent, or uncertain. Do not infer self-criticism from \
+                    other experiences, events, or outcomes. If it remains unresolved, stay \
+                    in contextualDisclosure and ask one natural question about what they began \
+                    saying to themselves.
+                    """
+                case .selfCriticalStatement:
+                    return """
+                    A present selfCriticismStatus requires a compact selfCriticalStatement grounded \
+                    in the person's own self-evaluation. Store that proposition without making it \
+                    harsher. If the person did not express one, use absent or uncertain instead.
+                    """
+                case .selfCriticismLink:
+                    return """
+                    Before using the condition bridge, store selfCriticismLink as the compact, \
+                    user-grounded relationship between reported reality and the self-evaluation. \
+                    Preserve whether the evaluation is the person's own conclusion, an anticipated \
+                    judgment from others, both, or still uncertain, and whether it stays with one \
+                    event/action or expands to broader ability, character, or worth. A negative \
+                    event label alone is not this link, and another person's observable reaction \
+                    does not establish their judgment or the user's internal state. Do not invent \
+                    a standard, motive, cause, or hidden belief. If the scope is not available, \
+                    stay in contextualDisclosure and ask one easy, situation-responsive \
+                    distinction that allows 'only this event/no broader meaning'; do not reopen a \
+                    generic event checklist.
+                    """
+                case .reflectionFocus:
+                    if session.protocolVersion >= ReflectionSession.currentProtocolVersion {
+                        return """
+                        reflectionFocus is optional in the current Event Disclosure. Do not ask for \
+                        importance, guilt, meaning, or self-evaluation merely to fill it. Preserve \
+                        any volunteered focus; otherwise leave it unchanged. Use only the typed \
+                        focal event, event process, and behavior evidence to decide whether the \
+                        permitted forward card invitation is available.
+                        """
+                    }
+                    return """
+                    The current Event Disclosure cannot advance without one user-grounded reflection \
+                    focus. Use explicitGlobalSelfJudgment only for the person's own broad whole-self \
+                    verdict; otherwise preserve specific criticism, event tension, external-evaluation \
+                    concern, or uncertainty without inflating it. If still unclear, ask only the one \
+                    permitted clarifyReflectionFocus question.
+                    """
+                case .tenderGroundingKind:
+                    return """
+                    Choose the pre-card grounding kind from the typed reflection focus. A global \
+                    judgment requires globalJudgmentDistinction; specific criticism or event tension \
+                    may use specificEventGrounding or none. Keep the grounding and card invitation in \
+                    one visible turn and do not create a Tender confirmation.
+                    """
+                case .episodeStructure:
+                    return """
+                    Stay in contextualDisclosure unless the cumulative episodeStructure records \
+                    concrete user-supplied facts, a resolved behavior-evidence status, and a \
+                    resolved eventProcessStatus. A definite cause is not required: present or \
+                    mixed needs a user-grounded process/contributor/constraint/controllable part; \
+                    uncertain preserves the person's explicit inability or refusal to know; absent \
+                    requires a user-grounded account that no additional process is available. Ask \
+                    one concrete process question only while this status is unresolved. Recompose \
+                    the compact structure from the dialogue; do not ask a checklist or invent a \
+                    cause. If this is a revised or \
+                    rejected cardMapping, replace the structure from the user's latest correction \
+                    and exclude the superseded candidate.
+                    """
+                case .contextRelationship:
+                    return """
+                    The optional contextual background has not yet been grounded by the person. \
+                    Stay in contextualDisclosure and ask one everyday, non-causal question about \
+                    whether and how it participated in the concrete situation. Store related or \
+                    partlyRelated only with their specific interpretation; unrelated and uncertain \
+                    are complete answers.
+                    """
                 case .cardNegotiatedMeaning:
                     return """
                     The prior presentCardReading plan omitted \
@@ -2810,9 +3919,25 @@ final class ReflectionViewModel: ObservableObject {
                     """
                 case .tenderUnderstanding:
                     return """
-                    The prior Tender-summary plan omitted memoryUpdate.tenderUnderstanding. Store \
-                    the concise provisional understanding presented by this reply and create a \
-                    tenderSummary confirmationRequest.
+                    tenderUnderstanding is optional in the current protocol and must never be \
+                    invented to satisfy a transition. Preserve it only when the person explicitly \
+                    authored a whole-person judgment and the visible turn actually formed a \
+                    supported event-versus-verdict distinction; otherwise leave it null and select \
+                    the same legal operation without adding a field-filling question.
+                    """
+                case .cardInterpretiveTension:
+                    return """
+                    Card guidance requires one user-authored or user-confirmed standard, tension, \
+                    contrast, partial-progress judgment, or uncertainty beyond surface similarity. \
+                    If the latest mapping already supplies it, store cardInterpretiveTension and \
+                    authorize guidance. Otherwise use the one permitted deepenCardConnection \
+                    question; never invent catalogue meaning.
+                    """
+                case .cardRealityMappingSource:
+                    return """
+                    A non-empty cardRealityMapping requires provenance from the latest response. \
+                    Use userAuthored, userAccepted, or userRevised; do not store a system candidate \
+                    as the person's fact.
                     """
                 case .candidUnderstanding, .fierceUnderstanding:
                     return """
@@ -2830,7 +3955,28 @@ final class ReflectionViewModel: ObservableObject {
                     care, repair, protect, change, or noAction, consistent with the proposed \
                     practice, and create a practice confirmationRequest.
                     """
+                case .practiceBasis:
+                    return """
+                    The proposed practice lacks a confirmed basis. Supply exactly one structured \
+                    option whose basis names a user-confirmed need, impact, boundary, behavior, \
+                    uncertainty, or negotiated distinction and whose instruction directly addresses \
+                    it. Do not substitute generic wellbeing or productivity advice; use the typed \
+                    insufficientSupportedMaterial noAction path when nothing specific is supported.
+                    """
                 }
+            case .incompleteEpisodeStructure(let requirements):
+                let names = requirements.map(\.rawValue).joined(separator: ", ")
+                return """
+                The attempted disclosure bridge is missing these typed episode conditions: \
+                \(names). Obey the narrowed CURRENT PERMISSIONS. Stay in contextualDisclosure, \
+                preserve every supported relation from the latest answer, and ask at most one \
+                concrete, low-burden question for the single missing function that blocks \
+                progress. For eventProcessStatus, a definite cause is not required: store present \
+                or mixed only with a user-grounded process relation, uncertain with the person's \
+                explicit uncertainty, or absent only with a user-grounded account that no \
+                additional process is available. Do not invite a card or retry the rejected \
+                transition in this repair turn.
+                """
             case .writerIntentMismatch:
                 return """
                 The Writer did not echo the validated Planner replyIntent. Regenerate wording for \
@@ -2879,8 +4025,42 @@ final class ReflectionViewModel: ObservableObject {
             case .invalidNextPrompt:
                 return """
                 nextPrompt must be exactly one valid tagged shape: none with all optional fields \
-                null; openQuestion with non-empty purpose and focus only; or confirmationRequest \
-                with target only. Swift assigns the referenceID after the visible reply succeeds.
+                null; openQuestion with non-empty purpose and focus and, during current contextual \
+                disclosure, exactly one allowed disclosurePurpose and its matching disclosureTarget; \
+                or confirmationRequest with target only. A reopenReason is allowed only for an \
+                actual correction, withdrawal, or new contradiction. Swift assigns the referenceID \
+                after the visible reply succeeds.
+                """
+            case .repeatedQuestionPurpose:
+                return """
+                The proposed openQuestion repeats a completed semantic function. Do not rename or \
+                paraphrase that function. Preserve the answer already in semanticMemory and either \
+                ask one materially different unresolved typed purpose still exposed in CURRENT \
+                PERMISSIONS or use inviteCardConsent when eventDisclosureOutcome is \
+                readyForTenderOrCard. The rejected purpose and target are no longer permitted.
+                """
+            case .invalidDisclosureQuestionTarget(let expected):
+                return """
+                The proposed disclosure question targets a relationship that is already resolved \
+                or skips the one current prerequisite. Rebuild from committed semanticMemory, not \
+                from the rejected patch. Preserve every resolved relation and include only fields \
+                newly supported or explicitly corrected by the latest answer; never clear stored \
+                evidence with an empty array while its status remains present or mixed. Apply the \
+                new patch before choosing the operation. If the cumulative gate remains incomplete, \
+                ask one natural, low-burden question for its first unresolved relation (currently \
+                \(expected.rawValue)). If the patch completes the gate, use the permitted direct \
+                grounding plus inviteCardConsent transition instead and ask no further disclosure \
+                question.
+                """
+            case .disclosureShouldAdvance:
+                return """
+                The cumulative disclosure evidence gate is complete and the reality account is \
+                already established. Do not ask another analytic question or retell its event \
+                chain. Preserve any volunteered reflection focus. Use globalJudgmentDistinction \
+                only for an explicit whole-person judgment; otherwise use specificEventGrounding \
+                only for supported material or none. Use one brief grounded transition in the visible \
+                inviteCardConsent reply. Create only the cardConsent confirmation; do not create \
+                a Tender confirmation or another disclosure question.
                 """
             case .invalidConfirmationResolution:
                 return """
@@ -2894,6 +4074,66 @@ final class ReflectionViewModel: ObservableObject {
                 resolvedConfirmation.referenceID must copy the exact opaque reference from the \
                 current confirmation request. For trackingRelationship it must identify the \
                 active tracking presentation batch.
+                """
+            case .invalidCardReferenceSelection:
+                return """
+                cardReferenceSelection must be null unless the current request supplies \
+                card.referenceGuidance after a confirmed image-to-reality mapping. For one \
+                permitted content-forward question, select at most one zero-based relationIndex \
+                from that current-card array. Do not return relation text, use another card's \
+                reference, copy the relation into memory, or use it in a summary or action turn. \
+                Swift checks only this structure, source, and permission; semantic support remains \
+                for the plan Critic.
+                """
+            case .connectionSourceWithoutContent:
+                return """
+                Do not persist or repair a source by itself. Re-read the latest user answer and the \
+                current card observation. If that material supports a connection, return one atomic \
+                cardRealityConnection containing non-empty imageRelation and realityMapping, its \
+                userAuthored/userAccepted/userRevised source, and status=confirmed. Do not request \
+                shareCardGuidance; Swift derives that silent successor after the complete patch. If \
+                the material is insufficient, ask one smaller question inside the current focal \
+                event or use the legal skip path.
+                """
+            case .incompleteCardRealityConnection:
+                return """
+                The prior connection patch was incomplete and was not persisted. Submit either one \
+                complete atomic cardRealityConnection or no connection object. Never split relation, \
+                mapping, source, or confirmed status across turns. A complete patch is committed \
+                silently and Swift opens the one guidance successor; otherwise keep guidance closed \
+                and use one permitted in-scope clarification or skip operation.
+                """
+            case .shareGuidanceWithoutConfirmedConnection:
+                return """
+                shareCardGuidance depends on a complete confirmed cardRealityConnection and is not \
+                currently permitted. Do not repeat authorizeCardGuidance or shareCardGuidance. First \
+                return the complete typed connection supported by the latest answer, or ask one \
+                smaller current-event connection question when the material is insufficient. Swift \
+                alone derives the dependent silent guidance action after a valid connection exists.
+                """
+            case .invalidPreGuidanceConnectionConfirmation:
+                return """
+                The returned cardRealityConnection resolution does not match a real pending \
+                pre-guidance candidate and was ignored. Do not invent a pending object or reuse the \
+                post-guidance cardMapping target. Re-plan from the current canonical connection: \
+                submit a complete user-authored connection if the latest answer contains one, ask one \
+                legal current-event connection question, or use the legal skip path.
+                """
+            case .legacyCardConnectionPatchNotAllowed:
+                return """
+                The current Planner patch used retired cardImageRelation, cardRealityMapping, or \
+                cardRealityMappingSource fields. Do not return any of those keys in a current \
+                patch. If the pre-guidance evidence supports a connection, return one complete \
+                canonical cardRealityConnection; otherwise use one permitted current-event \
+                clarification or skip operation. Do not request shareCardGuidance directly.
+                """
+            case .confirmedCardConnectionIsImmutable:
+                return """
+                The confirmed cardRealityConnection has already been used for post-guidance \
+                reflection and is immutable. Preserve the confirmed cardRealityConnection \
+                unchanged. Do not return, clear, revise, or reopen cardRealityConnection or \
+                pendingCardRealityConnection in this repair. Repair only the currently permitted \
+                Card Reading or later reflection output, action, or nextPrompt.
                 """
             }
         }
@@ -2949,6 +4189,8 @@ final class ReflectionViewModel: ObservableObject {
             case .illegalReplyIntent: reason = "illegal_reply_intent"
             case .missingRequiredMemoryField(let field):
                 reason = "missing_required_memory_\(field.rawValue)"
+            case .incompleteEpisodeStructure(let requirements):
+                reason = "incomplete_episode_structure_\(requirements.map(\.rawValue).joined(separator: "_"))"
             case .writerIntentMismatch: reason = "writer_intent_mismatch"
             case .unknownTrackingCue: reason = "unknown_tracking_cue"
             case .duplicateTrackingCue: reason = "duplicate_tracking_cue"
@@ -2956,8 +4198,25 @@ final class ReflectionViewModel: ObservableObject {
             case .missingNoActionReason: reason = "missing_no_action_reason"
             case .conflictingMemoryPatch: reason = "conflicting_memory_patch"
             case .invalidNextPrompt: reason = "invalid_next_prompt"
+            case .repeatedQuestionPurpose: reason = "resolved_relation_reopened"
+            case .invalidDisclosureQuestionTarget(let expected):
+                reason = "invalid_disclosure_question_target_expected_\(expected.rawValue)"
+            case .disclosureShouldAdvance: reason = "disclosure_should_advance"
             case .invalidConfirmationResolution: reason = "invalid_confirmation_resolution"
             case .unknownConfirmationReference: reason = "unknown_confirmation_reference"
+            case .invalidCardReferenceSelection: reason = "invalid_card_reference_selection"
+            case .connectionSourceWithoutContent:
+                reason = "connection_source_without_content"
+            case .incompleteCardRealityConnection:
+                reason = "incomplete_card_reality_connection"
+            case .shareGuidanceWithoutConfirmedConnection:
+                reason = "share_guidance_without_confirmed_connection"
+            case .invalidPreGuidanceConnectionConfirmation:
+                reason = "invalid_pre_guidance_connection_confirmation"
+            case .legacyCardConnectionPatchNotAllowed:
+                reason = "legacy_card_connection_patch_not_allowed"
+            case .confirmedCardConnectionIsImmutable:
+                reason = "confirmed_card_connection_is_immutable"
             }
             session.studyEvents.append(
                 .init(stage: session.stage, action: "\(prefix)_\(reason)")
@@ -3245,7 +4504,7 @@ final class ReflectionViewModel: ObservableObject {
                     )
                 )
                 addAssistant(
-                    "可以。抽卡前，我想先确认刚才有没有理解偏：贴近的话告诉我，哪里不对就直接改。"
+                    "可以。抽卡前，先顺着刚才的理解说下去：现在最想补充的是哪一部分？"
                 )
                 return
             }
@@ -3254,7 +4513,7 @@ final class ReflectionViewModel: ObservableObject {
                 session.studyEvents.append(.init(stage: currentStage, action: "tender_grounding_revised"))
                 await generateDialogue(
                     state: .tenderGrounding,
-                    goal: "revise the short grounding using the user's correction. Separate concrete events and constraints from any global self-evaluation, preserve uncertainty, add no tracking or card, then ask one easy accuracy question",
+                    goal: "revise the short grounding using the user's correction. Separate concrete events and constraints from any global self-evaluation, preserve uncertainty, add no tracking or card, then ask one content-forward question about the user's experience",
                     managesTyping: false,
                     requiresIntegratedNarrative: true,
                     integratedNarrativeAccuracyCheck: true,
@@ -3267,7 +4526,7 @@ final class ReflectionViewModel: ObservableObject {
                 session.studyEvents.append(.init(stage: currentStage, action: "tender_grounding_extended_by_user"))
                 await generateDialogue(
                     state: .tenderGrounding,
-                    goal: "the user added a concrete detail while checking the grounding. Fold only that confirmed detail into a short revised grounding, keep the event-versus-identity distinction, and ask one easy accuracy question. Do not say that the user failed to confirm or explain the process",
+                    goal: "the user added a concrete detail while responding to the grounding. Fold only that confirmed detail into a short revised grounding, keep the event-versus-identity distinction, and ask one content-forward question. Do not say that the user failed to confirm or explain the process",
                     managesTyping: false,
                     requiresIntegratedNarrative: true,
                     integratedNarrativeAccuracyCheck: true,
@@ -3279,7 +4538,7 @@ final class ReflectionViewModel: ObservableObject {
                 session.studyEvents.append(
                     .init(stage: currentStage, action: "tender_grounding_confirmation_unclear")
                 )
-                addAssistant("我还不确定刚才那段是否贴近你的想法。符合的话可以直接说符合；哪里不对，也可以直接改。")
+                addAssistant("先不急着确认刚才的整理。沿着你自己的经历，接下来最想补充哪一部分？")
                 return
             }
             session.tenderGroundingConfirmed = true
@@ -3363,7 +4622,7 @@ final class ReflectionViewModel: ObservableObject {
             session.studyEvents.append(.init(stage: .readinessCheck, action: "context_confirmation_revised"))
             await generateDialogue(
                 state: .readinessCheck,
-                goal: "revise the whole short context summary using the user's correction. If the supplied measurement-free contextual hypothesis remains compatible with that correction, keep it only as one tentative clause; otherwise omit it. Never ask separately whether it fits, mention no measurements or records and no card choice, then ask one easy question about the accuracy of the whole summary",
+                goal: "revise the whole short context summary using the user's correction. If the supplied measurement-free contextual hypothesis remains compatible with that correction, keep it only as one tentative clause; otherwise omit it. Mention no measurements, records, or card choice, then ask one content-forward question about the user's experience",
                 managesTyping: false,
                 requiresIntegratedNarrative: true,
                 integratedNarrativeAccuracyCheck: true
@@ -3376,7 +4635,7 @@ final class ReflectionViewModel: ObservableObject {
             session.studyEvents.append(.init(stage: .readinessCheck, action: "context_summary_extended_by_user"))
             await generateDialogue(
                 state: .readinessCheck,
-                goal: "the user added a concrete detail while checking the whole context summary. Revise it with that confirmed addition. Keep any supplied measurement-free contextual hypothesis to at most one tentative clause, never ask separately whether it fits, mention no measurements or records and no card, then ask one easy question about the accuracy of the whole summary",
+                goal: "the user added a concrete detail while responding to the whole context summary. Revise it with that confirmed addition. Keep any supplied measurement-free contextual hypothesis to at most one tentative clause, mention no measurements, records, or card, then ask one content-forward question about the user's experience",
                 managesTyping: false,
                 requiresIntegratedNarrative: true,
                 integratedNarrativeAccuracyCheck: true
@@ -3388,7 +4647,7 @@ final class ReflectionViewModel: ObservableObject {
             session.studyEvents.append(
                 .init(stage: .readinessCheck, action: "context_confirmation_unclear")
             )
-            addAssistant("我还不确定这段整理是否准确。符合的话可以直接说符合；哪里不对，也可以直接改。")
+            addAssistant("先不把这段整理当成结论。放回当时的经历，你最想继续说哪一部分？")
             return
         }
 
@@ -3599,10 +4858,10 @@ final class ReflectionViewModel: ObservableObject {
         )
     }
 
-    /// A card-to-life association is not yet a shared interpretation. Before any tender/fierce
-    /// card guidance is available, show one tentative bridge built from the person's own image
-    /// relation, their own association, and already confirmed context. The person can affirm,
-    /// rewrite, or reject it; Swift owns that gate.
+    /// A card-to-life association is not yet a shared interpretation. Before applying either
+    /// system-wide reflection approach, show one tentative bridge built from the person's own
+    /// image relation, their own association, and already confirmed context. The person can
+    /// affirm, rewrite, or reject it; Swift owns that gate.
     private func presentCardCandidateMapping(managesTyping: Bool) async {
         guard session.condition.usesCard,
               !session.cardConnectionUnavailable else {
@@ -3635,7 +4894,7 @@ final class ReflectionViewModel: ObservableObject {
             )
             return
         }
-        let guidanceMatch = cardGuidanceMatcher.match(
+        let groundingMatch = cardGroundingMatcher.match(
             card: card,
             userImageNarrative: session.context.cardInterpretation ?? "",
             semanticRelations: groundedSemanticRelations(
@@ -3643,13 +4902,13 @@ final class ReflectionViewModel: ObservableObject {
                 in: session.latestAnalysis
             )
         )
-        session.cardGuidanceMatch = guidanceMatch
+        session.cardGroundingMatch = groundingMatch
         session.studyEvents.append(
             .init(
                 stage: .attributionReflection,
-                action: guidanceMatch == nil
-                    ? "card_candidate_mapping_without_guidance_intersection"
-                    : "card_candidate_mapping_with_three_sided_guidance_intersection"
+                action: groundingMatch == nil
+                    ? "card_candidate_mapping_without_user_grounding"
+                    : "card_candidate_mapping_with_user_grounded_relations"
             )
         )
         let responsePlan = validatedResponsePlan(
@@ -3687,14 +4946,13 @@ final class ReflectionViewModel: ObservableObject {
                 leave question empty. Rephrase, do not concatenate or quote fields. Use one
                 evidence-backed imageStructure relation and one evidence-backed realityStructure
                 relation from Analyzer evidence. Explain only how their relationship may be
-                similar. A local three-sided evidence gate has matched both relations to one
-                bounded card tension; use that guidance only to choose which structural
-                similarity to compare, never to explain an object or announce a fixed meaning.
-                This is a candidate the person may accept, revise, or reject. Add no image
-                element, motive, responsibility, action, or tracking causation.
-                \(guidanceMatch == nil
-                    ? "INTERNAL CARD GUIDANCE: no three-sided guidance intersection exists. Compare only the two Analyzer relations; do not use core tension, tender/fierce lenses, title, objects, or catalogue directions."
-                    : matchedCardGuidancePrompt(lens: .mapping))
+                similar. The local gate records only the person's visible anchors and semantic
+                overlap between those two relations; it supplies no designer interpretation or
+                target answer. This is a candidate the person may accept, revise, or reject. Add
+                no image element, motive, responsibility, action, or tracking causation.
+                \(groundingMatch == nil
+                    ? "INTERNAL CARD GROUNDING: no user-grounded relation overlap exists. Do not add any card interpretation; compare only relations explicitly supported by the user's words."
+                    : userOwnedCardReflectionPrompt(approach: .mapping))
                 """,
                 messages: session.messages
             )
@@ -3720,7 +4978,7 @@ final class ReflectionViewModel: ObservableObject {
     }
 
     private func cardMappingConfirmationMessage(_ mapping: String) -> String {
-        "\(mapping)\n\n这个方向贴近吗？不贴近可以直接改，也可以说没有关系。"
+        "\(mapping)\n\n沿着这个方向回看刚才的经历，最明显的是哪一部分？也可以直接换一个方向或说没有关系。"
     }
 
     private func cardCandidateMappingIsUsable(_ text: String) -> Bool {
@@ -3769,8 +5027,8 @@ final class ReflectionViewModel: ObservableObject {
         session.cardConfirmedMapping = mapping
         session.cardMappingConfirmed = true
         session.studyEvents.append(.init(stage: .attributionReflection, action: action))
-        session.cardGuidanceMatch = session.contextSummaryConfirmed ? session.card.flatMap { card in
-            cardGuidanceMatcher.match(
+        session.cardGroundingMatch = session.contextSummaryConfirmed ? session.card.flatMap { card in
+            cardGroundingMatcher.match(
                 card: card,
                 userImageNarrative: session.context.cardInterpretation ?? "",
                 semanticRelations: groundedSemanticRelations(
@@ -3782,9 +5040,9 @@ final class ReflectionViewModel: ObservableObject {
         session.studyEvents.append(
             .init(
                 stage: .attributionReflection,
-                action: session.cardGuidanceMatch == nil
-                    ? "card_guidance_not_used_without_confirmed_mapping_overlap"
-                    : "card_guidance_intersection_available_after_mapping_confirmation"
+                action: session.cardGroundingMatch == nil
+                    ? "card_grounding_unavailable_after_mapping_confirmation"
+                    : "card_grounding_available_after_mapping_confirmation"
             )
         )
     }
@@ -3986,7 +5244,7 @@ final class ReflectionViewModel: ObservableObject {
                 setWorkflowPhase(.candidAgency, action: "direct_candid_agency_prompted")
                 await generateDialogue(
                     state: .attributionReflection,
-                    goal: "NO USABLE CARD CONNECTION: respond briefly to the real circumstances the user named. Tender grounding and the user-confirmed background have already happened. Use fierce self-compassion only around a concrete behaviour, consequence, or boundary the user already described. Do not mention the card, image, symbolism, randomization, or experimental condition. Do not ask whether the card changed their understanding. If they described switching from an important task to an easier but unimportant task, name only that observable switch and offer ONE editable, low-burden boundary as a question. If they say they should work harder, ask what one observable preparation, communication, boundary, or next-step behavior that means. Make none or not sure valid. Confirmed tracking is background only, never cause or excuse. Offer no summary or advice.",
+                    goal: "NO USABLE CARD CONNECTION: respond briefly to the real circumstances the user named. Tender grounding and the user-confirmed background have already happened. Use candid reflection only around a concrete behaviour, consequence, boundary, responsibility, or controllable part the user already described. Preserve the exact semantic scope of that evidence and make none or not sure valid. Do not mention the card, ask whether it changed understanding, infer a mechanism, or introduce a scenario-specific action. Confirmed tracking is background only, never cause or excuse. Offer no summary or advice.",
                     authority: .userMeaning(nil),
                     managesTyping: false
                 )
@@ -3999,7 +5257,7 @@ final class ReflectionViewModel: ObservableObject {
             setWorkflowPhase(.cardMeaningShift, action: "card_meaning_shift_prompted_after_context")
             await generateDialogue(
                 state: .attributionReflection,
-                goal: "now that the tender side of the confirmed structural mapping has been explored, ask whether the relationship seen through the image adds one new distinction, sharpens an existing one, or leaves the person's understanding unchanged. Do not replay the baseline event, tracking observations, image inventory, or mapping sentence. Make 'it does not change anything' a complete answer. Do not add symbolic meanings, agency, advice, or action. \(matchedCardGuidancePrompt(lens: .mapping))",
+                goal: "now that the tender side of the confirmed structural mapping has been explored, ask whether the relationship seen through the image adds one new distinction, sharpens an existing one, or leaves the person's understanding unchanged. Do not replay the baseline event, tracking observations, image inventory, or mapping sentence. Make 'it does not change anything' a complete answer. Do not add symbolic meanings, agency, advice, or action. \(userOwnedCardReflectionPrompt(approach: .mapping))",
                 authority: .userMeaning(nil),
                 managesTyping: false
             )
@@ -4082,7 +5340,7 @@ final class ReflectionViewModel: ObservableObject {
                 session.studyEvents.append(
                     .init(stage: .attributionReflection, action: "integrated_reflection_narrative_confirmation_unclear")
                 )
-                addAssistant("我还不确定这段整理是否贴近你。符合的话可以直接说符合；不对的地方，也可以直接改。")
+                addAssistant("先不要求你评价这段整理。它让你最想继续谈的是哪一部分？")
                 return
             }
             session.integratedNarrativeConfirmed = true
@@ -4171,7 +5429,7 @@ final class ReflectionViewModel: ObservableObject {
                 session.studyEvents.append(
                     .init(stage: .attributionReflection, action: "final_narrative_confirmation_unclear")
                 )
-                addAssistant("我还不确定这段记录是否准确。符合的话可以直接说符合；哪里需要改，也可以直接说。")
+                addAssistant("先不要求你核对这段记录。回看整个过程，你最想保留的是哪一部分？")
                 return
             }
             session.finalNarrativeConfirmed = true
@@ -4219,12 +5477,9 @@ final class ReflectionViewModel: ObservableObject {
             return
         }
         let direction = practice.actionCategory?.rawValue ?? "care"
-        let evidence = session.condition.usesCard
-            ? "the user's own card connection and meaning shift"
-            : "DIRECT CONDITION: no card or image material; do not mention a card, image, symbolism, randomization, or the experimental condition"
         await generateDialogue(
             state: .actionSelection,
-            goal: "using only confirmed events, feelings, bodily experience, personal meaning, user-confirmed tracking background, \(evidence), circumstances, and user-named responsibility, boundary, or change, generate ONE concrete low-burden action draft in the Swift-selected direction \(direction). The direction is a support choice, not a diagnosis or workflow requirement. care means a small recovery or self-kindness step that does not force immediate change; repair means acknowledging a specific impact and communicating a realistic correction; protect means a boundary, pause, scope check, or responsibility clarification that protects the person's needs and share of responsibility; change means one observable behaviour the user has already identified. Do not turn a card, tracking cue, rejection, shame, or self-label into a reason to change. If the person is still in loss, exhaustion, or strong self-attack, prefer a gentle care step and do not add a second change task. Never use a criticism, feedback, reading, or preparation template unless those facts appear in this session. The user may select, modify, or reject the draft; do not imply obligation, fault, or guaranteed outcomes",
+            goal: "using only confirmed facts and relationships, generate ONE concrete low-burden action draft in the Swift-selected direction \(direction). The direction is a support choice, not a diagnosis or workflow requirement. Match the action function to the confirmed need, impact, boundary, behavior, uncertainty, or controllable part. Do not use a card, contextual cue, rejection, or self-evaluation as action evidence, and never import a predefined scenario template. The user may select, modify, or reject the draft; do not imply obligation, fault, or guaranteed outcomes",
             authority: responsePlan.map { .userMeaning($0) } ?? .swiftControlled,
             managesTyping: managesTyping
         )
@@ -4273,7 +5528,7 @@ final class ReflectionViewModel: ObservableObject {
         session.cardCandidateMapping = nil
         session.cardConfirmedMapping = nil
         session.cardMappingConfirmed = false
-        session.cardGuidanceMatch = nil
+        session.cardGroundingMatch = nil
         session.cardDerivedDeltaNarrative = nil
         session.actionSuggestions.removeAll()
         session.studyEvents.append(.init(stage: sourceStage, action: reason))
@@ -4304,7 +5559,7 @@ final class ReflectionViewModel: ObservableObject {
         setWorkflowPhase(.candidCircumstances, action: "candid_circumstances_prompted")
         await generateDialogue(
             state: .attributionReflection,
-            goal: "use only the USER-CONFIRMED card-to-life mapping as an interpretive lens, not as a diagnosis or proof. Before asking what the image changes, deepen the real situation around that confirmed mapping. Begin with the user's own picture relation and the confirmed real-life relation, then ask one tender, concrete question about what was happening, which limits or pain mattered, and what made that moment hard to carry. Add no card meaning, agency, action, or summary; tracking may be included only as a user-confirmed background, never as a cause. \(matchedCardGuidancePrompt(lens: .tender))",
+            goal: "use only the USER-CONFIRMED card-to-life mapping as an interpretive lens, not as a diagnosis or proof. Before asking what the image changes, deepen the real situation around that confirmed mapping. Begin with the user's own picture relation and the confirmed real-life relation, then ask one tender, concrete question about what was happening, which limits or pain mattered, and what made that moment hard to carry. Add no card meaning, agency, action, or summary; tracking may be included only as a user-confirmed background, never as a cause. \(userOwnedCardReflectionPrompt(approach: .tender))",
             authority: .userMeaning(nil),
             managesTyping: managesTyping
         )
@@ -4322,7 +5577,7 @@ final class ReflectionViewModel: ObservableObject {
         setWorkflowPhase(.candidAgency, action: "candid_agency_prompted")
         await generateDialogue(
             state: .attributionReflection,
-            goal: "respond briefly to the user's own answer about whether the image changed their understanding. The tender grounding and the user-confirmed background have already been established. Now, and only now, invite one candid but non-accusing look at the other side of the situation, using the same image-to-life logic: a concrete responsibility they choose to examine, a boundary they may need, or a behavior/pattern they may want to adjust. Keep it tied to the behaviour, consequence, or boundary the user has already described; never infer one from delay, emotion, or a self-label alone. When the user has acknowledged a missed task, delayed reply, or effect on another person, keep that impact specific while also keeping the relationship worry or practical limit that made the response hard; do not turn either into a personality verdict. Use natural present-day wording such as 你觉得自己当时有没有更合适的做法？ when inviting reflection on an immediate reaction. Never use abstract counterfactual wording such as 如果现在回头看，有没有哪一小步是你本来可以选择的. If they answer only 更耐心、更冷静 or 更努力, acknowledge it and ask what that would look like in one observable action instead of saying you did not understand. Make none or not sure valid. Do not decide motive, fault, or responsibility; tracking may be a confirmed background that made pressure harder to carry, never evidence that caused or excused a behavior. Offer no advice, action drafts, or summary. \(matchedCardGuidancePrompt(lens: .fierce))",
+            goal: "respond briefly to the user's own answer about whether the image changed their understanding. The tender grounding and user-confirmed background have already been established. Invite one candid but non-accusing examination of exactly one evidence-supported relationship among behavior, impact, boundary, responsibility, controllability, protection, or change. Keep its scope identical to what the user supplied; do not infer any relationship from another fact or from a self-evaluation alone. Preserve relevant constraints alongside the supported candid fact without turning either into a personality verdict. Use one natural present-focused question, make uncertainty or refusal complete answers, and do not decide motive, fault, or responsibility. Tracking may remain user-confirmed background, never evidence that caused or excused conduct. Offer no advice, action draft, or summary. \(userOwnedCardReflectionPrompt(approach: .fierce))",
             authority: .userMeaning(nil),
             managesTyping: managesTyping
         )
@@ -4355,7 +5610,7 @@ final class ReflectionViewModel: ObservableObject {
         )
     }
 
-    private enum CardGuidanceLens { case mapping, tender, fierce }
+    private enum CardReflectionApproach { case mapping, tender, fierce }
 
     /// After one soft “想不到”, reduce the task by returning to a contrast inside the picture.
     /// The catalogue selects only the shape of the question. The visible words stay anchored to
@@ -4364,7 +5619,7 @@ final class ReflectionViewModel: ObservableObject {
     private func cardVisualScaffoldQuestion() -> String {
         let narrative = session.context.cardInterpretation?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard let guidance = session.card?.internalGuidance else {
+        guard let guidance = session.card?.visualGuidance else {
             return "没关系，先不联系现实。只看你刚才说的画面，你觉得接下来可能会发生什么？"
         }
         if let scaffold = matchingCardVisualScaffold(in: guidance, narrative: narrative) {
@@ -4395,12 +5650,12 @@ final class ReflectionViewModel: ObservableObject {
     /// the person's own story. This prevents a card-specific question from introducing an
     /// unseen person, object, or action just because it exists in the card catalogue.
     private func matchingCardVisualScaffold(
-        in guidance: CardReflectionGuidance,
+        in guidance: CardVisualGuidance,
         narrative: String
     ) -> CardVisualScaffold? {
         let normalizedNarrative = comparableText(narrative)
         guard !normalizedNarrative.isEmpty else { return nil }
-        return guidance.visualScaffolds?.first { scaffold in
+        return guidance.visualScaffolds.first { scaffold in
             isAllowedCardVisualScaffold(scaffold.question) &&
             scaffold.requiredAnchorGroups.allSatisfy { group in
                 group.contains { anchor in
@@ -4428,165 +5683,37 @@ final class ReflectionViewModel: ObservableObject {
 
     /// This text is intentionally internal prompt context. It is added only after the user has
     /// supplied both an image story and a concrete life connection, and only when a deterministic
-    /// local overlap exists. The model must never display its labels, list, or prohibited-claim
-    /// rules to the person.
-    private func matchedCardGuidancePrompt(lens: CardGuidanceLens) -> String {
-        guard let card = session.card,
-              let guidance = card.internalGuidance,
-              let match = session.cardGuidanceMatch else {
-            return "INTERNAL CARD GUIDANCE: No user-grounded overlap was found. Do not use card catalogue meanings; use only the user's picture and situation words."
+    /// local overlap exists. The catalogue's designer-authored observable relation is deliberately
+    /// absent: it is documentation for visual QA, not a target answer for dialogue.
+    private func userOwnedCardReflectionPrompt(
+        approach: CardReflectionApproach
+    ) -> String {
+        guard let match = session.cardGroundingMatch else {
+            return "INTERNAL USER-OWNED CARD REFLECTION: No user-grounded relation overlap was found. Use only the person's picture and situation words; do not draw from catalogue meanings."
         }
-        let candidates: [String]
-        let lensName: String
-        switch lens {
+        let method: String
+        switch approach {
         case .mapping:
-            candidates = [guidance.coreTension]
-            lensName = "STRUCTURAL MAPPING"
+            method = "Compare only the two user-grounded relations. Offer one tentative, editable, rejectable similarity; do not apply Tender or Fierce yet."
         case .tender:
-            candidates = selectedCardLens(
-                id: match.selectedTenderLensID,
-                kind: "tender",
-                candidates: guidance.tenderLenses
-            ).map { [$0] } ?? []
-            lensName = "TENDER"
+            method = SystemReflectionApproaches.standard.tender
         case .fierce:
-            candidates = selectedCardLens(
-                id: match.selectedFierceLensID,
-                kind: "fierce",
-                candidates: guidance.fierceLenses
-            ).map { [$0] } ?? []
-            lensName = "FIERCE"
+            method = SystemReflectionApproaches.standard.fierce
         }
-        let dimensionBlock: String
-        if lens == .mapping {
-            dimensionBlock = "Self-compassion lenses are not used while proposing the structural mapping."
-        } else if let supplement = guidance.selfCompassion {
-            let selectedCandidate = selectedSelfCompassionCandidate(
-                id: match.selectedSelfCompassionCandidateID,
-                guidance: supplement
-            )
-            if selectedCandidate == nil {
-                dimensionBlock = "No card-specific self-compassion candidate is active; do not add one."
-            } else {
-                dimensionBlock = """
-                The one locally selected card-specific self-compassion candidate is: \(selectedCandidate!)。
-                It may shape the wording of the current \(lensName) turn only when it overlaps the user's exact picture story and life words. It is not extra content to cover, a checklist, or a reason to add another question. Do not substitute another candidate or blend it with one.
-                """
-            }
-        } else {
-            dimensionBlock = "No card-specific self-compassion supplement is available."
-        }
+        let concepts = match.matchedConcepts?.map(\.rawValue).joined(separator: "、") ?? "not available"
         return """
-        INTERNAL MATCHED CARD GUIDANCE — NEVER DISPLAY OR NAME THIS BLOCK:
+        INTERNAL USER-OWNED CARD REFLECTION — NEVER DISPLAY OR NAME THIS BLOCK:
         User-grounded image relation: \(match.imageRelation ?? "not available").
         User-grounded reality relation: \(match.realityRelation ?? "not available").
-        The user named visual anchors: \(match.matchedVisualAnchors.joined(separator: "、")); the shared relation concepts matched directions: \(match.candidateDirections.joined(separator: "、")).
-        \(candidates.isEmpty
-            ? "No locally selected \(lensName) candidate is available. Use only the user's confirmed relations and do not draw from the catalogue."
-            : "Use ONLY this locally selected \(lensName) candidate as a tentative question direction, not an interpretation: \(candidates[0])。")
-        \(dimensionBlock)
-        Compare relationships, never explain what an object symbolizes. Start from the user's
-        exact image relation and confirmed reality relation. For mapping, offer one modifiable and
-        rejectable structural similarity. Make the tender direction an easy-to-correct
-        possibility. For fierce, begin with an optional invitation such as “如果你愿意，我们也可以看看另一面…”.
-        Do not mention a card title, core tension, direction, lens, metadata, or any prohibited
-        claim. Never imply that the image proves a motive, personality, diagnosis, responsibility,
-        or future.
-        Internal prohibitions: \(guidance.prohibitedClaims.joined(separator: "；"))。
+        Visual anchors named by the person: \(match.matchedVisualAnchors.joined(separator: "、")).
+        Shared concepts found only between those user-grounded relations: \(concepts).
+        System-wide response method: \(method)
+        Start from the person's exact relations. Do not retrieve, paraphrase, or steer toward the
+        catalogue's observable relation, title, former theme, or any card-specific psychological
+        conclusion. Compare relationships; never explain what an object symbolizes. Never imply
+        that the image proves a cause, motive, emotion, personality, capacity, diagnosis,
+        responsibility, constraint, need, action, or future.
         """
-    }
-
-    private func selectedCardLens(
-        id: String?,
-        kind: String,
-        candidates: [String]
-    ) -> String? {
-        guard let id else { return nil }
-        let parts = id.split(separator: ":").map(String.init)
-        guard parts.count == 4,
-              parts[0] == "card",
-              Int(parts[1]) == session.card?.id,
-              parts[2] == kind,
-              let index = Int(parts[3]),
-              candidates.indices.contains(index) else {
-            return nil
-        }
-        return candidates[index]
-    }
-
-    private func selectedSelfCompassionCandidate(
-        id: String?,
-        guidance: CardSelfCompassionGuidance
-    ) -> String? {
-        guard let id else { return nil }
-        let parts = id.split(separator: ":").map(String.init)
-        guard parts.count == 5,
-              parts[0] == "card",
-              Int(parts[1]) == session.card?.id,
-              parts[2] == "self",
-              let dimension = SelfCompassionDimension(rawValue: parts[3]),
-              activeCardSelfCompassionDimensions(guidance).contains(dimension),
-              let index = Int(parts[4]) else {
-            return nil
-        }
-        let candidates: [String]
-        switch dimension {
-        case .selfKindness: candidates = guidance.selfKindnessCandidates
-        case .commonHumanity: candidates = guidance.commonHumanityCandidates
-        case .mindfulness: candidates = guidance.mindfulnessCandidates
-        }
-        guard candidates.indices.contains(index) else { return nil }
-        return candidates[index]
-    }
-
-    /// The primary dimension becomes available only after the existing local card overlap gate.
-    /// Secondary dimensions require user language that supports them; people or objects in the
-    /// image never activate common humanity by themselves.
-    private func activeCardSelfCompassionDimensions(
-        _ guidance: CardSelfCompassionGuidance
-    ) -> [SelfCompassionDimension] {
-        let relations = groundedSemanticRelations(
-            kinds: Set(SemanticRelationKind.allCases),
-            in: session.latestAnalysis
-        )
-        let concepts = Set(relations.flatMap { $0.concepts })
-        var active: [SelfCompassionDimension] = [guidance.primaryDimension]
-
-        for dimension in guidance.secondaryDimensions where !active.contains(dimension) {
-            switch dimension {
-            case .selfKindness:
-                let hasHarshSelfEvaluation =
-                    (session.latestAnalysis?.selfAttackLevel ?? 0) > 0 ||
-                    session.context.selfJudgment?.isEmpty == false ||
-                    relations.contains { $0.kind == SemanticRelationKind.selfEvaluation } ||
-                    concepts.contains(SemanticConcept.selfEvaluation)
-                if hasHarshSelfEvaluation { active.append(dimension) }
-
-            case .commonHumanity:
-                let hasSharedOrRelationalEvidence =
-                    relations.contains { $0.kind == SemanticRelationKind.sharedHumanity } ||
-                    !concepts.isDisjoint(
-                        with: Set<SemanticConcept>([
-                            .commonHumanity, .connection, .isolation, .sharing,
-                            .support, .relationship,
-                        ])
-                    )
-                if hasSharedOrRelationalEvidence { active.append(dimension) }
-
-            case .mindfulness:
-                let hasUncertaintyOrJudgmentEvidence =
-                    relations.contains {
-                        Set<SemanticRelationKind>([.uncertainty, .selfEvaluation]).contains($0.kind)
-                    } ||
-                    !concepts.isDisjoint(
-                        with: Set<SemanticConcept>([
-                            .uncertainty, .judgment, .facts, .control, .choice,
-                        ])
-                    )
-                if hasUncertaintyOrJudgmentEvidence { active.append(dimension) }
-            }
-        }
-        return active
     }
 
     private func acceptActionAndComplete(_ proposed: String) async {
@@ -4611,7 +5738,7 @@ final class ReflectionViewModel: ObservableObject {
         await generateDialogue(
             state: .attributionReflection,
             goal: cardDeltaOnly
-                ? "write a brief completion note using the confirmed card-derived delta and the accepted action. Refer to the locked baseline situation only once and do not repeat tracking data, disclosure fields, or the earlier attribution. Preserve the confirmed image relation, reality mapping, guidance-shaped distinction, and actual meaning shift; if the user reported no change, state no change. End with the accepted action. Add no symbolic explanation, new advice, evaluation, or confirmation question"
+                ? "write a brief completion note using the confirmed card-derived delta and the accepted action. Refer to the locked baseline situation only once and do not repeat tracking data, disclosure fields, or the earlier attribution. Preserve the confirmed image relation, reality mapping, user-authored distinction, and actual meaning shift; if the user reported no change, state no change. End with the accepted action. Add no symbolic explanation, new advice, evaluation, or confirmation question"
                 : "write a brief completion note after the user's first concrete action choice. Use only the already confirmed integrated understanding and the accepted action. In 2–4 short natural Chinese sentences, preserve the pain, the specific behaviour the user chose to face, any care or protection that remains needed, and any cause or responsibility that remains uncertain. Do not mention a rejected or unavailable card. Do not repeat database-like fields, first-person fragments, or a generic preparation template. End by stating the one accepted action. Add no praise, advice, evaluation, or confirmation question",
             managesTyping: false,
             requiresIntegratedNarrative: true,
@@ -4641,7 +5768,7 @@ final class ReflectionViewModel: ObservableObject {
             its event details, emotions, tracking metrics, tracking interpretation, or first-round
             attribution. The remaining sentences must express only: the user-confirmed image
             relation; the accepted or revised reality mapping; the new distinction developed
-            through the matched card guidance; and the user's reported meaning shift. If the user
+            through the user's own interpretation; and the user's reported meaning shift. If the user
             reported no change, state that plainly and invent no insight. Tender and fierce
             material may appear only through the user's answers to those evidence-gated turns.
             Do not list fields, replay image observations, append the tracking summary, explain an
@@ -4683,7 +5810,7 @@ final class ReflectionViewModel: ObservableObject {
             \(revised ? "Revise" : "Write") the final card-derived delta in 2–4 short natural
             Chinese sentences. Refer to the locked baseline situation once at most; do not repeat
             tracking data, prior attribution, emotions, or disclosure fields. Preserve the
-            confirmed image relation, corrected reality mapping, the guidance-shaped distinction
+            confirmed image relation, corrected reality mapping, the user-authored distinction
             the user accepted, and the user's actual meaning-shift answer. When they reported no
             change, say so without manufacturing an insight. Include an action only if the user
             confirmed it. Do not append the baseline summary, explain symbols, or add advice. Ask
@@ -5232,15 +6359,15 @@ final class ReflectionViewModel: ObservableObject {
     private func accuracyQuestionForCurrentPhase() -> String {
         switch session.workflowPhase {
         case .tenderGroundingConfirmation:
-            return "我这样理解，贴近你当时的情况吗？哪里不对可以直接告诉我。"
+            return "沿着这段理解回到当时，哪一部分现在最值得继续说？"
         case .contextConfirmation:
-            return "我这样理解你这段时间的情况，贴近吗？哪里不对可以直接告诉我。"
+            return "把这些情况放回那段时间，哪一部分最影响当时的处境？"
         case .reflectionNarrativeConfirmation:
-            return "我这样理解你现在的感受，贴近吗？有哪部分不是你真正想表达的，也可以直接告诉我。"
+            return "带着这段整理继续看，你现在最想停留在哪一部分？"
         case .narrativeConfirmation:
-            return "这段记录贴近你的意思吗？有需要改的地方可以直接告诉我。"
+            return "回看这段记录，你最想保留下来的是什么？"
         default:
-            return "我这样理解，贴近你的感受吗？哪里不对可以直接告诉我。"
+            return "沿着这段理解，你现在最想继续说哪一部分？"
         }
     }
 
@@ -5573,7 +6700,7 @@ final class ReflectionViewModel: ObservableObject {
 
         let sourceWords: [String] = switch cue.source {
         case .healthSleep: ["睡眠", "睡觉", "作息"]
-        case .calendarLoad: ["日程", "安排", "会议", "工作量"]
+        case .calendarLoad: ["日程", "安排", "会议"]
         case .healthSteps: ["步数", "活动", "运动"]
         case .healthHeartRate: ["静息心率", "心率", "身体记录"]
         case .healthHRV: ["hrv", "心率变异", "身体记录"]
@@ -5594,23 +6721,205 @@ final class ReflectionViewModel: ObservableObject {
         return trackingRelevance(from: clause)
     }
 
+    /// A pending card-consent confirmation is an application capability gate, not an open semantic
+    /// reflection question. Resolve an unambiguous acceptance locally so malformed Planner JSON can
+    /// never prevent the already-authorized random draw. Ambiguous replies and every refusal still
+    /// go through the dialogue path, which can answer questions or continue without a card.
+    @discardableResult
+    private func acceptExplicitProtocolCardConsentIfNeeded(
+        _ text: String,
+        replyingTo userMessageID: UUID
+    ) -> Bool {
+        guard session.usesLLMTurnController,
+              session.condition.usesCard,
+              session.protocolStage == .cardConsent,
+              session.semanticMemory.nextPrompt?.kind == .confirmationRequest,
+              session.semanticMemory.nextPrompt?.target == .cardConsent,
+              session.card == nil,
+              userAcceptsCard(text) else {
+            return false
+        }
+        session.studyEvents.append(
+            .init(stage: session.stage, action: "card_consent_acceptance_recognized_locally")
+        )
+        launchPersistedModelResponse(replyingTo: userMessageID) { model in
+            await model.commitExplicitCardConsent()
+        }
+        return true
+    }
+
+    private func commitExplicitCardConsent() async {
+        defer { finishTypingForCurrentResponse() }
+        let referenceID = session.semanticMemory.nextPrompt?.referenceID
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardConsent,
+            localAction: .init(kind: .drawRandomCard),
+            memoryUpdate: .init(),
+            resolvedConfirmation: .init(
+                target: .cardConsent,
+                decision: .accepted,
+                referenceID: referenceID
+            ),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .acknowledgeCardConsent,
+            replyGuidance: ""
+        )
+        do {
+            let validatedPlan = try protocolController.validate(plan, for: session)
+            let response = LLMTurnControllerResponse(
+                requestedStage: validatedPlan.requestedStage,
+                localAction: validatedPlan.localAction,
+                memoryUpdate: validatedPlan.memoryUpdate,
+                resolvedConfirmation: validatedPlan.resolvedConfirmation,
+                nextPrompt: validatedPlan.nextPrompt,
+                replyIntent: validatedPlan.replyIntent,
+                noActionReason: validatedPlan.noActionReason,
+                reply: "local_card_draw_authorization"
+            )
+            let validatedResponse = try protocolController.validate(response, for: session)
+            try await applyValidatedProtocolResponse(
+                validatedResponse,
+                appendVisibleReply: false
+            )
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "card_consent_accepted_locally")
+            )
+        } catch {
+            presentRecoverableProtocolPause(
+                error: error,
+                action: "card_consent_local_transaction_failed",
+                retry: .planner(
+                    correction: structuredProtocolCorrection(
+                        for: error,
+                        permissions: protocolController.permissions(for: session)
+                    ),
+                    permissions: protocolController.permissions(for: session)
+                )
+            )
+        }
+    }
+
+    /// An exact, unqualified acceptance of the currently visible candidate reading resolves an
+    /// application-owned confirmation gate. Handling only this narrow case locally avoids a
+    /// Planner JSON round trip for a decision the person has already stated plainly. Any added
+    /// correction, reservation, rejection, question, or uncertainty still goes through the LLM
+    /// so Swift never decides the meaning of a substantive response.
+    @discardableResult
+    private func acceptExplicitProtocolCardMappingIfNeeded(
+        _ text: String,
+        replyingTo userMessageID: UUID
+    ) -> Bool {
+        guard session.usesLLMTurnController,
+              session.condition.usesCard,
+              session.protocolStage == .cardReflection,
+              session.cardGuidanceShared,
+              session.semanticMemory.cardNegotiatedMeaning?
+                  .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+              session.semanticMemory.nextPrompt?.kind == .confirmationRequest,
+              session.semanticMemory.nextPrompt?.target == .cardMapping,
+              isUnambiguousCardMappingAcceptance(text) else {
+            return false
+        }
+
+        session.studyEvents.append(
+            .init(stage: session.stage, action: "card_mapping_explicit_acceptance_recognized_locally")
+        )
+        isTyping = true
+        launchResponse(replyingTo: userMessageID) { model in
+            await model.commitExplicitCardMappingAcceptance()
+        }
+        return true
+    }
+
+    private func isUnambiguousCardMappingAcceptance(_ text: String) -> Bool {
+        let clean = comparableText(text)
+        let exactAcceptances = [
+            "贴切", "贴近", "准确", "对", "是的", "可以", "我同意", "我认可",
+            "我觉得贴切", "我觉得贴近", "这个理解贴切", "这个理解贴近",
+            "这个方向可以",
+        ]
+        return exactAcceptances.contains(clean)
+    }
+
+    private func commitExplicitCardMappingAcceptance() async {
+        let referenceID = session.semanticMemory.nextPrompt?.referenceID
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(),
+            resolvedConfirmation: .init(
+                target: .cardMapping,
+                decision: .accepted,
+                referenceID: referenceID
+            ),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "静默提交用户对当前候选解读的明确接受"
+        )
+
+        do {
+            let validatedPlan = try protocolController.validate(plan, for: session)
+            let response = LLMTurnControllerResponse(
+                requestedStage: validatedPlan.requestedStage,
+                localAction: validatedPlan.localAction,
+                memoryUpdate: validatedPlan.memoryUpdate,
+                resolvedConfirmation: validatedPlan.resolvedConfirmation,
+                nextPrompt: validatedPlan.nextPrompt,
+                replyIntent: validatedPlan.replyIntent,
+                noActionReason: validatedPlan.noActionReason,
+                reply: "local_card_mapping_explicit_acceptance"
+            )
+            let validatedResponse = try protocolController.validate(response, for: session)
+            try await applyValidatedProtocolResponse(
+                validatedResponse,
+                appendVisibleReply: false
+            )
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "card_mapping_explicit_acceptance_committed_locally")
+            )
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "card_mapping_resolution_committed_before_continuation")
+            )
+            await processProtocolTurn(trigger: .protocolContinuation)
+        } catch {
+            session.studyEvents.append(
+                .init(stage: session.stage, action: "card_mapping_local_acceptance_fell_back_to_planner")
+            )
+            await processProtocolTurn(trigger: .userMessage)
+        }
+    }
+
     private func userAcceptsCard(_ text: String) -> Bool {
         let clean = comparableText(text)
-        if userExplicitlyRequestsCard(text) { return true }
-        let declines = ["不抽", "先别抽", "先不抽", "不要抽", "不想抽", "不用卡", "先不用卡"]
+        let declines = [
+            "不抽", "先别抽", "先不抽", "不要抽", "不想抽", "不用卡", "先不用卡",
+            "不愿意", "不想试", "先不试", "不要试",
+        ]
         if declines.contains(where: { clean.contains(comparableText($0)) }) { return false }
-        return ["可以", "好", "好的", "好啊", "好呀", "愿意", "试试"].contains(clean)
+        if userExplicitlyRequestsCard(text) { return true }
+        if ["可以", "好", "好的", "好啊", "好呀", "愿意", "试试"].contains(clean) {
+            return true
+        }
+        return ["我愿意", "愿意试", "想试试", "可以试", "试试看"].contains {
+            clean.contains(comparableText($0))
+        }
     }
 
     private func userDeclinesCard(_ text: String) -> Bool {
         let clean = comparableText(text)
-        let declines = ["不抽", "先别抽", "先不抽", "不要抽", "不想抽", "不用卡", "先不用卡"]
+        let declines = [
+            "不抽", "先别抽", "先不抽", "不要抽", "不想抽", "不用卡", "先不用卡",
+            "不愿意", "不想试", "先不试", "不要试",
+        ]
         return declines.contains { clean.contains(comparableText($0)) }
     }
 
     private func userExplicitlyRequestsCard(_ text: String) -> Bool {
         let clean = comparableText(text)
-        let declines = ["不抽", "先别抽", "先不抽", "不要抽", "不想抽", "不用卡", "先不用卡"]
+        let declines = [
+            "不抽", "先别抽", "先不抽", "不要抽", "不想抽", "不用卡", "先不用卡",
+            "不愿意", "不想试", "先不试", "不要试",
+        ]
         if declines.contains(where: { clean.contains(comparableText($0)) }) { return false }
         let explicitAccepts = [
             "抽卡", "抽一张", "可以抽", "愿意抽", "来一张", "抽吧", "抽完", "抽个",
@@ -5734,7 +7043,7 @@ final class ReflectionViewModel: ObservableObject {
         case .trackingReview:
             return "我只是在问：刚才那条近期记录，和你自己描述的状态是否相关。它不能说明原因，也不能判断责任；你可以说相关、不相关，或者不确定。"
         case .readinessCheck:
-            return "我是在请你确认刚才那段整理是否准确。符合就说符合；哪里不对，也可以直接改。"
+            return "刚才那段只是暂时整理。放回当时的经历，你最想接着说哪一部分？"
         case .cardInterpretation:
             if session.workflowPhase == .cardObservation {
                 return "我只是想听你描述画面里正在发生什么，不需要解释卡片，也没有标准答案。"
@@ -5745,15 +7054,15 @@ final class ReflectionViewModel: ObservableObject {
             case .cardConnection:
                 return "我是在问：按你自己的画面理解，它有没有让你想到刚才那件事里的某一部分。没有联系也可以。"
             case .cardMappingConfirmation:
-                return "我是在请你判断刚才那种把画面和现实放在一起的说法是否贴近。你可以确认、改成自己的说法，或直接说没有关系。"
+                return "沿着刚才的画面—现实联系，哪一部分最明显？也可以换成自己的说法或直接说没有关系。"
             case .cardMeaningShift:
                 return "我是在问：把你对画面的理解和刚才那件事放在一起后，你现在会不会换一种方式理解那件事或当时的自己。没有变化也可以。"
             case .candidCircumstances:
                 return "我是在问：这件事里有哪些现实困难需要被放回来一起看，而不是都变成对自己的批评。"
             case .candidAgency:
-                return "我是在问：如果先不说“更努力”，你觉得下次能具体补哪一小块准备或沟通。没有也可以。"
+                return "我是在问：在已经说清楚的事实里，哪一部分是你认为自己可以负责或改变的。没有或不确定也可以。"
             case .reflectionNarrativeConfirmation, .narrativeConfirmation:
-                return "我是在请你确认刚才那段整理是否准确。不对的地方，可以直接改。"
+                return "刚才那段整理之后，你最想保留或继续谈的是哪一部分？"
             case .optionalAction, .actionConfirmation:
                 return "我给的是一两个很小的备选方向。你可以选一个、直接改掉，也可以都不选。"
             default:
@@ -5884,8 +7193,8 @@ final class ReflectionViewModel: ObservableObject {
         if cardPhase {
             values = [
                 ("Locked baseline narrative — reference briefly, never reproduce", session.lockedBaselineNarrative),
-                ("Matched image relation", session.cardGuidanceMatch?.imageRelation),
-                ("Matched reality relation", session.cardGuidanceMatch?.realityRelation),
+                ("Matched image relation", session.cardGroundingMatch?.imageRelation),
+                ("Matched reality relation", session.cardGroundingMatch?.realityRelation),
                 ("User-confirmed card mapping", session.cardMappingConfirmed ? session.cardConfirmedMapping : nil),
                 ("Card-derived delta", session.cardDerivedDeltaNarrative),
                 ("User-authored perspective response (which may explicitly be no change)", session.cardMeaningShiftResponse),
@@ -5935,8 +7244,8 @@ final class ReflectionViewModel: ObservableObject {
             responsePlan: responsePlan,
             lockedBaselineNarrative: session.lockedBaselineNarrative,
             cardDerivedDeltaNarrative: session.cardDerivedDeltaNarrative,
-            matchedImageRelation: session.cardGuidanceMatch?.imageRelation,
-            matchedRealityRelation: session.cardGuidanceMatch?.realityRelation,
+            matchedImageRelation: session.cardGroundingMatch?.imageRelation,
+            matchedRealityRelation: session.cardGroundingMatch?.realityRelation,
             confirmedCardMapping: session.cardConfirmedMapping,
             tenderResponse: session.candidCircumstancesResponse,
             meaningShiftResponse: session.cardMeaningShiftResponse,
@@ -5959,6 +7268,10 @@ final class ReflectionViewModel: ObservableObject {
         switch inference.relevance {
         case .notReviewed:
             guard state == .readinessCheck else { return nil }
+        case .offered:
+            // Current protocol owns this post-card state. The legacy dialogue path must not
+            // independently repeat or reinterpret the cue.
+            return nil
         case .relevant:
             if state == .cardInterpretation { return nil }
             if state == .attributionReflection,
@@ -5974,7 +7287,7 @@ final class ReflectionViewModel: ObservableObject {
             hypothesis: userFacingContextualHypothesis(hypothesis),
             confidence: inference.confidence,
             relevance: inference.relevance,
-            usageBoundary: "这是整段理解中的一句不确定背景，不得单独询问用户是否符合。不得提及任何测量、数据、设备或指标，不得据此命名具体情绪、解释原因、减免责任或提出健康建议。"
+            usageBoundary: "这是可拒绝的不确定背景。只能保留 hypothesis 明确包含的语义范围，不得扩展为其他事实、身体状态、情绪、原因、能力、责任或建议；不得展示测量来源，也不得替用户判断其相关性。"
         )
     }
 
@@ -6089,7 +7402,7 @@ final class ReflectionViewModel: ObservableObject {
         case .contextDisclosure: return "那段时间，除了这件事，你还在同时处理什么？"
         case .trackingPermission: return "我会看一下已经授权的近期记录，只把它们当作背景。"
         case .trackingReview: return trackingCandidateFallbackQuestion()
-        case .readinessCheck: return "把刚才这些放在一起，这样整理准确吗？哪里不对可以直接改。"
+        case .readinessCheck: return "把刚才这些放在一起，哪一部分最值得继续说？"
         case .attributionReflection:
             switch session.workflowPhase {
             case .cardConnection:
@@ -6108,7 +7421,7 @@ final class ReflectionViewModel: ObservableObject {
             case .optionalAction:
                 return "你现在想为自己选一个很小的下一步吗？也可以先不决定。"
             default:
-                return "这样整理贴近你的想法吗？不贴近的地方可以直接改。"
+                return "顺着这段整理，哪一部分最值得继续说？也可以换个方向。"
             }
         case .eventDisclosure: return "你愿意从最近一次发生的情况说起吗？"
         case .tenderGrounding, .tenderExploration:
@@ -6231,9 +7544,10 @@ final class ReflectionViewModel: ObservableObject {
         }
         if cues.contains(where: {
             $0.insight?.metric == .calendarLoad &&
-                ($0.insight?.absoluteDifference ?? 0) > 0
+                ($0.insight?.recentRecordCount ?? 0) > 0 &&
+                ($0.insight?.recentTotal ?? 0) > 0
         }) {
-            return "最近安排更挤、能分给这件事的时间少一些"
+            return "最近有一些已经排定、会占用时间的安排"
         }
         if metrics.contains(.steps) {
             return "最近走动少一些、久坐可能多一些"
@@ -6269,8 +7583,10 @@ final class ReflectionViewModel: ObservableObject {
             $0.insight?.metric == .heartRateVariability &&
                 ($0.insight?.absoluteDifference ?? 0) < 0
         }
-        let hasBusierSchedule = cues.contains {
-            $0.insight?.metric == .calendarLoad && ($0.insight?.absoluteDifference ?? 0) > 0
+        let hasRecordedSchedule = cues.contains {
+            $0.insight?.metric == .calendarLoad &&
+                ($0.insight?.recentRecordCount ?? 0) > 0 &&
+                ($0.insight?.recentTotal ?? 0) > 0
         }
         let hasChangedActivity = metrics.contains(.steps)
         let hasScreenIncrease = cues.contains {
@@ -6281,8 +7597,8 @@ final class ReflectionViewModel: ObservableObject {
         )
         let userNamedScreenBehavior = ["刷手机", "刷视频", "看视频", "屏幕"]
             .contains { userText.contains(comparableText($0)) }
-        if hasBusierSchedule {
-            return "这些变化可能说明那段时间的安排更挤，能分给这件事的时间少了一些"
+        if hasRecordedSchedule {
+            return "这些已排定的安排占用了一部分时间，但是否挤压了这件事仍由你判断"
         }
         if hasShorterSleep || hasLaterSleep || hasMoreFragmentedSleep {
             return "这些变化可能和最近比较累，或者还没有休息过来有关"
@@ -6328,7 +7644,7 @@ final class ReflectionViewModel: ObservableObject {
             case .cardMappingConfirmation:
                 candidates = [
                     session.cardCandidateMapping.map(cardMappingConfirmationMessage)
-                        ?? "这个画面和现实放在一起的说法贴近吗？不贴近可以直接改，也可以说没有关系。"
+                        ?? "把这个画面和现实放在一起后，最明显的是哪一部分？也可以换个方向或说没有关系。"
                 ]
             case .cardMeaningShift:
                 candidates = [
@@ -7072,7 +8388,7 @@ final class ReflectionViewModel: ObservableObject {
             return
         }
 
-        let imageRelation = session.cardGuidanceMatch?.imageRelation
+        let imageRelation = session.cardGroundingMatch?.imageRelation
             ?? cardNarrativeClauses().last
             ?? cardNarrativeClauses().first
             ?? "画面里刚才形成的关系"
@@ -7359,7 +8675,7 @@ final class ReflectionViewModel: ObservableObject {
         session.currentRoute = .tenderStabilize
         session.studyEvents.append(.init(stage: .safetySupport, action: "safety_signal_detected"))
         addAssistant(
-            "我很在意你刚才提到的安全风险。请立即联系可信任的人或当地紧急服务；在中国大陆可拨打 120/110。这个应用不会继续抽卡或责任探索。",
+            "我很在意你刚才提到的安全风险。请立即联系可信任的人或当地紧急服务；在中国大陆可拨打 120/110。这个应用会先暂停普通反思。",
             replyingTo: userMessageID
         )
     }
@@ -7463,6 +8779,48 @@ final class ReflectionViewModel: ObservableObject {
                     }
                 }
             }
+        }
+    }
+
+    /// A participant's text is durable before the first model request for that turn. Cloud sync
+    /// remains best-effort, but a provider timeout, app suspension, or protocol repair cannot make
+    /// the original input depend on a later assistant response completing successfully.
+    private func launchPersistedModelResponse(
+        replyingTo userMessageID: UUID,
+        _ operation: @escaping @MainActor (ReflectionViewModel) async -> Void
+    ) {
+        launchResponse(replyingTo: userMessageID) { model in
+            model.isTyping = true
+            model.session.studyEvents.append(
+                .init(
+                    stage: model.session.stage,
+                    action: "user_input_persisting_before_model_turn"
+                )
+            )
+            do {
+                try await model.store.save(model.session)
+                model.session.studyEvents.append(
+                    .init(
+                        stage: model.session.stage,
+                        action: "user_input_persisted_before_model_turn"
+                    )
+                )
+            } catch {
+                model.session.studyEvents.append(
+                    .init(
+                        stage: model.session.stage,
+                        action: "user_input_persistence_failed"
+                    )
+                )
+                model.addAssistant(
+                    "这条内容暂时没能安全保存，所以我先不继续处理。请保留当前页面后再试一次。",
+                    replyingTo: userMessageID
+                )
+                model.llmStatus = "本机记录暂时不可写入"
+                model.finishTypingForCurrentResponse()
+                return
+            }
+            await operation(model)
         }
     }
     @discardableResult
@@ -8517,9 +9875,13 @@ final class ReflectionViewModel: ObservableObject {
             "心里最沉", "最难熬", "最难说清", "内心深处", "真正的自己",
             "触动你", "最放不下", "值得被看到", "意味着什么", "这样的坚持确实不容易",
             "带来一丝希望", "完成目标的可能性", "这样的需求很自然", "很多人都会有",
-            "特别为难", "拖延和压力叠在一起", "这种双重压力", "心态变得更沉重",
+            "特别为难", "这种双重压力", "心态变得更沉重",
             "加重挫败", "这种卡住感", "束手无策", "很难熬", "勇敢的选择",
-            "这个想法很实际"
+            "这个想法很实际",
+            // Tracking-derived context should remain direct everyday language. These phrases
+            // invent a vague bodily experience and made the user unsure what the assistant meant.
+            "没有完全放松下来", "一直绷着", "没有真正缓下来", "一直在硬撑",
+            "硬撑着", "压力积在身体里", "压力积在身上", "身体在发出信号"
         ]
         return disallowed.contains { visible.contains(comparableText($0)) }
     }
@@ -8671,7 +10033,7 @@ final class ReflectionViewModel: ObservableObject {
 
     private func makeNewSession() -> ReflectionSession {
         var fresh = ReflectionSession()
-        fresh.protocolVersion = 2
+        fresh.protocolVersion = ReflectionSession.currentProtocolVersion
         fresh.protocolStage = .contextualDisclosure
         guard let access = studyAccess,
               access.isAvailable,

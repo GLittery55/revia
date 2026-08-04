@@ -257,10 +257,13 @@ protocol ContextualLoadInferring: Sendable {
     func infer(from analysis: SelfTrackingAnalysis) -> ContextualLoadInference
 }
 
-/// Converts several independently computed personal-baseline differences into one deliberately
-/// coarse contextual hypothesis. The rule requires aligned sleep and cardiovascular evidence
-/// before it may use pressure-related wording. Activity is retained only as an alternative
-/// explanation because step count alone does not identify strain, energy, or emotion.
+/// Converts several independently computed context signals into one deliberately coarse
+/// hypothesis. Health signals use personal-baseline differences. Calendar is different: it is a
+/// direct external record, so its recent event count and occupied time are used without comparing
+/// them with a personal "normal" schedule. Even then, the inference says only that time was
+/// scheduled; it never upgrades that fact to "the person is busy". Activity is retained only as
+/// an alternative explanation because step count alone does not identify strain, energy, or
+/// emotion.
 struct DeterministicContextualLoadInferer: ContextualLoadInferring {
     func infer(from analysis: SelfTrackingAnalysis) -> ContextualLoadInference {
         let comparable = analysis.insights.filter(isReliableBaselineComparison)
@@ -283,19 +286,20 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
                   let relativeDifference = $0.relativeDifference else { return false }
             return difference <= -5 && relativeDifference <= -0.15
         }
+        let recordedSchedule = analysis.insights.first(where: isUsableRecordedSchedule)
 
         let sleepSignals = [shorterSleep, lessContinuousSleep].compactMap { $0 }
         let cardiovascularSignals = [
             higherRestingHeartRate,
             lowerHeartRateVariability,
         ].compactMap { $0 }
-        let alternatives = alternativeExplanations(from: comparable)
 
         if !sleepSignals.isEmpty, !cardiovascularSignals.isEmpty {
-            let supporting = sleepSignals + cardiovascularSignals
+            let physiologicalSignals = sleepSignals + cardiovascularSignals
+            let supporting = physiologicalSignals + [recordedSchedule].compactMap { $0 }
             let hasStrongAgreement =
-                supporting.count >= 3 &&
-                supporting.allSatisfy {
+                physiologicalSignals.count >= 3 &&
+                physiologicalSignals.allSatisfy {
                     $0.confidence == .high && $0.strength == .persistentPattern
                 }
             return makeInference(
@@ -304,20 +308,47 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
                 activation: .possiblyElevated,
                 energy: .possiblyReduced,
                 supporting: supporting,
-                alternatives: alternatives,
-                dialogueHypothesis: "用户近期可能承受着比平时更多的压力，处理事情时可用的精力或应对余地可能有所减少。"
+                alternatives: alternativeExplanations(
+                    from: comparable,
+                    supporting: supporting
+                ),
+                dialogueHypothesis: recordedSchedule == nil
+                    ? "用户最近可能有点累，压力也比平时大一些。"
+                    : "用户最近有一些已经排定、会占用时间的安排，也可能有点累，压力也比平时大一些。"
             )
         }
 
         if !sleepSignals.isEmpty {
+            let supporting = sleepSignals + [recordedSchedule].compactMap { $0 }
             return makeInference(
                 state: .possibleReducedRecovery,
                 confidence: .moderate,
                 activation: .unknown,
                 energy: .possiblyReduced,
-                supporting: sleepSignals,
-                alternatives: alternatives,
-                dialogueHypothesis: "用户近期可能还没有充分恢复，处理事情时可用的精力可能比平时少。"
+                supporting: supporting,
+                alternatives: alternativeExplanations(
+                    from: comparable,
+                    supporting: supporting
+                ),
+                dialogueHypothesis: recordedSchedule == nil
+                    ? "用户最近可能有点累。"
+                    : "用户最近有一些已经排定、会占用时间的安排，也可能有点累。"
+            )
+        }
+
+        if let recordedSchedule {
+            let supporting = [recordedSchedule]
+            return makeInference(
+                state: .recordedScheduleContext,
+                confidence: .moderate,
+                activation: .unknown,
+                energy: .unknown,
+                supporting: supporting,
+                alternatives: alternativeExplanations(
+                    from: comparable,
+                    supporting: supporting
+                ),
+                dialogueHypothesis: "用户最近有一些已经排定、会占用时间的安排。"
             )
         }
 
@@ -330,13 +361,14 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
             activation: .unknown,
             energy: .unknown,
             supporting: [],
-            alternatives: alternatives,
+            alternatives: alternativeExplanations(from: comparable, supporting: []),
             dialogueHypothesis: nil
         )
     }
 
     private func isReliableBaselineComparison(_ insight: TrackingInsight) -> Bool {
-        guard insight.strength != .descriptiveOnly,
+        guard insight.metric != .calendarLoad,
+              insight.strength != .descriptiveOnly,
               insight.confidence != .low,
               insight.recentMedian != nil,
               insight.baselineMedian != nil,
@@ -346,14 +378,34 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
         return insight.validSampleCount >= 4
     }
 
+    private func isUsableRecordedSchedule(_ insight: TrackingInsight) -> Bool {
+        guard insight.metric == .calendarLoad,
+              insight.validSampleCount >= 4,
+              let occupiedHours = insight.recentTotal,
+              let eventCount = insight.recentRecordCount else {
+            return false
+        }
+        return occupiedHours > 0 && eventCount > 0
+    }
+
     private func alternativeExplanations(
-        from insights: [TrackingInsight]
+        from insights: [TrackingInsight],
+        supporting: [TrackingInsight]
     ) -> [String] {
-        var alternatives = [
-            "近期运动、体力活动或恢复过程",
-            "身体不适、咖啡因、酒精、药物或临时作息变化",
-            "设备佩戴、测量时段或同步差异",
-        ]
+        let supportingMetrics = Set(supporting.map(\.metric))
+        var alternatives: [String] = []
+        if supportingMetrics.contains(.calendarLoad) {
+            alternatives.append("未写入日历的任务，以及日程是否按原计划发生")
+        }
+        if supportingMetrics.contains(where: {
+            $0.selfTrackingDomain == .sleep || $0.selfTrackingDomain == .cardiovascular
+        }) {
+            alternatives.append(contentsOf: [
+                "近期运动、体力活动或恢复过程",
+                "身体不适、咖啡因、酒精、药物或临时作息变化",
+                "设备佩戴、测量时段或同步差异",
+            ])
+        }
         if let steps = insights.first(where: { $0.metric == .steps }),
            let relativeDifference = steps.relativeDifference {
             if relativeDifference >= 0.20 {
@@ -391,6 +443,41 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
             dialogueHypothesis: dialogueHypothesis,
             relevance: .notReviewed
         )
+    }
+}
+
+/// Computes occupied calendar time as a union of intervals so simultaneous events are counted
+/// once. Only the clipped duration inside the requested day contributes to the total.
+struct CalendarOccupiedTimeCalculator {
+    static func occupiedHours(
+        intervals: [DateInterval],
+        within window: DateInterval
+    ) -> Double {
+        let clipped = intervals.compactMap { interval -> DateInterval? in
+            let start = max(interval.start, window.start)
+            let end = min(interval.end, window.end)
+            guard start < end else { return nil }
+            return DateInterval(start: start, end: end)
+        }.sorted { lhs, rhs in
+            if lhs.start != rhs.start { return lhs.start < rhs.start }
+            return lhs.end < rhs.end
+        }
+        guard let first = clipped.first else { return 0 }
+
+        var occupiedSeconds = 0.0
+        var currentStart = first.start
+        var currentEnd = first.end
+        for interval in clipped.dropFirst() {
+            if interval.start <= currentEnd {
+                currentEnd = max(currentEnd, interval.end)
+            } else {
+                occupiedSeconds += currentEnd.timeIntervalSince(currentStart)
+                currentStart = interval.start
+                currentEnd = interval.end
+            }
+        }
+        occupiedSeconds += currentEnd.timeIntervalSince(currentStart)
+        return occupiedSeconds / 3_600
     }
 }
 
@@ -457,6 +544,13 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
         let recentPoints = points.filter { $0.date >= recentStart && $0.date < recentEnd }
         let baselinePoints = points.filter { $0.date >= baselineStart && $0.date < baselineEnd }
         let recentValues = recentPoints.compactMap(\.value)
+        let recentTotal = metric == .calendarLoad ? recentValues.reduce(0, +) : nil
+        let recentRecordCount = metric == .calendarLoad
+            ? recentPoints.reduce(0) { partial, point in
+                guard point.value != nil else { return partial }
+                return partial + max(point.count, 0)
+            }
+            : nil
         let baselineValues = baselinePoints.compactMap(\.value)
         let recentMedian = metricMedian(metric, values: recentValues)
         let recentIQR = metricSpread(metric, values: recentValues, center: recentMedian)
@@ -518,7 +612,9 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
                 recentMedian: recentMedian,
                 baselineMedian: supportsBaseline ? baselineMedian : nil,
                 difference: absoluteDifference,
-                recentIQR: recentIQR
+                recentIQR: recentIQR,
+                recentTotal: recentTotal,
+                recentRecordCount: recentRecordCount
             ),
             baselineWindow: supportsBaseline ? DateInterval(start: baselineStart, end: baselineEnd) : nil,
             baselineDescription: supportsBaseline
@@ -533,6 +629,8 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
             suggestedReflectionQuestion: reflectionQuestion(for: metric),
             provenance: provenance,
             recentMedian: recentMedian,
+            recentTotal: recentTotal,
+            recentRecordCount: recentRecordCount,
             baselineMedian: supportsBaseline ? baselineMedian : nil,
             medianAbsoluteDeviation: mad,
             interquartileRange: iqr,
@@ -643,7 +741,9 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
         recentMedian: Double?,
         baselineMedian: Double?,
         difference: Double?,
-        recentIQR: Double?
+        recentIQR: Double?,
+        recentTotal: Double?,
+        recentRecordCount: Int?
     ) -> String {
         let noun = metric.isSleepNightMetric ? "晚" : "天"
         guard let recentMedian else {
@@ -667,6 +767,14 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
             let minutes = Int((abs(difference) * 60).rounded())
             let direction = difference >= 0 ? "更晚" : "更早"
             return "最近醒来时间中位数约为 \(clockTime(recentMedian))，个人基线约为 \(clockTime(baselineMedian))，相差约 \(minutes) 分钟（\(direction)）。这只是记录差异，不能说明原因或责任。"
+        }
+        if metric == .calendarLoad {
+            let hours = recentTotal ?? 0
+            let eventCount = recentRecordCount ?? 0
+            guard eventCount > 0, hours > 0 else {
+                return "最近 \(expectedDays) 天日历中没有记录到占用时间的定时日程；这不能说明现实中没有其他任务、原因或责任。"
+            }
+            return "最近 \(expectedDays) 天日历中记录到 \(eventCount) 个定时日程，去重后合计占用约 \(formatted(hours, metric: metric))；不读取标题或内容，未写入日历的任务也不在其中，不能说明现实中的总工作量、原因或责任。"
         }
         guard let baselineMedian, let difference else {
             if metric == .sleepContinuity {
@@ -695,9 +803,7 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
             let direction = difference >= 0 ? "更多" : "更少"
             return "最近每日步数中位数约为 \(formatted(recentMedian, metric: metric))，个人基线约为 \(formatted(baselineMedian, metric: metric))，相差约 \(formatted(abs(difference), metric: metric))（\(direction)）；这里只描述设备记录到的活动，不能说明原因或责任。"
         case .calendarLoad:
-            let minutes = Int((abs(difference) * 60).rounded())
-            let direction = difference >= 0 ? "更多" : "更少"
-            return "最近每日已记录日程占用中位数约为 \(formatted(recentMedian, metric: metric))，个人基线约为 \(formatted(baselineMedian, metric: metric))，相差约 \(minutes) 分钟（\(direction)）；未写入日历的任务不在其中，它不能说明原因或责任。"
+            return "最近日历中记录到占用时间的定时日程；未写入日历的任务不在其中。"
         case .sleepTiming, .sleepWakeTime:
             return "最近睡眠时间与个人近期作息存在差异；仍需结合缺失记录理解。"
         case .screenTime:
@@ -755,11 +861,11 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
     private func reflectionQuestion(for metric: TrackingMetric) -> String {
         return switch metric {
         case .sleepDuration, .sleepTiming, .sleepWakeTime, .sleepContinuity:
-            "这些睡眠作息和记录连续性的背景，和你记得的状态贴近吗？"
+            "这些睡眠作息和记录连续性的背景，在那段经历里实际参与了哪一部分？"
         case .restingHeartRate, .heartRateVariability: "这段身体记录值得放进来一起看吗，也可以说不相关。"
-        case .steps: "记录到的活动变化和你记得的日常节奏相符吗？"
+        case .steps: "记录到的活动变化，在那几天的日常节奏里具体对应了什么？"
         case .calendarLoad: "那几天的安排有没有挤压你原本可用的时间？也可能没有。"
-        case .screenTime: "这些使用时段和你记得的情况相符吗？"
+        case .screenTime: "这些使用时段在你记得的日常里主要对应了什么？"
         case .weather: "天气有没有实际改变出行或原本的日常安排？"
         }
     }
@@ -782,7 +888,7 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
                 coverage: [first.coverageDescription, second.coverageDescription],
                 limitations: Array(Set(first.limitations + second.limitations)).sorted(),
                 alternativeExplanations: alternatives,
-                suggestedReflectionQuestion: "这两项记录在相近时间出现，但不能说明彼此因果。把它们并列作为背景，和你记得的情况贴近吗？"
+                suggestedReflectionQuestion: "这两项记录在相近时间出现，但不能说明彼此因果。把它们并列作为背景时，你记得它们分别对应了什么？"
             )
         }
     }

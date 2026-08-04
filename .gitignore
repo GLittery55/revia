@@ -16,3 +16,9 @@ backend/.env
 backend/*.db
 backend/.venv/
 deploy/.env
+server/.env
+server/.venv/
+server/**/*.db
+server/**/__pycache__/
+server-deploy/.env
+tmp/reflection-scenario-results/
