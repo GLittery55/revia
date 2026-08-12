@@ -1799,29 +1799,11 @@ final class ReflectionViewModel: ObservableObject {
                     correction: correction
                 )
                 let corrected = try await currentV5CoreTurnController.plan(request)
-                do {
-                    authorized = try gate.authorize(
-                        corrected,
-                        for: session,
-                        allowedSemanticOperations: request.allowedSemanticOperations
-                    )
-                } catch let correctionError as CurrentV5CoreError {
-                    // A second parseable Reflection draft may still omit a core relation or carry
-                    // an unusable optional enrichment. Do not turn that protocol incompleteness
-                    // into a visible technical failure: remain in the committed phase and ask its
-                    // one canonical question. This fallback cannot advance state or manufacture
-                    // semantic evidence.
-                    authorized = try gate.authorizeCurrentReflectionContinuation(
-                        for: session,
-                        allowedSemanticOperations: request.allowedSemanticOperations
-                    )
-                    session.studyEvents.append(
-                        .init(
-                            stage: session.stage,
-                            action: "current_v5_core_continuity_fallback_\(currentV5RejectionDiagnostic(for: correctionError))"
-                        )
-                    )
-                }
+                authorized = try gate.authorize(
+                    corrected,
+                    for: session,
+                    allowedSemanticOperations: request.allowedSemanticOperations
+                )
             }
         } catch {
             guard responseContextIsCurrent(expectedSessionID: expectedSessionID),

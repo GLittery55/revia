@@ -296,34 +296,12 @@ class CurrentV5ReflectionProgressionDecision(_CurrentV5ContractModel):
     groundedEvidence: Optional[str] = None
 
 
-class CurrentV5ReflectionTurnOutcome(_CurrentV5ContractModel):
-    # A flat semantic report, deliberately not a discriminated union. The backend accepts sparse
-    # parseable meaning; Swift validates phase-specific completeness and compiles the operation.
-    # Do not reject a parseable semantic report at the provider boundary because its tag is
-    # absent or unfamiliar. The Swift compiler/Gate owns the closed vocabulary and the single
-    # correction path; the backend owns only JSON shape and alias normalization.
-    # All nested values cross the backend as JSON syntax. Swift performs the closed-vocabulary,
-    # unique-text, candidate-reference, and phase-completeness checks. This prevents a parseable
-    # model response such as {"tenderDelta":{"reflectionDelta":"..."}} from becoming a 502
-    # before the semantic compiler can normalize it or request one correction.
-    outcome: Optional[Any] = None
-    # Exploration-completion relationship meaning. Swift attaches the canonical persisted
-    # selfCriticalStatement and compiles the canonical link representation.
-    selfCriticismLink: Optional[Any] = None
-    tenderDelta: Optional[Any] = None
-    synthesisDelta: Optional[Any] = None
-    fierceDelta: Optional[Any] = None
-    realityCandidate: Optional[Any] = None
-    fierceDirection: Optional[Any] = None
-
-
 class CurrentV5PlannerContract(_CurrentV5ContractModel):
     # Operation authorization and legacy alias resolution belong to Swift. The backend transports
     # the model's semantic act as text and never rewrites it from capability or payload metadata.
     semanticOperation: Optional[str] = None
     semanticEvidencePatch: CurrentV5SemanticEvidencePatch
     reflectionProgressionDecision: Optional[CurrentV5ReflectionProgressionDecision] = None
-    reflectionTurnOutcome: Optional[CurrentV5ReflectionTurnOutcome] = None
     # responseFocus shapes language but never owns workflow state. Swift still requires a nonempty
     # focus for operations such as clarifyEvent whose projected question cannot be derived safely.
     responseFocus: Optional[str] = None
@@ -375,12 +353,7 @@ _CURRENT_V5_PROTOCOL_RESIDUE_FIELDS = frozenset(
 )
 
 _CURRENT_V5_TOP_LEVEL_OWNERS = frozenset(
-    {
-        "semanticOperation",
-        "reflectionProgressionDecision",
-        "reflectionTurnOutcome",
-        "responseFocus",
-    }
+    {"semanticOperation", "reflectionProgressionDecision", "responseFocus"}
 )
 _CURRENT_V5_PATCH_OWNERS = frozenset(
     {
@@ -671,6 +644,7 @@ _CURRENT_V5_PROGRESSION_MEANINGS = frozenset(
 )
 _CURRENT_V5_PROGRESSION_MEANING_ALIASES = ("decision", "value")
 
+
 def _canonicalize_current_v5_progression_syntax(decoded: dict[str, Any]) -> dict[str, Any]:
     """Normalize only mechanically unique progression transport syntax.
 
@@ -754,89 +728,17 @@ def _canonicalize_current_v5_progression_syntax(decoded: dict[str, Any]) -> dict
                 if isinstance(legacy_frame, dict)
                 else None
             )
-            legacy_fierce = (
-                legacy_frame.get("fierceEvidence")
-                if isinstance(legacy_frame, dict)
-                else None
-            )
-            legacy_direction = (
-                legacy_fierce.get("direction")
-                if isinstance(legacy_fierce, dict)
-                else None
-            )
             # The colocated field is canonical. If it is absent, move the unique old semantic
             # alias once; if present (including null/empty), discard the legacy competitor.
             if "reflectionDelta" not in decision and legacy_delta is not None:
                 decision["reflectionDelta"] = legacy_delta
+            if "reflectionDelta" in decision:
+                memory.pop("reflectionFrame", None)
             if meaning == "completeFierce":
-                # Direction and delta are colocated Planner meaning. A former full frame is a
-                # decode-only alias: move its one explicit direction before removing that
-                # duplicate container. The canonical owner still wins whenever it is present,
-                # including an explicit null; the backend never chooses a direction itself.
-                if "fierceDirection" not in decision and legacy_direction is not None:
-                    decision["fierceDirection"] = legacy_direction
+                # Direction/delta are model meaning. Candidate and evidence identity are compiled
+                # deterministically from Swift-owned pre-turn state and cannot compete here.
                 decision.pop("candidateRef", None)
                 decision.pop("groundedEvidence", None)
-            if "reflectionDelta" in decision or (
-                meaning == "completeFierce" and "fierceDirection" in decision
-            ):
-                memory.pop("reflectionFrame", None)
-    return projected
-
-
-def _canonicalize_current_v5_reflection_outcome_syntax(
-    decoded: dict[str, Any],
-) -> dict[str, Any]:
-    """Normalize mechanically unique phase-outcome syntax without choosing its meaning."""
-
-    if "reflectionTurnOutcome" not in decoded:
-        return decoded
-
-    def normalize(value: Any) -> Any:
-        if isinstance(value, str):
-            stripped = value.strip()
-            try:
-                nested = json.loads(stripped)
-            except (TypeError, json.JSONDecodeError):
-                # Any nonempty scalar is mechanically unique syntax. Swift decides whether it is
-                # a known semantic outcome; an empty scalar remains an invalid sparse object.
-                return {"outcome": stripped} if stripped else {}
-            return normalize(nested) if nested != value else value
-        if isinstance(value, list):
-            return normalize(value[0]) if len(value) == 1 else value
-        if not isinstance(value, dict):
-            return value
-
-        shaped = dict(value)
-        if "outcome" not in shaped:
-            aliases = [shaped.get(key) for key in ("kind", "decision") if key in shaped]
-            aliases = [item.strip() for item in aliases if isinstance(item, str) and item.strip()]
-            if aliases and all(item == aliases[0] for item in aliases[1:]):
-                shaped["outcome"] = aliases[0]
-        shaped.pop("kind", None)
-        shaped.pop("decision", None)
-        candidate = shaped.get("realityCandidate")
-        if isinstance(candidate, dict):
-            candidate = dict(candidate)
-            if "reference" not in candidate and isinstance(candidate.get("referenceID"), str):
-                candidate["reference"] = candidate["referenceID"]
-            candidate.pop("referenceID", None)
-            shaped["realityCandidate"] = candidate
-        return shaped
-
-    projected = dict(decoded)
-    projected["reflectionTurnOutcome"] = normalize(projected["reflectionTurnOutcome"])
-    canonical_outcome = projected["reflectionTurnOutcome"]
-    if isinstance(canonical_outcome, dict) and "selfCriticismLink" in canonical_outcome:
-        patch = projected.get("semanticEvidencePatch")
-        memory = patch.get("memoryUpdate") if isinstance(patch, dict) else None
-        if isinstance(memory, dict):
-            # Exploration completion has one canonical relationship owner. Removing the parallel
-            # alias is mechanical ownership projection; the backend does not interpret its text.
-            memory.pop("selfCriticismLink", None)
-    # The phase-local outcome is the canonical meaning owner. A concurrently returned legacy
-    # progression object is duplicate transport residue and cannot compete with it.
-    projected.pop("reflectionProgressionDecision", None)
     return projected
 
 
@@ -918,7 +820,6 @@ def canonicalize_current_v5_planner_contract(
     # operation resolution belong exclusively to Swift and are deliberately not consulted here.
     _ = allowed_semantic_operations
     projected = _canonicalize_current_v5_semantic_aliases(projected)
-    projected = _canonicalize_current_v5_reflection_outcome_syntax(projected)
     projected = _canonicalize_current_v5_progression_syntax(projected)
     projected = _strip_unowned_current_v5_fields(projected, CurrentV5PlannerContract)
     # A decision containing only retired, unowned metadata has no remaining semantic content.

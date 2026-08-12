@@ -1111,25 +1111,6 @@ enum TurnFierceDirection: String, Codable, CaseIterable, Sendable {
     case change
 }
 
-/// User-grounded reality meaning selected by the Planner, but stored only through Swift's
-/// phase-outcome compiler. It is pending context for a later Fierce inquiry, not an instruction to
-/// skip Tender or advance the current turn.
-enum TurnRealityCandidateMeaning: String, Codable, CaseIterable, Equatable, Sendable {
-    case behavior
-    case impact
-    case responsibility
-    case boundary
-    case support
-    case repair
-    case protect
-    case change
-}
-
-struct TurnPendingRealityCandidate: Codable, Equatable, Sendable {
-    let reference: String
-    let meaning: TurnRealityCandidateMeaning
-}
-
 /// Typed provenance lets Swift enforce that a card connection cannot be the sole basis for
 /// responsibility. It does not ask Swift to interpret the evidence text.
 enum TurnReflectionEvidenceSource: String, Codable, CaseIterable, Sendable {
@@ -1421,10 +1402,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     /// the actual reflection object: it records how a fact is being taken to mean something about
     /// the self, or that this connection remains uncertain, without supplying a hidden motive.
     var selfCriticismLink: String?
-    /// A reality direction already identified in an earlier user turn. Swift persists only its
-    /// stable grounded reference and Planner-authored meaning so Tender can occur without asking
-    /// the person to repeat that material. It never advances the phase by itself.
-    var pendingRealityCandidate: TurnPendingRealityCandidate?
     /// Evidence structure underlying the self-evaluation. It contains only user-authored facts,
     /// constraints, possibilities, controllable parts, impacts, and explicit uncertainty.
     var episodeStructure: TurnEpisodeStructure?
@@ -1480,7 +1457,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         selfCriticismStatus: TurnSelfCriticismStatus = .unresolved,
         selfCriticalStatement: String? = nil,
         selfCriticismLink: String? = nil,
-        pendingRealityCandidate: TurnPendingRealityCandidate? = nil,
         episodeStructure: TurnEpisodeStructure? = nil,
         contextRelationship: TurnContextRelationship? = nil,
         nextPrompt: TurnNextPrompt? = nil,
@@ -1507,7 +1483,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.selfCriticismStatus = selfCriticismStatus
         self.selfCriticalStatement = selfCriticalStatement
         self.selfCriticismLink = selfCriticismLink
-        self.pendingRealityCandidate = pendingRealityCandidate
         self.episodeStructure = episodeStructure?.normalizingGroundedPresence()
         self.contextRelationship = contextRelationship
         self.nextPrompt = nextPrompt
@@ -1537,7 +1512,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case selfCriticismStatus
         case selfCriticalStatement
         case selfCriticismLink
-        case pendingRealityCandidate
         case episodeStructure
         case contextRelationship
         case nextPrompt
@@ -1599,10 +1573,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             try? box.decodeIfPresent(String.self, forKey: .selfCriticalStatement)
         selfCriticismLink =
             try? box.decodeIfPresent(String.self, forKey: .selfCriticismLink)
-        pendingRealityCandidate = try? box.decodeIfPresent(
-            TurnPendingRealityCandidate.self,
-            forKey: .pendingRealityCandidate
-        )
         episodeStructure = (
             try? box.decodeIfPresent(TurnEpisodeStructure.self, forKey: .episodeStructure)
         )?.normalizingGroundedPresence()
@@ -1800,11 +1770,6 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         if let value = update.selfCriticismStatus { selfCriticismStatus = value }
         if let value = update.selfCriticalStatement { selfCriticalStatement = value }
         if let value = update.selfCriticismLink { selfCriticismLink = value }
-        if update.clearPendingRealityCandidate == true {
-            pendingRealityCandidate = nil
-        } else if let value = update.pendingRealityCandidate {
-            pendingRealityCandidate = value
-        }
         if let value = update.episodeStructure {
             episodeStructure = (
                 episodeStructure?.merging(value) ?? value
@@ -1882,10 +1847,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     var selfCriticismStatus: TurnSelfCriticismStatus?
     var selfCriticalStatement: String?
     var selfCriticismLink: String?
-    /// Swift-owned output of the atomic Exploration compiler. The remote Planner cannot write
-    /// this through semanticEvidencePatch; it selects the candidate only in reflectionTurnOutcome.
-    var pendingRealityCandidate: TurnPendingRealityCandidate?
-    var clearPendingRealityCandidate: Bool?
     var episodeStructure: TurnEpisodeStructure?
     var contextRelationship: TurnContextRelationship?
     /// Transient protocol signal: the visible reply actually juxtaposes the optional contextual
@@ -1936,8 +1897,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         selfCriticismStatus: TurnSelfCriticismStatus? = nil,
         selfCriticalStatement: String? = nil,
         selfCriticismLink: String? = nil,
-        pendingRealityCandidate: TurnPendingRealityCandidate? = nil,
-        clearPendingRealityCandidate: Bool? = nil,
         episodeStructure: TurnEpisodeStructure? = nil,
         contextRelationship: TurnContextRelationship? = nil,
         contextCueOffered: Bool? = nil,
@@ -1970,8 +1929,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         self.selfCriticismStatus = selfCriticismStatus
         self.selfCriticalStatement = selfCriticalStatement
         self.selfCriticismLink = selfCriticismLink
-        self.pendingRealityCandidate = pendingRealityCandidate
-        self.clearPendingRealityCandidate = clearPendingRealityCandidate
         self.episodeStructure = episodeStructure
         self.contextRelationship = contextRelationship
         self.contextCueOffered = contextCueOffered
@@ -2009,8 +1966,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         case selfCriticismStatus
         case selfCriticalStatement
         case selfCriticismLink
-        case pendingRealityCandidate
-        case clearPendingRealityCandidate
         case episodeStructure
         case contextRelationship
         case contextCueOffered
@@ -2065,14 +2020,6 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         selfCriticismLink = try? box.decode(
             String.self,
             forKey: .selfCriticismLink
-        )
-        pendingRealityCandidate = try? box.decode(
-            TurnPendingRealityCandidate.self,
-            forKey: .pendingRealityCandidate
-        )
-        clearPendingRealityCandidate = try? Self.decodeOptionalProtocolBool(
-            from: box,
-            forKey: .clearPendingRealityCandidate
         )
         episodeStructure = try? box.decode(
             TurnEpisodeStructure.self,
