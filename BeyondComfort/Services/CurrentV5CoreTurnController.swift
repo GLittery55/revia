@@ -67,6 +67,28 @@ enum CurrentV5SelfCriticismLineage {
         return cleaned.isEmpty ? nil : cleaned
     }
 
+    /// Once Reflection has committed a frame, the endpoint already stored in the canonical
+    /// difficulty-to-judgment relation is the immutable Reflection anchor. Older v5 builds could
+    /// accidentally overwrite `selfCriticalStatement` with a later responsibility or direction;
+    /// recovering this endpoint is syntax/provenance repair, not a new semantic interpretation.
+    private static func explicitEndpoint(in link: String?) -> String? {
+        guard let link = cleaned(link) else { return nil }
+        for separator in ["->", "→"] {
+            if let range = link.range(of: separator, options: .backwards) {
+                return cleaned(String(link[range.upperBound...]))
+            }
+        }
+        return nil
+    }
+
+    static func canonicalStatement(in memory: TurnSemanticMemory) -> String? {
+        if memory.reflectionFrame != nil,
+           let endpoint = explicitEndpoint(in: memory.selfCriticismLink) {
+            return endpoint
+        }
+        return cleaned(memory.selfCriticalStatement)
+    }
+
     static func alignedLink(statement: String?, link: String?) -> String? {
         guard let statement = cleaned(statement),
               let link = cleaned(link) else { return nil }
@@ -117,7 +139,7 @@ enum CurrentV5SelfCriticismLineage {
         applying update: TurnSemanticMemoryUpdate? = nil
     ) -> String? {
         alignedLink(
-            statement: update?.selfCriticalStatement ?? memory.selfCriticalStatement,
+            statement: update?.selfCriticalStatement ?? canonicalStatement(in: memory),
             link: update?.selfCriticismLink ?? memory.selfCriticismLink
         )
     }
@@ -129,7 +151,7 @@ enum CurrentV5SelfCriticismLineage {
         in memory: TurnSemanticMemory,
         applying update: TurnSemanticMemoryUpdate? = nil
     ) -> String? {
-        let statement = update?.selfCriticalStatement ?? memory.selfCriticalStatement
+        let statement = update?.selfCriticalStatement ?? canonicalStatement(in: memory)
         if cleaned(statement) != nil {
             return alignedLink(in: memory, applying: update)
         }
@@ -249,23 +271,12 @@ enum CurrentV5ReflectionTurnOutcomeKind: String, Codable, Equatable, Sendable {
     case synthesisOptedOut
 }
 
-enum CurrentV5RealityCandidateMeaning: String, Codable, Equatable, Sendable {
-    case behavior
-    case impact
-    case responsibility
-    case boundary
-    case support
-    case repair
-    case protect
-    case change
-}
-
 /// The Planner identifies one meaningful reality candidate; Swift verifies the stable reference
 /// and deterministically opens Fierce. A nil candidate is an explicit semantic judgment that no
 /// current reality material warrants Fierce, not an omitted protocol field.
 struct CurrentV5RealityCandidateSelection: Codable, Equatable, Sendable {
     let reference: String
-    let meaning: CurrentV5RealityCandidateMeaning
+    let meaning: TurnRealityCandidateMeaning
 }
 
 /// Decode-only normalization for a semantic string returned directly, in a one-value list, or in
@@ -321,20 +332,27 @@ private struct CurrentV5WireScalarText: Decodable {
 /// accept sparse provider JSON and defer phase-specific completeness to Swift's semantic Gate.
 private struct CurrentV5ReflectionTurnOutcome: Decodable, Equatable, Sendable {
     let outcome: CurrentV5ReflectionTurnOutcomeKind?
+    let selfCriticismLink: CurrentV5WireSelfCriticismLink?
     let tenderDelta: String?
     let synthesisDelta: String?
     let fierceDelta: String?
     let realityCandidate: CurrentV5RealityCandidateSelection?
     let fierceDirection: TurnFierceDirection?
     let hasInvalidRealityCandidate: Bool
+    let realityCandidateWasExplicitlyNull: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case outcome, tenderDelta, synthesisDelta, fierceDelta, realityCandidate, fierceDirection
+        case outcome, selfCriticismLink, tenderDelta, synthesisDelta, fierceDelta
+        case realityCandidate, fierceDirection
     }
 
     init(from decoder: Decoder) throws {
         let box = try decoder.container(keyedBy: CodingKeys.self)
         outcome = try? box.decode(CurrentV5ReflectionTurnOutcomeKind.self, forKey: .outcome)
+        selfCriticismLink = try? box.decodeIfPresent(
+            CurrentV5WireSelfCriticismLink.self,
+            forKey: .selfCriticismLink
+        )
         tenderDelta = (try? box.decode(CurrentV5WireScalarText.self, forKey: .tenderDelta))?.value
         synthesisDelta = (try? box.decode(CurrentV5WireScalarText.self, forKey: .synthesisDelta))?.value
         fierceDelta = (try? box.decode(CurrentV5WireScalarText.self, forKey: .fierceDelta))?.value
@@ -342,6 +360,8 @@ private struct CurrentV5ReflectionTurnOutcome: Decodable, Equatable, Sendable {
 
         let candidateIsPresent = box.contains(.realityCandidate)
             && (try? box.decodeNil(forKey: .realityCandidate)) != true
+        realityCandidateWasExplicitlyNull = box.contains(.realityCandidate)
+            && (try? box.decodeNil(forKey: .realityCandidate)) == true
         if candidateIsPresent {
             realityCandidate = try? box.decode(
                 CurrentV5RealityCandidateSelection.self,
@@ -363,6 +383,10 @@ struct CurrentV5ReflectionProgressionDecision: Codable, Equatable, Sendable {
     /// Active Fierce candidate identity is recovered from Swift-owned pre-turn state instead of
     /// asking the Planner to repeat it.
     let candidateRef: String?
+    /// Exploration-completion relationship meaning compiled from the same phase-local outcome as
+    /// the initial Tender delta. It is never sourced from a parallel semanticEvidencePatch owner.
+    let selfCriticismLink: String?
+    let candidateMeaning: TurnRealityCandidateMeaning?
     /// Atomic semantic content for progression acts that create or revise an understanding.
     /// Swift compiles it into the existing reflectionFrame representation; the Planner does not
     /// duplicate the same decision in a distant memoryUpdate field.
@@ -377,12 +401,16 @@ struct CurrentV5ReflectionProgressionDecision: Codable, Equatable, Sendable {
     init(
         meaning: CurrentV5ReflectionProgressionMeaning,
         candidateRef: String?,
+        selfCriticismLink: String? = nil,
+        candidateMeaning: TurnRealityCandidateMeaning? = nil,
         reflectionDelta: String? = nil,
         fierceDirection: TurnFierceDirection? = nil,
         groundedEvidence: String? = nil
     ) {
         self.meaning = meaning
         self.candidateRef = candidateRef
+        self.selfCriticismLink = selfCriticismLink
+        self.candidateMeaning = candidateMeaning
         self.reflectionDelta = reflectionDelta
         self.fierceDirection = fierceDirection
         self.groundedEvidence = groundedEvidence
@@ -494,7 +522,7 @@ private struct CurrentV5WireCodingKey: CodingKey {
 /// Decode-only meaning surface. It accepts the legacy string plus common neutral object/tuple
 /// spellings without turning the backend into a second semantic compiler. Unknown or conflicting
 /// shapes remain unusable rather than throwing a transport error.
-private struct CurrentV5WireSelfCriticismLink: Decodable {
+private struct CurrentV5WireSelfCriticismLink: Decodable, Equatable, Sendable {
     let groundedMeaning: String?
     let claimedStatement: String?
     let isAmbiguous: Bool
@@ -658,7 +686,8 @@ private struct CurrentV5WireSemanticEvidencePatch: Decodable {
 func decodeCurrentV5PlannerWireOutput(
     _ data: Data,
     allowedSemanticOperations: [PlannerSemanticOperation],
-    canonicalSelfCriticalStatement: String? = nil
+    canonicalSelfCriticalStatement: String? = nil,
+    pendingRealityCandidate: TurnPendingRealityCandidate? = nil
 ) throws -> CurrentV5PlannerOutput {
     let wire = try JSONDecoder().decode(CurrentV5PlannerWireOutput.self, from: data)
     let supplied = wire.semanticOperation.flatMap(PlannerSemanticOperation.init(rawValue:))
@@ -672,8 +701,24 @@ func decodeCurrentV5PlannerWireOutput(
     // The former progression object remains decode-only compatibility and has no equal authority
     // when the canonical outcome is present.
     if let outcome = wire.reflectionTurnOutcome,
-       let outcomeKind = outcome.outcome,
-       !outcome.hasInvalidRealityCandidate {
+       let outcomeKind = outcome.outcome {
+        if [.explorationContinue, .explorationComplete].contains(outcomeKind) {
+            // Exploration completion meaning has one owner. Any parallel patch link is redundant
+            // residue and cannot make an otherwise self-contained outcome pass or fail.
+            semanticPatch.memoryUpdate.selfCriticismLink = nil
+        }
+        // A reality candidate is optional enrichment attached to an otherwise complete
+        // Reflection outcome. Provider syntax that cannot identify one candidate must not erase
+        // the outcome's canonical link/delta or turn a usable semantic response into transport
+        // failure. Swift still validates any successfully decoded candidate against grounded
+        // provenance below.
+        let outcomeCandidate = outcome.hasInvalidRealityCandidate
+            ? nil
+            : outcome.realityCandidate
+        let outcomeLink = outcome.selfCriticismLink?.compiled(
+            canonicalStatement: semanticPatch.memoryUpdate.selfCriticalStatement
+                ?? canonicalSelfCriticalStatement
+        )
         progression = switch outcomeKind {
         case .explorationContinue:
             CurrentV5ReflectionProgressionDecision(
@@ -683,7 +728,9 @@ func decodeCurrentV5PlannerWireOutput(
         case .explorationComplete:
             CurrentV5ReflectionProgressionDecision(
                 meaning: .completeExploration,
-                candidateRef: nil,
+                candidateRef: outcomeCandidate?.reference,
+                selfCriticismLink: outcomeLink,
+                candidateMeaning: outcomeCandidate?.meaning,
                 reflectionDelta: outcome.tenderDelta
             )
         case .tenderAccepted, .tenderRevised:
@@ -691,11 +738,28 @@ func decodeCurrentV5PlannerWireOutput(
                 CurrentV5ReflectionProgressionDecision(
                     meaning: .inspectReality,
                     candidateRef: candidate.reference,
+                    candidateMeaning: candidate.meaning,
+                    reflectionDelta: outcomeKind == .tenderRevised
+                        ? outcome.tenderDelta
+                        : nil
+                )
+            } else if !outcome.hasInvalidRealityCandidate,
+                      !outcome.realityCandidateWasExplicitlyNull,
+                      let pendingRealityCandidate {
+                CurrentV5ReflectionProgressionDecision(
+                    meaning: .inspectReality,
+                    candidateRef: pendingRealityCandidate.reference,
+                    candidateMeaning: pendingRealityCandidate.meaning,
                     reflectionDelta: outcomeKind == .tenderRevised
                         ? outcome.tenderDelta
                         : nil
                 )
             } else {
+                // Acceptance never becomes another Tender clarification merely because optional
+                // candidate syntax is unusable. Preserve the accepted outcome and let the Swift
+                // Gate request a missing explicit Synthesis delta when no grounded candidate can
+                // be compiled. This prevents protocol incompleteness from silently reopening the
+                // same confirmation loop.
                 CurrentV5ReflectionProgressionDecision(
                     meaning: .synthesize,
                     candidateRef: nil,
@@ -810,15 +874,15 @@ func decodeCurrentV5PlannerWireOutput(
     let operation: PlannerSemanticOperation
     if let progression {
         let compiled = progression.meaning.compiledOperation
-        guard allowedSemanticOperations.contains(compiled) else {
-            throw CurrentV5RemoteContractError.plannerContractInvalid
-        }
         operation = compiled
     } else if let supplied {
         operation = supplied
-    } else if allowedSemanticOperations.count == 1,
-              let only = allowedSemanticOperations.first {
-        operation = only
+    } else if let deterministicNonsemanticFallback = allowedSemanticOperations.first {
+        // Missing protocol structure in an otherwise decoded semantic object belongs to the
+        // semantic compiler/Gate. Selecting an already-authorized current act here supplies no
+        // meaning or transition; `phaseOutcomeContractApplied` makes the Gate reject/repair the
+        // missing phase outcome, after which the bounded continuity path remains available.
+        operation = deterministicNonsemanticFallback
     } else {
         throw CurrentV5RemoteContractError.plannerContractInvalid
     }
@@ -1094,6 +1158,7 @@ struct CurrentV5PlannerMemory: Codable, Equatable, Sendable {
     let selfCriticismStatus: TurnSelfCriticismStatus
     let selfCriticalStatement: String?
     let selfCriticismLink: String?
+    let pendingRealityCandidate: TurnPendingRealityCandidate?
     let episodeStructure: TurnEpisodeStructure?
     let contextRelationship: TurnContextRelationship?
     let trackingAssessments: [TurnTrackingAssessment]?
@@ -1118,8 +1183,9 @@ struct CurrentV5PlannerMemory: Codable, Equatable, Sendable {
             : source.receivedDisclosureQuestionPurposes
         eventDisclosureOutcome = source.eventDisclosureOutcome
         selfCriticismStatus = source.selfCriticismStatus
-        selfCriticalStatement = source.selfCriticalStatement
+        selfCriticalStatement = CurrentV5SelfCriticismLineage.canonicalStatement(in: source)
         selfCriticismLink = source.selfCriticismLink
+        pendingRealityCandidate = source.pendingRealityCandidate
         episodeStructure = source.episodeStructure
         contextRelationship = source.contextRelationship
         trackingAssessments = source.trackingAssessments.isEmpty ? nil : source.trackingAssessments
@@ -1588,7 +1654,8 @@ enum CurrentV5CapabilitySet {
                 // answer from being reclassified as a premature Tender distinction.
                 operations = [.continueExploratoryReflection]
             case .tender:
-                let hasStatement = session.semanticMemory.selfCriticalStatement?
+                let hasStatement = CurrentV5SelfCriticismLineage
+                    .canonicalStatement(in: session.semanticMemory)?
                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
                 let lineageNeedsRepair = hasStatement
                     && CurrentV5SelfCriticismLineage.alignedLink(
@@ -2070,7 +2137,7 @@ enum CurrentV5RemoteContractError: Error {
 }
 
 enum CurrentV5ServerPrompt {
-    static let version = "turn-v5-core-server-v104"
+    static let version = "turn-v5-core-server-v106"
 }
 
 private struct CurrentV5PlannerPayload: Encodable {
@@ -2098,7 +2165,10 @@ struct RemoteCurrentV5CoreTurnController: CurrentV5CoreTurnControlling {
             return try decodeCurrentV5PlannerWireOutput(
                 data,
                 allowedSemanticOperations: request.allowedSemanticOperations,
-                canonicalSelfCriticalStatement: request.semanticMemory.selfCriticalStatement
+                canonicalSelfCriticalStatement: request.semanticMemory.selfCriticalStatement,
+                pendingRealityCandidate: request.reflectionMode == .tender
+                    ? request.semanticMemory.pendingRealityCandidate
+                    : nil
             )
         } catch {
             if error is CurrentV5RemoteContractError { throw error }
@@ -2189,6 +2259,49 @@ struct CurrentV5SwiftTurnGate: Sendable {
             projectedPlan: authorized.projected,
             contextualTrackingMetricRef: trackingReference,
             contextualTrackingMetricEvidence: trackingEvidence
+        )
+    }
+
+    /// Last-resort continuity for a parseable Reflection response whose semantic conclusion still
+    /// fails after the one bounded correction. Swift does not invent a link, interpretation,
+    /// Fierce direction, Synthesis, or phase transition. It authorizes only the canonical
+    /// non-advancing inquiry for the already committed phase, so protocol incompleteness cannot
+    /// become a user-visible technical interruption.
+    func authorizeCurrentReflectionContinuation(
+        for session: ReflectionSession,
+        allowedSemanticOperations: [PlannerSemanticOperation]
+    ) throws -> CurrentV5AuthorizedTurn {
+        guard session.protocolStage == .directReflection else {
+            throw CurrentV5CoreError.payloadInvalid(
+                failure: .malformedSemanticPayload
+            )
+        }
+        let meaning: CurrentV5ReflectionProgressionMeaning = switch session.semanticMemory.reflectionPhase {
+        case .exploratory: .continueExploration
+        case .tender: .clarifyTender
+        case .fierce: .clarifyFierce
+        case .synthesis: .clarifySynthesis
+        }
+        let operation = meaning.compiledOperation
+        guard allowedSemanticOperations.contains(operation) else {
+            throw CurrentV5CoreError.operationNotAllowed(
+                operation,
+                allowedSemanticOperations: allowedSemanticOperations
+            )
+        }
+        let output = CurrentV5PlannerOutput(
+            semanticOperation: operation,
+            semanticEvidencePatch: CurrentV5SemanticEvidencePatch(),
+            reflectionProgressionDecision: CurrentV5ReflectionProgressionDecision(
+                meaning: meaning,
+                candidateRef: nil
+            ),
+            phaseOutcomeContractApplied: true
+        )
+        return try authorize(
+            output,
+            for: session,
+            allowedSemanticOperations: allowedSemanticOperations
         )
     }
 
@@ -2290,9 +2403,31 @@ struct CurrentV5SwiftTurnGate: Sendable {
         let meaning: CurrentV5ReflectionProgressionMeaning
         let candidateReference: String?
         let candidateContent: String?
+        let candidateMeaning: TurnRealityCandidateMeaning?
+        let selfCriticismLink: String?
         let reflectionDelta: String?
         let fierceDirection: TurnFierceDirection?
         let fierceEvidenceBasis: [String]
+
+        init(
+            meaning: CurrentV5ReflectionProgressionMeaning,
+            candidateReference: String?,
+            candidateContent: String?,
+            candidateMeaning: TurnRealityCandidateMeaning? = nil,
+            selfCriticismLink: String? = nil,
+            reflectionDelta: String?,
+            fierceDirection: TurnFierceDirection?,
+            fierceEvidenceBasis: [String]
+        ) {
+            self.meaning = meaning
+            self.candidateReference = candidateReference
+            self.candidateContent = candidateContent
+            self.candidateMeaning = candidateMeaning
+            self.selfCriticismLink = selfCriticismLink
+            self.reflectionDelta = reflectionDelta
+            self.fierceDirection = fierceDirection
+            self.fierceEvidenceBasis = fierceEvidenceBasis
+        }
     }
 
     private func latestUnansweredUserContent(in session: ReflectionSession) -> String? {
@@ -2400,10 +2535,7 @@ struct CurrentV5SwiftTurnGate: Sendable {
         switch progression.meaning {
         case .continueExploration:
             guard progression.reflectionDelta == nil,
-                  progression.fierceDirection == nil,
-                  !output.responseFocus.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                  ).isEmpty else {
+                  progression.fierceDirection == nil else {
                 throw invalid()
             }
             return ResolvedReflectionProgression(
@@ -2420,16 +2552,33 @@ struct CurrentV5SwiftTurnGate: Sendable {
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                   !delta.isEmpty,
                   progression.fierceDirection == nil,
+                  let link = progression.selfCriticismLink,
                   CurrentV5SelfCriticismLineage.alignedLink(
-                    in: session.semanticMemory,
-                    applying: output.semanticEvidencePatch.memoryUpdate
+                    statement: output.semanticEvidencePatch.memoryUpdate.selfCriticalStatement
+                        ?? session.semanticMemory.selfCriticalStatement,
+                    link: link
                   ) != nil else {
                 throw invalid()
             }
+            let selectedCandidate: CurrentV5GroundedRealityCandidate?
+            if let reference = progression.candidateRef {
+                // Candidate selection is optional enrichment. An unknown, stale, or otherwise
+                // ungrounded reference cannot block the canonical Exploration transaction once
+                // the self-criticism link and Tender understanding are valid.
+                selectedCandidate = progression.candidateMeaning.flatMap { _ in
+                    candidateEvidence.first(where: { $0.id == reference })
+                }
+            } else {
+                selectedCandidate = nil
+            }
             return ResolvedReflectionProgression(
                 meaning: progression.meaning,
-                candidateReference: nil,
-                candidateContent: nil,
+                candidateReference: selectedCandidate?.id,
+                candidateContent: selectedCandidate?.content,
+                candidateMeaning: selectedCandidate == nil
+                    ? nil
+                    : progression.candidateMeaning,
+                selfCriticismLink: link,
                 reflectionDelta: delta,
                 fierceDirection: nil,
                 fierceEvidenceBasis: []
@@ -2448,10 +2597,7 @@ struct CurrentV5SwiftTurnGate: Sendable {
 
         case .clarifyTender:
             guard progression.reflectionDelta == nil,
-                  progression.fierceDirection == nil,
-                  !output.responseFocus.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                  ).isEmpty else {
+                  progression.fierceDirection == nil else {
                 throw invalid()
             }
             return ResolvedReflectionProgression(
@@ -2473,6 +2619,7 @@ struct CurrentV5SwiftTurnGate: Sendable {
                 meaning: progression.meaning,
                 candidateReference: candidate.id,
                 candidateContent: candidate.content,
+                candidateMeaning: progression.candidateMeaning,
                 // tenderRevised may atomically preserve the person's material correction while
                 // the same accepted outcome opens a grounded Fierce inquiry. An accepted,
                 // unchanged Tender carries no delta here.
@@ -2485,10 +2632,7 @@ struct CurrentV5SwiftTurnGate: Sendable {
             guard progression.reflectionDelta == nil,
                   progression.fierceDirection == nil,
                   let reference = session.semanticMemory.nextPrompt?.referenceID,
-                  let candidate = candidates.first(where: { $0.id == reference }),
-                  !output.responseFocus.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                  ).isEmpty else {
+                  let candidate = candidates.first(where: { $0.id == reference }) else {
                 throw invalid()
             }
             return ResolvedReflectionProgression(
@@ -2541,10 +2685,7 @@ struct CurrentV5SwiftTurnGate: Sendable {
         case .clarifySynthesis:
             guard progression.reflectionDelta == nil,
                   progression.fierceDirection == nil,
-                  session.semanticMemory.reflectionFrame?.action == .synthesizeUnderstanding,
-                  !output.responseFocus.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                  ).isEmpty else {
+                  session.semanticMemory.reflectionFrame?.action == .synthesizeUnderstanding else {
                 throw invalid()
             }
             return ResolvedReflectionProgression(
@@ -2584,16 +2725,28 @@ struct CurrentV5SwiftTurnGate: Sendable {
         var patch = output.semanticEvidencePatch
         guard let progression else { return patch }
         switch progression.meaning {
-        case .continueExploration, .clarifyTender, .clarifyFierce, .clarifySynthesis,
-             .acceptSynthesis:
+        case .continueExploration:
+            patch.memoryUpdate.selfCriticismLink = nil
+            patch.memoryUpdate.reflectionFrame = nil
+            patch.reflectionContribution = nil
+        case .clarifyTender, .clarifyFierce, .clarifySynthesis, .acceptSynthesis:
             patch.memoryUpdate.reflectionFrame = nil
             patch.reflectionContribution = nil
         case .completeExploration:
+            patch.memoryUpdate.selfCriticismLink = progression.selfCriticismLink
+            if let reference = progression.candidateReference,
+               let meaning = progression.candidateMeaning {
+                patch.memoryUpdate.pendingRealityCandidate = .init(
+                    reference: reference,
+                    meaning: meaning
+                )
+            }
             patch.memoryUpdate.reflectionFrame = nil
             patch.reflectionContribution = CurrentV5ReflectionContribution(
                 reflectionDelta: progression.reflectionDelta
             )
         case .inspectReality:
+            patch.memoryUpdate.clearPendingRealityCandidate = true
             patch.memoryUpdate.reflectionFrame = nil
             patch.reflectionContribution = progression.reflectionDelta.map {
                 CurrentV5ReflectionContribution(reflectionDelta: $0)
@@ -2609,7 +2762,17 @@ struct CurrentV5SwiftTurnGate: Sendable {
                     direction: progression.fierceDirection
                 )
             )
-        case .reviseTender, .synthesize:
+        case .reviseTender:
+            guard progression.reflectionDelta != nil else {
+                // Decode-only compatibility for the former separated decision/frame contract.
+                return patch
+            }
+            patch.memoryUpdate.reflectionFrame = nil
+            patch.reflectionContribution = CurrentV5ReflectionContribution(
+                reflectionDelta: progression.reflectionDelta
+            )
+        case .synthesize:
+            patch.memoryUpdate.clearPendingRealityCandidate = true
             guard progression.reflectionDelta != nil else {
                 // Decode-only compatibility for the former separated decision/frame contract.
                 return patch
@@ -2696,10 +2859,22 @@ struct CurrentV5SwiftTurnGate: Sendable {
         progression: ResolvedReflectionProgression?
     ) -> String {
         guard let progression else { return output.responseFocus }
+        let supplied = output.responseFocus.trimmingCharacters(in: .whitespacesAndNewlines)
         switch progression.meaning {
-        case .continueExploration, .reviseTender, .clarifyTender, .synthesize,
-             .clarifySynthesis:
+        case .continueExploration:
+            return supplied.isEmpty
+                ? "clarify_self_criticism_attribution_relation"
+                : supplied
+        case .reviseTender, .synthesize:
             return output.responseFocus
+        case .clarifyTender:
+            return supplied.isEmpty
+                ? "clarify_current_bounded_tender_understanding"
+                : supplied
+        case .clarifySynthesis:
+            return supplied.isEmpty
+                ? "continue_from_synthesis_or_correct_it"
+                : supplied
         case .completeExploration, .acceptSynthesis:
             return ""
         case .inspectReality:
@@ -2707,7 +2882,10 @@ struct CurrentV5SwiftTurnGate: Sendable {
             // instruction, is the only Writer focus for opening Fierce.
             return progression.candidateContent ?? ""
         case .clarifyFierce:
-            return output.responseFocus
+            return supplied.isEmpty
+                ? progression.candidateContent
+                    ?? "clarify_current_grounded_reality_direction"
+                : supplied
         case .completeFierce:
             // A completed direction has no remaining Writer question or free-form task. The
             // projected synthesis prompt alone defines the visible transition.
@@ -2763,6 +2941,24 @@ struct CurrentV5SwiftTurnGate: Sendable {
         // the status read-only in persisted Planner input preserves old sessions, while clearing
         // it here ensures current-v5 output can never acquire a second owner for the same fact.
         update.selfCriticismStatus = nil
+
+        // Exploration owns the one self-critical proposition. Once its relationship and first
+        // Tender frame have been committed, later responsibility, boundary, support, repair,
+        // protection, or change language belongs to episode/Fierce evidence and cannot replace
+        // that endpoint. For sessions polluted by older builds, mechanically restore the endpoint
+        // already present in the committed relation on the next successful turn.
+        let reflectionAnchorIsCommitted = session.protocolStage == .directReflection
+            && session.semanticMemory.reflectionPhase != .exploratory
+            && session.semanticMemory.reflectionFrame != nil
+        if reflectionAnchorIsCommitted {
+            let canonicalStatement = CurrentV5SelfCriticismLineage.canonicalStatement(
+                in: session.semanticMemory
+            )
+            update.selfCriticalStatement = canonicalStatement
+                == session.semanticMemory.selfCriticalStatement
+                ? nil
+                : canonicalStatement
+        }
         // Event Disclosure establishes the canonical episode, but it does not permanently own
         // facts about that episode. During direct Reflection the person may naturally add a
         // concrete behavior, process, condition, consequence, or controllable part that later
@@ -2783,7 +2979,8 @@ struct CurrentV5SwiftTurnGate: Sendable {
 
         // Swift does not decide whether language is self-critical. Once the Planner supplies the
         // exact nonempty statement, Swift derives the persisted presence summary mechanically.
-        if let statement = update.selfCriticalStatement {
+        if !reflectionAnchorIsCommitted,
+           let statement = update.selfCriticalStatement {
             let clean = statement.trimmingCharacters(in: .whitespacesAndNewlines)
             if clean.isEmpty {
                 update.selfCriticalStatement = nil
@@ -3293,6 +3490,8 @@ private struct CurrentV5CanonicalProjector {
             }
             return prompt
         }
+        let selfCriticismAttributionFocus =
+            "clarify_self_criticism_attribution_relation"
         func confirmation(
             _ target: TurnConfirmationTarget,
             referenceID: String? = nil
@@ -3943,7 +4142,7 @@ private struct CurrentV5CanonicalProjector {
                     action: .init(kind: .shareCardGuidance),
                     next: question(
                         "exploratoryReflection",
-                        "explore_from_user_authored_connection"
+                        selfCriticismAttributionFocus
                     )
                 )
             }
@@ -3999,7 +4198,7 @@ private struct CurrentV5CanonicalProjector {
                     action: .init(kind: .shareCardGuidance),
                     next: question(
                         "exploratoryReflection",
-                        "explore_from_user_authored_connection"
+                        selfCriticismAttributionFocus
                     )
                 )
             }
@@ -4121,7 +4320,7 @@ private struct CurrentV5CanonicalProjector {
                 action: .init(kind: .shareCardGuidance),
                 next: question(
                     "exploratoryReflection",
-                    "explore_from_user_authored_connection"
+                    selfCriticismAttributionFocus
                 )
             )
 
@@ -4154,7 +4353,7 @@ private struct CurrentV5CanonicalProjector {
                 intent: .directCandidReflection,
                 update: update,
                 action: .init(kind: .shareCardGuidance),
-                next: question("exploratoryReflection", "explore_from_accepted_connection"),
+                next: question("exploratoryReflection", selfCriticismAttributionFocus),
                 resolved: .init(
                     target: .cardRealityConnection,
                     decision: .accepted,
@@ -4198,7 +4397,7 @@ private struct CurrentV5CanonicalProjector {
                 intent: .directCandidReflection,
                 update: update,
                 action: .init(kind: .shareCardGuidance),
-                next: question("exploratoryReflection", "explore_from_revised_connection"),
+                next: question("exploratoryReflection", selfCriticismAttributionFocus),
                 resolved: .init(
                     target: .cardRealityConnection,
                     decision: .revised,
@@ -4248,7 +4447,7 @@ private struct CurrentV5CanonicalProjector {
                 stage: .directReflection,
                 intent: .directCandidReflection,
                 update: settingReflectionPhase(.exploratory),
-                next: question("exploratoryReflection", "explore_current_experience")
+                next: question("exploratoryReflection", selfCriticismAttributionFocus)
             )
 
         case .authorizeCardGuidance:
@@ -4270,7 +4469,7 @@ private struct CurrentV5CanonicalProjector {
                 intent: .directCandidReflection,
                 update: settingReflectionPhase(.exploratory),
                 action: .init(kind: .shareCardGuidance),
-                next: question("exploratoryReflection", "explore_from_confirmed_connection")
+                next: question("exploratoryReflection", selfCriticismAttributionFocus)
             )
 
         case .presentLegacyCardReading:
@@ -4322,7 +4521,7 @@ private struct CurrentV5CanonicalProjector {
                 update: settingReflectionPhase(.exploratory),
                 next: memoryUpdate.contextCueOffered == true
                     ? question("contextRelationship", "assess_contextual_cue_relation")
-                    : question("exploratoryReflection", "deepen_user_authored_material")
+                    : question("exploratoryReflection", selfCriticismAttributionFocus)
             )
 
         case .continueTenderReflection:

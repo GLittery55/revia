@@ -11,7 +11,7 @@ from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
 TURN_PROMPT_VERSION = "turn-v4-server-v45"
-CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v104"
+CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v106"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -350,13 +350,33 @@ content. candidateBridgeResolvedAt is always null—Swift sets it internally.
 """.strip()
 
 
-SELF_COMPASSION_RULES = """
-Tender grounds every reflection in one distinction. Its three dimensions are optional lenses, never
-forced questions. Keep fact/inference and event/identity distinct without praise,
-denial, excuse, or a positive opposite. Tender may stand alone. Self-criticism judges ability/character/
-worth; worry predicts; uncertainty marks missing information. Fierce optionally adds Tender-grounded candor
-only for supplied behavior, impact, boundary, support, or caring repair/protect/change; distress alone never requires it.
+CURRENT_V5_TENDER_PURPOSE_CONTRACT = """
+Tender's job is to form one usable, bounded compassionate understanding of the already-grounded
+difficulty-to-self-judgment relationship. A Tender understanding has two inseparable parts: it names
+the concrete difficulty, behavior, consequence, limit, or warranted responsibility that is genuinely
+present; and it keeps the conclusion about the whole person, general ability, character, or worth within
+what those facts actually establish. It does not make the difficulty smaller, decide that the person is
+wrong, replace their explanation with a kinder theory, remove responsibility, or turn pain into a
+benefit. The result should let the person hold both realities at once: a real problem may need care or
+response, while that problem alone need not become an unlimited verdict about the self.
+
+Tender is complete when that bounded understanding is usable in the exchange: the person naturally
+accepts it, accepts it with a qualification, or supplies a grounded reality-facing addition while
+retaining it. A brief natural acceptance is sufficient. A later statement about conduct,
+responsibility, impact, time, boundary, support, repair, protection, or change is reality material for
+Fierce or Synthesis, not a new selfCriticalStatement and not a reason to reconfirm Tender. Continue
+Tender only for a material correction, explicit rejection, or genuine misunderstanding of the bounded
+understanding itself. Producing a recap, empathy sentence, or generic validation does not establish
+Tender; repeatedly asking whether an accepted understanding is accurate does not deepen it.
 """.strip()
+
+
+SELF_COMPASSION_RULES = (
+    CURRENT_V5_TENDER_PURPOSE_CONTRACT
+    + "\nTender's three self-compassion dimensions are optional lenses, never forced questions. "
+    "Fierce optionally adds Tender-grounded candor only for supplied behavior, impact, boundary, "
+    "support, or caring repair/protect/change; distress alone never requires it."
+)
 
 
 OUTPUT_DISCIPLINE = """
@@ -457,9 +477,10 @@ is saved only when volunteered and never delays completion.
 DIRECT_REFLECTION_MEMORY_CONTRACT = """
 Save one grounded reflectionFrame with a legal action and non-recap delta. selfCriticalStatement is
 an exact user-authored evaluative conclusion or explicit self-directed blame, never the behavior or
-harm being evaluated. Tender preserves warranted responsibility and limits only unsupported scope;
-it does not excuse conduct. Tender has no fierceEvidence; Fierce uses supplied conduct/impact and
-caring direction.
+harm being evaluated. Exploration is its only current-v5 writer: after the first Tender frame is
+committed, later responsibility, direction, behavior, or impact must update episode/Fierce evidence
+without replacing that statement. Tender has no fierceEvidence; Fierce uses supplied conduct/impact
+and caring direction.
 synthesizeUnderstanding may create one grounded action/noAction.
 """.strip()
 
@@ -701,8 +722,10 @@ def _planner_base_structural_contract(request: dict[str, Any]) -> str:
 def _reflection_frame_contract(*, sparse_tender_lineage: bool) -> str:
     if sparse_tender_lineage:
         return """
-Reflection output carries meaning only. Exploration reports reflectionTurnOutcome, emits
-selfCriticismLink, and may colocate only the initial Tender delta; it never emits a protocol frame.
+Reflection output carries meaning only. Exploration completion is one self-contained
+reflectionTurnOutcome: it colocates outcome, selfCriticismLink, the initial Tender delta, and an
+optional already-grounded realityCandidate; it never emits a protocol frame or duplicates its link
+in semanticEvidencePatch.
 Tender/Synthesis meaning uses reflectionFrame.reflectionDelta except at committed Tender or active
 Fierce, where reflectionTurnOutcome is the sole meaning owner. Fierce completion colocates only
 fierceDelta and fierceDirection there. Swift restores the active candidate, latest user answer, and committed evidence lineage.
@@ -1525,19 +1548,38 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
         elif reflection_mode == "exploratory":
             phase_contract = (
                 "EXPLORATORY ONLY. Report reflectionTurnOutcome, not semanticOperation or progression. Decide "
-                "whether the person's own words now sufficiently connect the lived "
+                "whether the person's cumulative grounded material sufficiently connects the lived "
                 "difficulty with the self-critical judgment. Cumulative, gradual, situational, outcome-based, "
                 "comparative, explicit-standard, and loose relations are sufficient without a cause, trigger, or precise "
                 "onset. Greater specificity is not greater reflective value. selfCriticismLink carries this "
                 "user-grounded difficulty-to-judgment relationship, and Swift joins it to the current exact "
                 "self-critical statement. Attempts, effectiveness, accumulated blockage, and the later judgment "
                 "remain distinct unless the person connected them. Emotion, impact, blockage, Card, and Tracking "
-                "cannot replace the link, and Tracking cannot delay it. Use explorationContinue plus one easy "
-                "responseFocus only while the relation is absent, revised, rejected, or assistant-inferred. Once "
-                "sufficient, use explorationComplete, emit the grounded selfCriticismLink, and colocate one nonempty "
-                "tenderDelta containing the minimum bounded compassionate understanding needed for the handoff. Emit "
-                "no reflectionFrame. Swift commits the link, establishes the canonical Tender frame, and projects "
-                "post-turn Tender. referenceGuidance may select an adjacent question but is never evidence. Do not "
+                "cannot replace the link, and Tracking cannot delay it. If the cumulative material already explicitly "
+                "states what the person did or what happened and that they blame, doubt, or judge themselves for that "
+                "specific part, the relation is sufficient: complete Exploration without asking them to restate it. Use "
+                "explorationContinue plus one easy responseFocus only while the attribution relation is genuinely absent, "
+                "revised, rejected, or assistant-inferred. That focus must directly request the one missing relation between "
+                "the concrete event/behavior and the existing self-judgment: what specific part they are blaming or judging "
+                "themselves for, or what in the difficulty makes that judgment arise for them. It must not ask for another "
+                "Card association, a deeper emotion, another consequence, a future action, or an abstract thing they noticed, "
+                "thought of, or felt emerging. Canonical missing target and visible question target must be identical. Once "
+                "sufficient, use explorationComplete and colocate in that same reflectionTurnOutcome one nonempty "
+                "selfCriticismLink describing the relationship meaning plus one nonempty tenderDelta containing the "
+                "minimum bounded compassionate understanding needed for the handoff. The link meaning may use "
+                "committed user-authored event facts, the committed selfCriticalStatement, a confirmed user-authored "
+                "Reality Connection, and the latest user proposition; it may not use Assistant interpretation, Card "
+                "scaffolds, Tracking inference, or rejected uncommitted meaning. If the latest answer already states a "
+                "grounded behavior, impact, boundary, support, repair, protection, or change direction, preserve that "
+                "exact user proposition in the one matching episodeStructure evidence list when it is not already "
+                "committed, then optionally select the stable post-merge episodeStructure reference as "
+                "realityCandidate in the same outcome. When an exact supplied groundedRealityCandidates item already "
+                "contains it, select that supplied reference instead. Never point realityCandidate at raw transcript "
+                "text, an Assistant statement, or a reference that the emitted evidence patch does not establish. "
+                "That selection is saved for after Tender and never advances this turn directly to Fierce. Emit no "
+                "reflectionFrame and do not duplicate selfCriticismLink in semanticEvidencePatch. Swift commits the "
+                "link, establishes the canonical Tender frame, preserves the optional candidate, and projects post-turn "
+                "Tender. referenceGuidance may select an adjacent question but is never evidence. Do not "
                 "create Fierce, Synthesis, or Action meaning."
             )
         elif reflection_mode == "tender" and not has_frame:
@@ -1555,7 +1597,10 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
                 "acceptance or qualification, tenderRevised only for a material user correction (with tenderDelta), "
                 "tenderNeedsClarification only for genuine misunderstanding (with one concrete responseFocus), or "
                 "tenderOptedOut for an explicit wish to stop negotiating the understanding. For accepted/revised "
-                "Tender, inspect the read-only groundedRealityCandidates and select one realityCandidate when a "
+                "Tender, inspect the read-only pendingRealityCandidate first, then groundedRealityCandidates. When "
+                "the pending candidate remains grounded, omit realityCandidate and Swift reuses it; return explicit "
+                "realityCandidate=null only when the person's response makes that earlier candidate no longer "
+                "meaningful. Otherwise select one realityCandidate when a "
                 "behavior, impact, responsibility, boundary, support condition, repair, protection, or change remains "
                 "meaningful. One concrete fact is enough; no causal pair and no already-proposed action is required. "
                 "The candidate carries its exact reference and one semantic meaning; Swift will enter Fierce "
@@ -1712,14 +1757,28 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             if reflection_mode == "exploratory":
                 exact_issue_repair = (
                     " REQUIRED EXPLORATION OUTCOME REPAIR: remain in the current Exploration transaction and "
-                    "return exactly one flat reflectionTurnOutcome. Re-evaluate the latest user's own words. When "
-                    "they sufficiently connect the lived difficulty with the current self-critical judgment, use "
-                    "explorationComplete, include one nonempty tenderDelta, and provide only the grounded side of "
-                    "memoryUpdate.selfCriticismLink; Swift attaches the exact canonical selfCriticalStatement. When "
+                    "return exactly one flat, self-contained reflectionTurnOutcome. Re-evaluate the user's cumulative "
+                    "grounded material relevant to this Exploration target, including committed user-authored event "
+                    "facts, the committed selfCriticalStatement, confirmed user-authored Reality Connection, and the "
+                    "latest user proposition. Exclude Assistant interpretation, Card scaffold content, Tracking "
+                    "inference, and rejected uncommitted meaning. When that cumulative material sufficiently connects "
+                    "the lived difficulty with the current self-critical judgment, use explorationComplete and include "
+                    "both one nonempty selfCriticismLink relationship meaning and one nonempty tenderDelta in that same "
+                    "outcome. Swift attaches the exact canonical selfCriticalStatement and compiles both canonical "
+                    "slots. An optional realityCandidate may be selected there for later Fierce. If its user-authored "
+                    "reality proposition first appears in the latest answer, preserve the exact proposition in the one "
+                    "matching episodeStructure evidence list and reference that stable post-merge item; otherwise use "
+                    "an exact supplied groundedRealityCandidates reference. Never emit a dangling or raw-transcript "
+                    "reference. The optional candidate "
+                    "does not change the current post-turn Tender phase. When "
                     "that relation is genuinely still absent, revised, rejected, or assistant-inferred, use "
-                    "explorationContinue with one concrete responseFocus and omit tenderDelta. Do not return a "
+                    "explorationContinue with one concrete responseFocus that directly asks what specific event or behavior "
+                    "the person is blaming or judging themselves for, or what in the grounded difficulty connects to the "
+                    "existing judgment; omit tenderDelta. Do not ask for Card association, emotion depth, another impact, "
+                    "future action, or an abstract thought. The missing semantic target and visible question target must be "
+                    "the same. Do not return a "
                     "Tender, Fierce, Synthesis, or Action outcome. Omit semanticOperation, "
-                    "reflectionProgressionDecision, and memoryUpdate.reflectionFrame."
+                    "reflectionProgressionDecision, memoryUpdate.selfCriticismLink, and memoryUpdate.reflectionFrame."
                 )
             elif reflection_mode == "fierce":
                 exact_issue_repair = (
@@ -2188,7 +2247,13 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "statement became connected to the grounded difficulty. Do not fill a missing relation. Sufficiency, not "
             "maximal specificity, is the stopping criterion. In visible wording, begin from the concrete episode and "
             "refer neutrally to the current self-judgment; keep the Card image, metaphor, and projective frame internal. "
-            "Ask for only the missing difficulty-to-judgment relation in ordinary situation language. "
+            "Ask for only the missing difficulty-to-judgment relation in ordinary situation language. The question must be "
+            "direct enough that the person knows the missing object: ask which concrete part they are blaming or judging "
+            "themselves for, or what in the already-grounded difficulty connects to that judgment. Prefer a natural form "
+            "equivalent to ‘你刚才说自己很自责，这份自责主要是在责怪自己哪一部分？’ or ‘你会因为这件事责怪自己，主要是觉得自己当时哪里做得不对？’, "
+            "adapted to the exact episode and judgment rather than copied as a template. If the cumulative user-authored "
+            "material already says the behavior/difficulty and explicitly makes it the object of self-blame or self-doubt, "
+            "Exploration is complete and this operation realizes the Tender handoff without another attribution question. "
             "Cumulative, gradual, situational, outcome-based, comparative, "
             "explicit-standard, and user-described loose relations are sufficient when they explain the connection in the "
             "person's own terms. Never convert a cumulative pattern into a demand for one moment, attempt, bug, step, or "
@@ -2199,8 +2264,9 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "Keep attempts separate from their effectiveness, accumulated blockage, and later judgment. Never word "
             "an isolated action as causing self-criticism unless the person explicitly made that link; ignore any "
             "responseFocus that does so and ask from the grounded overall result or pattern instead. "
-            "Do not reopen Card meaning, collect a new topic, seek complete causes, soften the judgment, troubleshoot, "
-            "or ask about action. If the person says there was no specific trigger and describes accumulated lack of "
+            "Do not ask ‘这种对比让你想到什么’, ‘你还想到了什么’, ‘这种感觉是怎么冒出来的’, or any similarly abstract proxy "
+            "for the missing relation. Do not reopen Card meaning, collect a new topic, seek complete causes, soften the judgment, troubleshoot, "
+            "or ask about emotion, impact, or action. If the person says there was no specific trigger and describes accumulated lack of "
             "progress instead, preserve that correction as the relationship and do not rephrase the onset question. If a "
             "dispensable link is unknown, do not rephrase it. referenceGuidance is silent "
             "question-selection support, never reply content or evidence. Honor corrections at their exact scope. "

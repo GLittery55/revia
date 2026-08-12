@@ -229,6 +229,192 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         )
     }
 
+    func testExplorationCorrectionUsesCumulativeEvidenceAndCommitsAtomicOutcome() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeyondComfort-current-exploration-correction-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let link = "说了伤人的话并让关系陷入冷战后，主要责怪自己造成了这些具体影响 -> 我感觉很自责"
+        let tender = "说出的内容和已经造成的关系影响需要认真面对；当前自责可以先停留在这次具体行为和影响上"
+        let repair = "希望结束冷战，通过沟通解决问题"
+        let core = ScriptedCurrentV5CoreTurnController(
+            plans: [
+                .init(
+                    semanticOperation: .continueExploratoryReflection,
+                    semanticEvidencePatch: .init(
+                        memoryUpdate: .init(
+                            episodeStructure: .init(controllableParts: [repair])
+                        )
+                    ),
+                    responseFocus: "",
+                    reflectionProgressionDecision: .init(
+                        meaning: .completeExploration,
+                        candidateRef: nil
+                    ),
+                    phaseOutcomeContractApplied: true
+                ),
+                .init(
+                    semanticOperation: .continueExploratoryReflection,
+                    semanticEvidencePatch: .init(),
+                    responseFocus: "",
+                    reflectionProgressionDecision: .init(
+                        meaning: .completeExploration,
+                        candidateRef: "episodeStructure.controllableParts.0",
+                        selfCriticismLink: link,
+                        candidateMeaning: .repair,
+                        reflectionDelta: tender
+                    ),
+                    phaseOutcomeContractApplied: true
+                ),
+            ],
+            replies: ["说出的内容和关系影响确实需要面对；这份自责可以先落在这次具体行为和影响上。"]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedCurrentV5ContextAnalyzer(),
+            dialogueGenerator: UnusedCurrentV5DialogueGenerator(),
+            turnController: RejectingLegacyTurnController(),
+            currentV5CoreTurnController: core,
+            sessionStore: SessionStore(directory: directory),
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolStage = .directReflection
+        model.session.stage = .attributionReflection
+        model.session.condition = .cardMediated
+        model.session.cardGuidanceShared = true
+        model.session.semanticMemory.reflectionPhase = .exploratory
+        model.session.semanticMemory.selfCriticismStatus = .present
+        model.session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        model.session.semanticMemory.episodeStructure = .init(
+            concreteFacts: ["争吵以后双方没有继续沟通，关系陷入冷战"],
+            behaviorEvidence: ["我说了特别伤人的话"]
+        )
+        model.session.semanticMemory.cardRealityConnection = .init(
+            imageRelation: "两个人可能继续收拾，也可能直接离开",
+            realityMapping: "双方之间还有问题需要解决，不能直接不讲话",
+            source: .userAuthored
+        )
+        model.session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "exploratoryReflection",
+            focus: "clarify_self_criticism_attribution_relation"
+        )
+
+        model.draft = "我不希望这样冷战下去，需要沟通解决问题，我不想失去朋友。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let planCount = await core.planCount()
+        let writeCount = await core.writeCount()
+        let recordedCorrection = await core.correctionForPlan(at: 1)
+        let recordedCorrectionRequest = await core.request(at: 1)
+        XCTAssertEqual(planCount, 2)
+        XCTAssertEqual(writeCount, 1)
+        let correction = try XCTUnwrap(recordedCorrection)
+        XCTAssertEqual(correction.projectionFailure, .reflectionProgressionInvalid)
+        XCTAssertEqual(correction.rejectedOperation, .continueExploratoryReflection)
+        let correctionRequest = try XCTUnwrap(recordedCorrectionRequest)
+        XCTAssertEqual(correctionRequest.semanticMemory.selfCriticalStatement, "我感觉很自责")
+        XCTAssertEqual(
+            correctionRequest.semanticMemory.episodeStructure?.behaviorEvidence,
+            ["我说了特别伤人的话"]
+        )
+        XCTAssertEqual(
+            correctionRequest.semanticMemory.episodeStructure?.controllableParts,
+            [repair]
+        )
+        XCTAssertEqual(model.session.semanticMemory.reflectionPhase, .tender)
+        XCTAssertEqual(model.session.semanticMemory.selfCriticismLink, link)
+        XCTAssertEqual(model.session.semanticMemory.reflectionFrame?.reflectionDelta, tender)
+        XCTAssertEqual(
+            model.session.semanticMemory.pendingRealityCandidate,
+            .init(reference: "episodeStructure.controllableParts.0", meaning: .repair)
+        )
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("刚才没有顺利接上")
+            }
+        )
+        XCTAssertFalse(
+            model.session.studyEvents.contains {
+                $0.action.hasPrefix("current_v5_core_final_rejection_")
+                    || $0.action == "current_v5_core_planner_or_gate_unavailable"
+                    || $0.action == "current_v5_core_gate_unavailable"
+            }
+        )
+    }
+
+    func testRepeatedInvalidExplorationOutcomeUsesCanonicalContinuationInsteadOfInterruption() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeyondComfort-current-exploration-continuity-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let invalid = CurrentV5PlannerOutput(
+            semanticOperation: .continueExploratoryReflection,
+            semanticEvidencePatch: .init(),
+            responseFocus: "",
+            reflectionProgressionDecision: .init(
+                meaning: .completeExploration,
+                candidateRef: nil
+            ),
+            phaseOutcomeContractApplied: true
+        )
+        let core = ScriptedCurrentV5CoreTurnController(
+            plans: [invalid, invalid],
+            replies: ["你刚才说自己很自责，最责怪自己的，是当时做了什么？"]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedCurrentV5ContextAnalyzer(),
+            dialogueGenerator: UnusedCurrentV5DialogueGenerator(),
+            turnController: RejectingLegacyTurnController(),
+            currentV5CoreTurnController: core,
+            sessionStore: SessionStore(directory: directory),
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolStage = .directReflection
+        model.session.stage = .attributionReflection
+        model.session.semanticMemory.reflectionPhase = .exploratory
+        model.session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        model.session.semanticMemory.episodeStructure = .init(
+            behaviorEvidence: ["我当时说了很重的话"]
+        )
+        model.session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "exploratoryReflection",
+            focus: "clarify_self_criticism_attribution_relation"
+        )
+
+        model.draft = "我需要为当时说的话道歉。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let planCount = await core.planCount()
+        let writeCount = await core.writeCount()
+        XCTAssertEqual(planCount, 2)
+        XCTAssertEqual(writeCount, 1)
+        XCTAssertEqual(model.session.semanticMemory.reflectionPhase, .exploratory)
+        XCTAssertNil(model.session.semanticMemory.selfCriticismLink)
+        XCTAssertEqual(
+            model.session.semanticMemory.nextPrompt?.focus,
+            "clarify_self_criticism_attribution_relation"
+        )
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action.hasPrefix("current_v5_core_continuity_fallback_")
+            }
+        )
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("刚才没有顺利接上")
+            }
+        )
+        XCTAssertFalse(
+            model.session.studyEvents.contains {
+                $0.action.hasPrefix("current_v5_core_final_rejection_")
+                    || $0.action == "current_v5_core_gate_unavailable"
+            }
+        )
+    }
+
     func testUniqueStateCanonicalizationAvoidsLegacyRecoveryAndExtraPlannerCall() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeyondComfort-current-core-repair-\(UUID().uuidString)")
@@ -3957,14 +4143,13 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
                 {
                   "reflectionTurnOutcome":{
                     "outcome":"explorationComplete",
-                    "tenderDelta":"目前能确定的是这段调试持续受阻，而不是对全部开发能力的结论"
-                  },
-                  "semanticEvidencePatch":{"memoryUpdate":{
                     "selfCriticismLink":{
                       "reality":"反复修改以后问题仍然增加，项目一直无法推进",
                       "selfJudgment":"能力不够"
-                    }
-                  }},
+                    },
+                    "tenderDelta":"目前能确定的是这段调试持续受阻，而不是对全部开发能力的结论"
+                  },
+                  "semanticEvidencePatch":{"memoryUpdate":{}},
                   "responseFocus":""
                 }
                 """.utf8
@@ -3999,7 +4184,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         )
     }
 
-    func testCurrentWireCompilerAcceptsTupleLinkAndIgnoresRedundantEndpoint() throws {
+    func testCurrentWireCompilerDropsTupleLinkFromParallelExplorationPatch() throws {
         let output = try decodeCurrentV5PlannerWireOutput(
             Data(
                 """
@@ -4016,10 +4201,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             canonicalSelfCriticalStatement: "我感觉自己开发能力很差"
         )
 
-        XCTAssertEqual(
-            output.semanticEvidencePatch.memoryUpdate.selfCriticismLink,
-            "长期没有推进以后逐渐开始怀疑自己 -> 我感觉自己开发能力很差"
-        )
+        XCTAssertNil(output.semanticEvidencePatch.memoryUpdate.selfCriticismLink)
     }
 
     func testAmbiguousStructuredLinkDoesNotBecomeATransportFailure() throws {
@@ -4649,7 +4831,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         XCTAssertEqual(authorized.responseFocus, speculativeFocus)
         XCTAssertEqual(
             authorized.projectedPlan.nextPrompt.focus,
-            "explore_from_user_authored_connection"
+            "clarify_self_criticism_attribution_relation"
         )
         XCTAssertNotEqual(authorized.projectedPlan.nextPrompt.focus, speculativeFocus)
     }
@@ -6593,11 +6775,10 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             {
               "reflectionTurnOutcome": {
                 "outcome": "explorationComplete",
+                "selfCriticismLink": "反复修改一直没有推进以后逐渐怀疑自己",
                 "tenderDelta": "反复修改却没有推进是当前真实的困难；这段经历说明现在仍然卡着，但还不足以概括全部能力"
               },
-              "semanticEvidencePatch": {"memoryUpdate": {
-                "selfCriticismLink": "反复修改一直没有推进以后逐渐怀疑自己 -> 自己能力不够"
-              }},
+              "semanticEvidencePatch": {"memoryUpdate": {}},
               "responseFocus": ""
             }
             """.data(using: .utf8)
@@ -6634,6 +6815,376 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         )
     }
 
+    func testMalformedOptionalRealityCandidateCannotBlockExplorationCompletion() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        session.semanticMemory.episodeStructure = .init(
+            behaviorEvidence: ["我说了伤人的话"]
+        )
+        session.messages = [ChatMessage(role: .user, content: "我主要是在责怪自己说了伤人的话。")]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "explorationComplete",
+                "selfCriticismLink": "责怪自己说了伤人的话",
+                "tenderDelta": "说出的内容需要认真面对；当前自责可以先落在这次具体行为上",
+                "realityCandidate": {
+                  "reference": "episodeStructure.controllableParts.0"
+                }
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "我感觉很自责"
+        )
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .tender)
+        XCTAssertEqual(
+            authorized.projectedPlan.memoryUpdate.selfCriticismLink,
+            "责怪自己说了伤人的话 -> 我感觉很自责"
+        )
+        XCTAssertNil(authorized.projectedPlan.memoryUpdate.pendingRealityCandidate)
+    }
+
+    func testUngroundedOptionalRealityCandidateIsDroppedWithoutRejectingTenderHandoff() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        session.semanticMemory.episodeStructure = .init(
+            behaviorEvidence: ["我说了伤人的话"]
+        )
+        session.messages = [ChatMessage(role: .user, content: "我主要是在责怪自己说了伤人的话。")]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "explorationComplete",
+                "selfCriticismLink": "责怪自己说了伤人的话",
+                "tenderDelta": "说出的内容需要认真面对；当前自责可以先落在这次具体行为上",
+                "realityCandidate": {
+                  "reference": "episodeStructure.controllableParts.99",
+                  "meaning": "repair"
+                }
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "我感觉很自责"
+        )
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .tender)
+        XCTAssertNil(authorized.projectedPlan.memoryUpdate.pendingRealityCandidate)
+    }
+
+    func testMissingInquiryFocusUsesCanonicalSwiftTarget() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {"outcome": "explorationContinue"},
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "我感觉很自责"
+        )
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(
+            authorized.responseFocus,
+            "clarify_self_criticism_attribution_relation"
+        )
+        XCTAssertEqual(
+            authorized.projectedPlan.nextPrompt.focus,
+            "clarify_self_criticism_attribution_relation"
+        )
+    }
+
+    func testContinuityFallbackNeverAdvancesCommittedReflectionPhase() throws {
+        let gate = CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        )
+        let tenderFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [.init(source: .episode, content: "我说了伤人的话")],
+            dimensions: [],
+            reflectionDelta: "说出的内容需要面对，但自责可以先停留在这次行为上",
+            fierceEvidence: nil
+        )
+
+        var tenderSession = ReflectionSession()
+        tenderSession.protocolVersion = ReflectionSession.currentProtocolVersion
+        tenderSession.protocolStage = .directReflection
+        tenderSession.semanticMemory.reflectionPhase = .tender
+        tenderSession.semanticMemory.reflectionFrame = tenderFrame
+        let tender = try gate.authorizeCurrentReflectionContinuation(
+            for: tenderSession,
+            allowedSemanticOperations: CurrentV5CapabilitySet.allowedOperations(
+                for: tenderSession
+            )
+        )
+        XCTAssertEqual(tender.projectedPlan.memoryUpdate.reflectionPhase, .tender)
+        XCTAssertEqual(
+            tender.projectedPlan.nextPrompt.focus,
+            "clarify_current_bounded_tender_understanding"
+        )
+
+        var fierceSession = tenderSession
+        fierceSession.semanticMemory.reflectionPhase = .fierce
+        fierceSession.semanticMemory.episodeStructure = .init(
+            behaviorEvidence: ["我说了伤人的话"]
+        )
+        fierceSession.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "fierceReflection",
+            focus: "clarify_current_grounded_reality_direction"
+        ).assigningReferenceID("episodeStructure.behaviorEvidence.0")
+        let fierce = try gate.authorizeCurrentReflectionContinuation(
+            for: fierceSession,
+            allowedSemanticOperations: CurrentV5CapabilitySet.allowedOperations(
+                for: fierceSession
+            )
+        )
+        XCTAssertEqual(fierce.projectedPlan.memoryUpdate.reflectionPhase, .fierce)
+        XCTAssertEqual(
+            fierce.projectedPlan.nextPrompt.referenceID,
+            "episodeStructure.behaviorEvidence.0"
+        )
+
+        var synthesisSession = tenderSession
+        synthesisSession.semanticMemory.reflectionPhase = .synthesis
+        synthesisSession.semanticMemory.reflectionFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .synthesizeUnderstanding,
+            evidenceBasis: tenderFrame.evidenceBasis,
+            dimensions: [],
+            reflectionDelta: "需要面对说出的内容，同时把评价限制在这次行为上",
+            fierceEvidence: nil
+        )
+        let synthesis = try gate.authorizeCurrentReflectionContinuation(
+            for: synthesisSession,
+            allowedSemanticOperations: CurrentV5CapabilitySet.allowedOperations(
+                for: synthesisSession
+            )
+        )
+        XCTAssertEqual(synthesis.projectedPlan.memoryUpdate.reflectionPhase, .synthesis)
+        XCTAssertEqual(
+            synthesis.projectedPlan.nextPrompt.focus,
+            "clarify_current_synthesis"
+        )
+    }
+
+    func testExplorationOutcomePreservesEarlyRepairCandidateUntilTenderAcceptance() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.stage = .attributionReflection
+        session.condition = .cardMediated
+        session.cardGuidanceShared = true
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticismStatus = .present
+        session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            behaviorEvidence: ["我说了特别伤人的话"]
+        )
+        session.semanticMemory.cardRealityConnection = .init(
+            imageRelation: "两个人一起按图纸完成事情",
+            realityMapping: "争吵以后双方没有继续沟通，关系陷入冷战",
+            source: .userAuthored
+        )
+        session.messages = [
+            ChatMessage(role: .user, content: "我说了特别伤人的话，我感觉很自责。"),
+            ChatMessage(
+                role: .user,
+                content: "我不希望这样冷战下去，需要沟通解决问题，我不想失去朋友。"
+            ),
+        ]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let explorationData = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "explorationComplete",
+                "selfCriticismLink": "自责主要指向自己说出伤人的话以及随后的关系影响",
+                "tenderDelta": "说出的内容和关系影响需要认真面对，但自责可以停留在这次具体行为和影响上",
+                "realityCandidate": {
+                  "reference": "episodeStructure.controllableParts.0",
+                  "meaning": "repair"
+                }
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {
+                "episodeStructure": {
+                  "controllableParts": ["希望结束冷战，通过沟通解决问题"]
+                },
+                "selfCriticismLink": "这个平行字段不再具有完成权限"
+              }},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+        let explorationPlan = try decodeCurrentV5PlannerWireOutput(
+            explorationData,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "我感觉很自责"
+        )
+        let exploration = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            explorationPlan,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(exploration.operation, .continueExploratoryReflection)
+        XCTAssertEqual(exploration.projectedPlan.memoryUpdate.reflectionPhase, .tender)
+        XCTAssertEqual(
+            exploration.projectedPlan.memoryUpdate.selfCriticismLink,
+            "自责主要指向自己说出伤人的话以及随后的关系影响 -> 我感觉很自责"
+        )
+        XCTAssertEqual(
+            exploration.projectedPlan.memoryUpdate.pendingRealityCandidate,
+            .init(
+                reference: "episodeStructure.controllableParts.0",
+                meaning: .repair
+            )
+        )
+
+        session.semanticMemory.apply(
+            exploration.projectedPlan.memoryUpdate,
+            committedNextPrompt: exploration.projectedPlan.nextPrompt
+        )
+        XCTAssertEqual(session.semanticMemory.reflectionPhase, .tender)
+        XCTAssertEqual(
+            session.semanticMemory.pendingRealityCandidate?.reference,
+            "episodeStructure.controllableParts.0"
+        )
+
+        let tenderData = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {"outcome": "tenderAccepted"},
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+        let tenderAllowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let tenderPlan = try decodeCurrentV5PlannerWireOutput(
+            tenderData,
+            allowedSemanticOperations: tenderAllowed,
+            canonicalSelfCriticalStatement: session.semanticMemory.selfCriticalStatement,
+            pendingRealityCandidate: session.semanticMemory.pendingRealityCandidate
+        )
+        let tender = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            tenderPlan,
+            for: session,
+            allowedSemanticOperations: tenderAllowed
+        )
+
+        XCTAssertEqual(tender.operation, .continueTenderGroundedFierceReflection)
+        XCTAssertEqual(tender.projectedPlan.memoryUpdate.reflectionPhase, .fierce)
+        XCTAssertEqual(
+            tender.projectedPlan.nextPrompt.referenceID,
+            "episodeStructure.controllableParts.0"
+        )
+        XCTAssertEqual(tender.projectedPlan.memoryUpdate.clearPendingRealityCandidate, true)
+    }
+
+    func testExplorationContinueDoesNotInventLinkFromRelationshipValueAlone() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            concreteFacts: ["我们吵架了"]
+        )
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {"outcome": "explorationContinue"},
+              "semanticEvidencePatch": {"memoryUpdate": {
+                "episodeStructure": {"controllableParts": ["我不想失去朋友"]},
+                "selfCriticismLink": "不能由这个字段制造关系"
+              }},
+              "responseFocus": "询问这次争吵中的哪一部分让自责落到自己身上"
+            }
+            """.data(using: .utf8)
+        )
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "我感觉很自责"
+        )
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .exploratory)
+        XCTAssertNil(authorized.projectedPlan.memoryUpdate.selfCriticismLink)
+        XCTAssertNil(authorized.projectedPlan.memoryUpdate.reflectionFrame)
+        XCTAssertEqual(
+            authorized.projectedPlan.nextPrompt.focus,
+            "clarify_self_criticism_attribution_relation"
+        )
+    }
+
     func testObjectWrappedTenderDeltaReachesSwiftCompilerInsteadOfTransportFailure() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
@@ -6652,13 +7203,12 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             {
               "reflectionTurnOutcome": {
                 "outcome": "explorationComplete",
+                "selfCriticismLink": "说了伤人的话并影响关系以后感到自责",
                 "tenderDelta": {
                   "reflectionDelta": "已经造成的伤害需要面对；这说明这次说话确实伤人，但不需要继续扩大成对整个人的惩罚"
                 }
               },
-              "semanticEvidencePatch": {"memoryUpdate": {
-                "selfCriticismLink": "说了伤人的话并影响关系以后感到自责 -> 我感觉很自责"
-              }},
+              "semanticEvidencePatch": {"memoryUpdate": {}},
               "responseFocus": ""
             }
             """.data(using: .utf8)
@@ -6697,14 +7247,13 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             {
               "reflectionTurnOutcome": {
                 "outcome": "explorationComplete",
+                "selfCriticismLink": "说了伤人的话并影响关系以后感到自责",
                 "tenderDelta": {
                   "text": "第一种理解",
                   "reflectionDelta": "冲突的第二种理解"
                 }
               },
-              "semanticEvidencePatch": {"memoryUpdate": {
-                "selfCriticismLink": "说了伤人的话并影响关系以后感到自责 -> 我感觉很自责"
-              }},
+              "semanticEvidencePatch": {"memoryUpdate": {}},
               "responseFocus": ""
             }
             """.data(using: .utf8)

@@ -132,6 +132,55 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             tuple(PLANNER_SEMANTIC_OPERATION_VALUES),
         )
 
+    def test_exploration_completion_semantics_have_one_outcome_owner(self) -> None:
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(
+                    {
+                        "reflectionTurnOutcome": {
+                            "outcome": "explorationComplete",
+                            "selfCriticismLink": {
+                                "groundedRelation": "说了伤人的话并在之后陷入沉默"
+                            },
+                            "tenderDelta": "伤人的表达和关系影响需要面对，但自责停留在这次行为和影响上",
+                            "realityCandidate": {
+                                "reference": "episodeStructure.controllableParts.0",
+                                "meaning": "repair",
+                            },
+                        },
+                        "semanticEvidencePatch": {
+                            "memoryUpdate": {
+                                "selfCriticismLink": "parallel duplicate without authority",
+                                "episodeStructure": {
+                                    "controllableParts": ["希望结束冷战，通过沟通解决问题"]
+                                },
+                            }
+                        },
+                        "responseFocus": "",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+
+        self.assertEqual(
+            canonical["reflectionTurnOutcome"]["selfCriticismLink"],
+            {"groundedRelation": "说了伤人的话并在之后陷入沉默"},
+        )
+        self.assertEqual(
+            canonical["reflectionTurnOutcome"]["realityCandidate"]["meaning"],
+            "repair",
+        )
+        self.assertEqual(
+            canonical["semanticEvidencePatch"]["memoryUpdate"]["episodeStructure"]
+            ["controllableParts"],
+            ["希望结束冷战，通过沟通解决问题"],
+        )
+        self.assertNotIn(
+            "selfCriticismLink",
+            canonical["semanticEvidencePatch"]["memoryUpdate"],
+        )
+
     def test_phase_outcome_semantic_errors_cross_backend_transport_for_swift_gate(self) -> None:
         for outcome in ({"kind": "futureOutcome"}, {}, "futureOutcome"):
             with self.subTest(outcome=outcome):
@@ -1219,7 +1268,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             / "BeyondComfortTests/Fixtures/current-v5-planner-output-v40.json"
         )
         validate_current_v5_planner_contract(fixture_path.read_text(encoding="utf-8"))
-        self.assertEqual(CURRENT_V5_CORE_PROMPT_VERSION, "turn-v5-core-server-v104")
+        self.assertEqual(CURRENT_V5_CORE_PROMPT_VERSION, "turn-v5-core-server-v106")
 
     def test_initial_synthesis_requires_explicit_non_replayed_delta(self) -> None:
         request = self.request()
@@ -1256,6 +1305,29 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("synthesisDelta", prompt)
         self.assertIn("without inventing content", prompt)
         self.assertIn("reflectionTurnOutcome", prompt)
+
+    def test_latest_reality_direction_gets_stable_episode_reference_before_fierce(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "exploratory"
+        request["allowedSemanticOperations"] = ["continueExploratoryReflection"]
+        request["semanticMemory"] = {
+            "selfCriticalStatement": "我感觉很自责",
+            "episodeStructure": {"behaviorEvidence": ["我说了伤人的话"]},
+        }
+        messages = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        )
+
+        self.assertIn("preserve that exact user proposition", messages.system)
+        self.assertIn("stable post-merge episodeStructure reference", messages.system)
+        self.assertIn("Never point realityCandidate at raw transcript", messages.system)
 
     def test_writer_receives_swift_directive_and_only_returns_reply(self) -> None:
         directive = {
@@ -1465,7 +1537,13 @@ class CurrentV5CorePromptTests(unittest.TestCase):
                 if reflection_mode == "exploratory":
                     self.assertIn("explorationComplete", prompt)
                     self.assertIn("explorationContinue", prompt)
+                    self.assertIn("cumulative grounded material", prompt)
+                    self.assertIn("self-contained reflectionTurnOutcome", prompt)
+                    self.assertIn("both one nonempty selfCriticismLink", prompt)
+                    self.assertIn("memoryUpdate.selfCriticismLink", prompt)
                     self.assertIn("Swift attaches the exact canonical selfCriticalStatement", prompt)
+                    self.assertIn("what specific event or behavior", prompt)
+                    self.assertIn("missing semantic target and visible question target", prompt)
                     self.assertIn("Do not return a Tender, Fierce, Synthesis, or Action outcome", prompt)
 
     def test_payload_correction_repairs_only_the_rejected_connection_operation(self) -> None:
@@ -3105,7 +3183,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "nextPrompt": {
                 "kind": "openQuestion",
                 "purpose": "exploratoryReflection",
-                "focus": "explore_from_user_authored_connection",
+                "focus": "clarify_self_criticism_attribution_relation",
             },
             "localAction": "shareCardGuidance",
             "memoryUpdate": {},
@@ -3157,8 +3235,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Use Swift's read-only reflectionMode", prompt)
         self.assertNotIn("nextPrompt", prompt)
         self.assertIn("continueExploratoryReflection", prompt)
-        self.assertIn("Exploration reports reflectionTurnOutcome", prompt)
-        self.assertIn("may colocate only the initial Tender delta", prompt)
+        self.assertIn("Exploration completion is one self-contained", prompt)
+        self.assertIn("colocates outcome, selfCriticismLink, the initial Tender delta", prompt)
+        self.assertIn("do not duplicate selfCriticismLink in semanticEvidencePatch", prompt)
         self.assertIn("Tender/Synthesis meaning uses reflectionFrame.reflectionDelta", prompt)
         self.assertIn("Swift never", prompt)
         self.assertIn("uses it as a reflectionDelta fallback", prompt)
@@ -3167,7 +3246,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("latest user answer, and committed evidence lineage", prompt)
         self.assertIn("reflectionTurnOutcome is the sole meaning owner", prompt)
         self.assertIn("EXPLORATORY ONLY", prompt)
-        self.assertIn("sufficiently connect the lived difficulty", prompt)
+        self.assertIn("sufficiently connects the lived difficulty", prompt)
+        self.assertIn("complete Exploration without asking them to restate it", prompt)
+        self.assertIn("Canonical missing target and visible question target must be identical", prompt)
         self.assertIn("invalidatedInterpretations", prompt)
         self.assertIn("Always preserve every new user-grounded episode fact", prompt)
         self.assertIn("Do not infer cause, motive, trait", prompt)
@@ -3187,6 +3268,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
                         "nextPrompt": {
                             "kind": "openQuestion",
                             "purpose": "exploratoryReflection",
+                            "focus": "clarify_self_criticism_attribution_relation",
                         },
                         "localAction": "none",
                         "memoryUpdate": {},
@@ -3202,6 +3284,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             writer_prompt,
         )
         self.assertIn("ordinary situation language", writer_prompt)
+        self.assertIn("which concrete part they are blaming or judging themselves for", writer_prompt)
+        self.assertIn("Exploration is complete", writer_prompt)
 
     def test_self_criticism_link_transport_preserves_meaning_without_backend_compilation(self) -> None:
         request = self.request()
@@ -3879,7 +3963,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("exact self-critical statement", prompt)
         self.assertIn("Do not reopen Card meaning", prompt)
         self.assertIn("seek complete causes", prompt)
-        self.assertIn("troubleshoot, or ask about action", prompt)
+        self.assertIn("troubleshoot, or ask about emotion, impact, or action", prompt)
         self.assertIn("operation contract outranks it", prompt)
         self.assertIn("do not rephrase it", prompt)
         self.assertIn("Honor corrections at their exact scope", prompt)

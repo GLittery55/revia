@@ -307,6 +307,9 @@ class CurrentV5ReflectionTurnOutcome(_CurrentV5ContractModel):
     # model response such as {"tenderDelta":{"reflectionDelta":"..."}} from becoming a 502
     # before the semantic compiler can normalize it or request one correction.
     outcome: Optional[Any] = None
+    # Exploration-completion relationship meaning. Swift attaches the canonical persisted
+    # selfCriticalStatement and compiles the canonical link representation.
+    selfCriticismLink: Optional[Any] = None
     tenderDelta: Optional[Any] = None
     synthesisDelta: Optional[Any] = None
     fierceDelta: Optional[Any] = None
@@ -823,6 +826,14 @@ def _canonicalize_current_v5_reflection_outcome_syntax(
 
     projected = dict(decoded)
     projected["reflectionTurnOutcome"] = normalize(projected["reflectionTurnOutcome"])
+    canonical_outcome = projected["reflectionTurnOutcome"]
+    if isinstance(canonical_outcome, dict) and "selfCriticismLink" in canonical_outcome:
+        patch = projected.get("semanticEvidencePatch")
+        memory = patch.get("memoryUpdate") if isinstance(patch, dict) else None
+        if isinstance(memory, dict):
+            # Exploration completion has one canonical relationship owner. Removing the parallel
+            # alias is mechanical ownership projection; the backend does not interpret its text.
+            memory.pop("selfCriticismLink", None)
     # The phase-local outcome is the canonical meaning owner. A concurrently returned legacy
     # progression object is duplicate transport residue and cannot compete with it.
     projected.pop("reflectionProgressionDecision", None)
