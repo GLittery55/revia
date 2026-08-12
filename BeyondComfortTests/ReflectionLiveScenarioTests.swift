@@ -88,7 +88,8 @@ final class ReflectionLiveScenarioTests: XCTestCase {
                     protocolCorrection: nil,
                     plannerPlan: plan,
                     writerResponse: nil,
-                    error: nil
+                    error: nil,
+                    eventDiagnostic: nil
                 ),
                 .init(
                     sequence: 2,
@@ -101,11 +102,18 @@ final class ReflectionLiveScenarioTests: XCTestCase {
                         realizedIntent: .exploreContext,
                         reply: "任意自然语言回复？"
                     ),
-                    error: nil
+                    error: nil,
+                    eventDiagnostic: nil
                 ),
             ],
             nextPrompt: prompt,
             pendingConfirmation: nil,
+            latestAnswerMessageID: nil,
+            answerToPromptID: nil,
+            executionAudit: .init(
+                before: .init(semanticMapper: 0, projector: 0, transactionCommit: 0),
+                after: .init(semanticMapper: 0, projector: 0, transactionCommit: 0)
+            ),
             studyEvents: [
                 .init(
                     stage: ReflectionState.eventDisclosure.rawValue,
@@ -117,6 +125,7 @@ final class ReflectionLiveScenarioTests: XCTestCase {
         )
         let run = LiveScenarioRunReport(
             caseID: "report_contract",
+            variant: "unit",
             title: "报告合同",
             condition: ExperimentalCondition.directLLM.rawValue,
             completed: true,
@@ -297,6 +306,170 @@ final class ReflectionLiveScenarioTests: XCTestCase {
         XCTAssertEqual(reply, scenario.candidDetails[0])
     }
 
+    /// Opt-in Planner-only coverage for the four post-card decision shapes. The default suite
+    /// reports `skipped`; enabled runs print and attach an explicit passed/failed matrix.
+    func testLivePostCardReflectionDecisionMatrix() async throws {
+#if LIVE_REFLECTION_SCENARIOS
+        let access: StudyAccess
+        do {
+            access = try await authenticateAssignedScenarioRunner()
+        } catch {
+            print("LIVE_PLANNER_MATRIX status=failed reason=authentication")
+            XCTFail("Live Planner matrix authentication failed: \(error.localizedDescription)")
+            return
+        }
+        Self.printStudyAssignment(access, label: "reflection-planner-matrix")
+
+        struct MatrixCase {
+            let id: String
+            let latestAnswer: String
+            let episode: TurnEpisodeStructure
+            let selfCriticismStatus: TurnSelfCriticismStatus
+            let expectedMode: TurnReflectionMode
+            let allowedActions: Set<TurnReflectionAction>
+        }
+        let tenderActions: Set<TurnReflectionAction> = [
+            .acknowledgeExperience,
+            .distinguishFactFromPrediction,
+            .softenGlobalSelfJudgment,
+            .connectCommonHumanity,
+            .synthesizeUnderstanding,
+        ]
+        let cases = [
+            MatrixCase(
+                id: "uncertain-result",
+                latestAnswer: "申请结果还没有出来，我一直担心会被拒绝。",
+                episode: .init(
+                    concreteFacts: ["已经提交了申请，结果尚未公布"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["按要求提交了材料"],
+                    eventProcessStatus: .present,
+                    eventProcess: ["提交材料后进入外部结果流程"],
+                    possibleContributors: ["结果仍由外部流程决定"],
+                    impactStatus: .uncertain,
+                    keyUncertainty: "结果何时公布以及最终结果如何"
+                ),
+                selfCriticismStatus: .absent,
+                expectedMode: .tender,
+                allowedActions: tenderActions
+            ),
+            MatrixCase(
+                id: "confirmed-impact",
+                latestAnswer: "我答应的事情没有做到，家人因此很生气。",
+                episode: .init(
+                    concreteFacts: ["答应接家人但最后没有去"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["临时改变安排且没有提前告知"],
+                    eventProcessStatus: .present,
+                    eventProcess: ["原来的安排因临时出现另一项安排而改变"],
+                    possibleContributors: ["临时出现了另一项安排"],
+                    impactStatus: .present,
+                    impacts: ["家人很生气，原有安排被打乱"]
+                ),
+                selfCriticismStatus: .present,
+                expectedMode: .fierce,
+                allowedActions: [
+                    .acknowledgeBehaviorImpact,
+                    .clarifyBoundaryOrNeed,
+                    .identifyRepairDirection,
+                    .identifyProtectionDirection,
+                    .identifyChangeDirection,
+                    .synthesizeUnderstanding,
+                ]
+            ),
+            MatrixCase(
+                id: "rejected-global-premise",
+                latestAnswer: "我没有觉得自己不行，只是这次结果不理想。",
+                episode: .init(
+                    concreteFacts: ["一次结果没有达到预期"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["完成了当时能完成的步骤"],
+                    eventProcessStatus: .present,
+                    eventProcess: ["完成步骤后得到一个未达预期的结果"],
+                    impactStatus: .present,
+                    impacts: ["需要重新评估下一步"]
+                ),
+                selfCriticismStatus: .absent,
+                expectedMode: .tender,
+                allowedActions: tenderActions
+            ),
+            MatrixCase(
+                id: "future-worry",
+                latestAnswer: "我现在只是在担心以后会不会也出现同样的结果。",
+                episode: .init(
+                    concreteFacts: ["过去一次结果不理想"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["已经完成并提交了当前步骤"],
+                    eventProcessStatus: .present,
+                    eventProcess: ["提交当前步骤后得到一次不理想结果"],
+                    impactStatus: .uncertain,
+                    keyUncertainty: "未来是否会重复发生"
+                ),
+                selfCriticismStatus: .absent,
+                expectedMode: .tender,
+                allowedActions: tenderActions
+            ),
+        ]
+
+        let remote = RemoteReflectionTurnController()
+        let protocolController = ReflectionProtocolController()
+        var lines = ["LIVE_PLANNER_MATRIX status=started cases=\(cases.count)"]
+        for item in cases {
+            var session = ReflectionSession()
+            session.protocolVersion = ReflectionSession.currentProtocolVersion
+            session.protocolStage = .directReflection
+            session.condition = .cardMediated
+            session.cardGuidanceShared = true
+            session.semanticMemory = .init(
+                selfCriticismStatus: item.selfCriticismStatus,
+                episodeStructure: item.episode,
+                cardRealityConnection: .init(
+                    imageRelation: "画面中的人物正在处理一个尚未完成的动作",
+                    realityMapping: "这与当前事件中尚未完成的处理有关",
+                    source: .userAuthored
+                )
+            )
+            let request = LLMTurnControllerRequest(
+                trigger: .userMessage,
+                protocolVersion: session.protocolVersion,
+                protocolStage: session.protocolStage,
+                condition: session.condition,
+                permissions: protocolController.permissions(for: session),
+                recentMessages: [.init(role: .user, content: item.latestAnswer)],
+                semanticMemory: session.semanticMemory,
+                trackingCandidates: [],
+                cardMappingConfirmed: true,
+                card: nil,
+                protocolCorrection: nil
+            )
+            do {
+                let plan = try await remote.plan(to: request)
+                let validated = try protocolController.validate(plan, for: session)
+                let frame = try XCTUnwrap(validated.memoryUpdate.reflectionFrame)
+                let passed = frame.mode == item.expectedMode && item.allowedActions.contains(frame.action)
+                lines.append(
+                    "LIVE_PLANNER_MATRIX case=\(item.id) status=\(passed ? "passed" : "failed") mode=\(frame.mode.rawValue) action=\(frame.action.rawValue)"
+                )
+                XCTAssertTrue(
+                    passed,
+                    "\(item.id): expected \(item.expectedMode.rawValue), got \(frame.mode.rawValue)/\(frame.action.rawValue)"
+                )
+            } catch {
+                lines.append(
+                    "LIVE_PLANNER_MATRIX case=\(item.id) status=failed error=\(error.localizedDescription)"
+                )
+                XCTFail("\(item.id): \(error.localizedDescription)")
+            }
+        }
+        lines.append("LIVE_PLANNER_MATRIX status=completed")
+        print(lines.joined(separator: "\n"))
+        add(XCTAttachment(string: lines.joined(separator: "\n")))
+#else
+        print("LIVE_PLANNER_MATRIX status=skipped reason=LIVE_REFLECTION_SCENARIOS_not_enabled")
+        throw XCTSkip("Live Planner matrix is opt-in; set LIVE_REFLECTION_SCENARIOS=1")
+#endif
+    }
+
     func testLivePairedScenarioMatrix() async throws {
 #if LIVE_REFLECTION_SCENARIOS
 #if REFLECTION_SCENARIO_ASSIGNED_ONLY
@@ -406,6 +579,59 @@ final class ReflectionLiveScenarioTests: XCTestCase {
 #endif
     }
 
+    /// Narrow live diagnostic for the Event Disclosure boundary reported by the smoke runner.
+    /// This test never changes the production decision: it records the raw Planner patch and
+    /// independently replays the side-effect-free semantic validation/projector functions.
+    func testLiveTaskAvoidanceTurn3Diagnostic() async throws {
+#if LIVE_REFLECTION_SCENARIOS
+        let access: StudyAccess
+        do {
+            access = try await authenticateAssignedScenarioRunner()
+        } catch {
+            XCTFail("Turn 3 diagnostic authentication failed: \(error.localizedDescription)")
+            return
+        }
+        guard let scenario = Self.allScenarios.first(where: {
+            $0.id == "task_avoidance_deadline"
+        }) else {
+            XCTFail("Missing task_avoidance_deadline scenario")
+            return
+        }
+
+        let fixed = await runScenario(
+            scenario,
+            expectedAccess: access,
+            maximumUserTurns: 3,
+            participantMode: .scripted,
+            reportVariant: "fixed-turn-3"
+        )
+        let adaptive = await runScenario(
+            scenario,
+            expectedAccess: access,
+            maximumUserTurns: 5,
+            participantMode: .eventPurposeAdaptive,
+            reportVariant: "event-purpose-adaptive"
+        )
+        let report = LiveScenarioMatrixReport(
+            generatedAt: ISO8601DateFormatter().string(from: Date()),
+            scenarioSet: "task-turn-3-diagnostic",
+            usesProductionRemotePlannerAndWriter: true,
+            cases: [
+                .init(
+                    id: scenario.id,
+                    title: scenario.title,
+                    initialUserInput: scenario.initialUserInput
+                ),
+            ],
+            runs: [fixed, adaptive],
+            pairedComparisons: []
+        )
+        try attach(report)
+#else
+        throw XCTSkip("Live Turn 3 diagnostic is opt-in; set LIVE_REFLECTION_SCENARIOS=1")
+#endif
+    }
+
 #if LIVE_REFLECTION_SCENARIOS
     private func authenticatePairedScenarioRunner(
         expectedCondition: ExperimentalCondition
@@ -509,14 +735,18 @@ final class ReflectionLiveScenarioTests: XCTestCase {
     private func runScenario(
         _ scenario: LiveReflectionScenario,
         expectedAccess: StudyAccess,
-        maximumUserTurns: Int
+        maximumUserTurns: Int,
+        participantMode: LiveParticipantMode = .scripted,
+        reportVariant: String = "standard"
     ) async -> LiveScenarioRunReport {
         let condition = expectedAccess.condition ?? .cardMediated
         let recorder = RecordingReflectionTurnController(
             base: RemoteReflectionTurnController()
         )
+        let executionAudit = ProtocolExecutionAuditRecorder()
         let model = ReflectionViewModel(
             turnController: recorder,
+            protocolController: ReflectionProtocolController(executionAudit: executionAudit),
             preparesContextDataAutomatically: false
         )
         await model.configureStudy()
@@ -530,7 +760,8 @@ final class ReflectionLiveScenarioTests: XCTestCase {
                 condition: condition,
                 model: model,
                 turns: [],
-                stopReason: "server_study_assignment_changed"
+                stopReason: "server_study_assignment_changed",
+                reportVariant: reportVariant
             )
         }
 
@@ -538,7 +769,10 @@ final class ReflectionLiveScenarioTests: XCTestCase {
             profile: scenario.trackingProfile
         )
 
-        var participant = SemanticScenarioParticipant(scenario: scenario)
+        var participant = SemanticScenarioParticipant(
+            scenario: scenario,
+            mode: participantMode
+        )
         var turns: [LiveScenarioTurnReport] = []
         var messageCursor = model.session.messages.count
         var eventCursor = model.session.studyEvents.count
@@ -555,6 +789,9 @@ final class ReflectionLiveScenarioTests: XCTestCase {
                 messageCursor: &messageCursor,
                 eventCursor: &eventCursor,
                 traceCursor: &traceCursor,
+                answeredPromptReferenceID: nil,
+                executionAuditBefore: LiveExecutionAuditSnapshot(executionAudit),
+                executionAudit: executionAudit,
                 timedOut: !openingSettled
             )
         )
@@ -565,7 +802,8 @@ final class ReflectionLiveScenarioTests: XCTestCase {
                 condition: condition,
                 model: model,
                 turns: turns,
-                stopReason: "opening_turn_timeout"
+                stopReason: "opening_turn_timeout",
+                reportVariant: reportVariant
             )
         }
 
@@ -575,6 +813,8 @@ final class ReflectionLiveScenarioTests: XCTestCase {
               model.session.protocolStage != .complete,
               let input = nextInput {
             userTurn += 1
+            let answeredPromptReferenceID = model.session.semanticMemory.nextPrompt?.referenceID
+            let executionAuditBefore = LiveExecutionAuditSnapshot(executionAudit)
             model.draft = input
             model.send()
             var settled = await settle(model)
@@ -597,6 +837,9 @@ final class ReflectionLiveScenarioTests: XCTestCase {
                     messageCursor: &messageCursor,
                     eventCursor: &eventCursor,
                     traceCursor: &traceCursor,
+                    answeredPromptReferenceID: answeredPromptReferenceID,
+                    executionAuditBefore: executionAuditBefore,
+                    executionAudit: executionAudit,
                     timedOut: !settled
                 )
             )
@@ -625,7 +868,8 @@ final class ReflectionLiveScenarioTests: XCTestCase {
             condition: condition,
             model: model,
             turns: turns,
-            stopReason: stopReason
+            stopReason: stopReason,
+            reportVariant: reportVariant
         )
     }
 
@@ -652,6 +896,9 @@ final class ReflectionLiveScenarioTests: XCTestCase {
         messageCursor: inout Int,
         eventCursor: inout Int,
         traceCursor: inout Int,
+        answeredPromptReferenceID: String?,
+        executionAuditBefore: LiveExecutionAuditSnapshot,
+        executionAudit: ProtocolExecutionAuditRecorder,
         timedOut: Bool
     ) async -> LiveScenarioTurnReport {
         let newMessages = Array(model.session.messages.dropFirst(messageCursor))
@@ -664,6 +911,9 @@ final class ReflectionLiveScenarioTests: XCTestCase {
         let errors = traces.compactMap(\.error)
             + newEvents.map(\.action).filter(Self.isRetryOrErrorEvent)
         let prompt = model.session.semanticMemory.nextPrompt
+        let latestAnswerMessageID = userInput == nil
+            ? nil
+            : model.session.messages.last(where: { $0.role == .user })?.id.uuidString
 
         return LiveScenarioTurnReport(
             index: index,
@@ -678,6 +928,12 @@ final class ReflectionLiveScenarioTests: XCTestCase {
             pendingConfirmation: prompt?.kind == .confirmationRequest
                 ? prompt?.target?.rawValue
                 : nil,
+            latestAnswerMessageID: latestAnswerMessageID,
+            answerToPromptID: answeredPromptReferenceID,
+            executionAudit: LiveExecutionAuditDelta(
+                before: executionAuditBefore,
+                after: LiveExecutionAuditSnapshot(executionAudit)
+            ),
             studyEvents: newEvents.map {
                 LiveStudyEventSnapshot(
                     stage: $0.stage.rawValue,
@@ -694,11 +950,13 @@ final class ReflectionLiveScenarioTests: XCTestCase {
         condition: ExperimentalCondition,
         model: ReflectionViewModel,
         turns: [LiveScenarioTurnReport],
-        stopReason: String
+        stopReason: String,
+        reportVariant: String = "standard"
     ) -> LiveScenarioRunReport {
         let events = model.session.studyEvents.map(\.action)
         return LiveScenarioRunReport(
             caseID: scenario.id,
+            variant: reportVariant,
             title: scenario.title,
             condition: condition.rawValue,
             completed: model.session.protocolStage == .complete,
@@ -1128,8 +1386,14 @@ private extension ReflectionLiveScenarioTests {
 
 // MARK: - Semantic participant
 
+private enum LiveParticipantMode: String, Codable, Sendable {
+    case scripted
+    case eventPurposeAdaptive
+}
+
 private struct SemanticScenarioParticipant {
     let scenario: LiveReflectionScenario
+    let mode: LiveParticipantMode
     private var disclosureIndex = 0
     private var candidIndex = 0
     private var usedCardDifficulty = false
@@ -1138,8 +1402,12 @@ private struct SemanticScenarioParticipant {
     private var usedNarrativeCorrection = false
     private var usedPracticeRevision = false
 
-    init(scenario: LiveReflectionScenario) {
+    init(
+        scenario: LiveReflectionScenario,
+        mode: LiveParticipantMode = .scripted
+    ) {
         self.scenario = scenario
+        self.mode = mode
     }
 
     mutating func nextInput(
@@ -1227,6 +1495,9 @@ private struct SemanticScenarioParticipant {
     ) -> String {
         switch session.protocolStage {
         case .contextualDisclosure:
+            if mode == .eventPurposeAdaptive {
+                return adaptiveEventDisclosure(prompt)
+            }
             if disclosureIndex < scenario.disclosureDetails.count {
                 defer { disclosureIndex += 1 }
                 return scenario.disclosureDetails[disclosureIndex]
@@ -1273,6 +1544,28 @@ private struct SemanticScenarioParticipant {
             return response(to: .practice, session: session)
         case .complete, .safetySupport:
             return "我明白了。"
+        }
+    }
+
+    private mutating func adaptiveEventDisclosure(_ prompt: TurnNextPrompt?) -> String {
+        disclosureIndex += 1
+        if disclosureIndex == 1 {
+            // Human-adapted answer to the live Writer's recurring "how did organizing start?"
+            // question: provide the development relation and the concrete omission together.
+            return "我打开正文看几行就觉得头大，然后转去整理文件；我害怕写得很差最后被拒，所以迟迟不愿意写第一段。"
+        }
+        switch prompt?.disclosureTarget {
+        case .focalEvent:
+            return "具体的事情是两天没有写论文，而是一直整理当前并不重要的文件。"
+        case .eventProcess:
+            return "我打开正文看几行就觉得头大，然后转去整理文件；我害怕写得很差最后被拒，所以迟迟不愿意写第一段。"
+        case .behavior:
+            return "我实际做的是转去整理不重要的文件，并且迟迟没有开始写第一段。"
+        case .contextRelationship, .none:
+            if disclosureIndex == 1 {
+                return "我打开正文看几行就觉得头大，然后转去整理文件，短时间会轻松一点。"
+            }
+            return "我害怕写得很差最后被拒，所以迟迟不愿意写第一段。"
         }
     }
 
@@ -1360,6 +1653,154 @@ private struct LiveModelCallTrace: Codable, Sendable {
     let plannerPlan: LLMTurnResponsePlan?
     let writerResponse: LLMTurnWriterResponse?
     let error: String?
+    let eventDiagnostic: LiveEventPlannerDiagnostic?
+}
+
+private struct LiveEventStateSnapshot: Codable, Sendable {
+    let concreteFacts: [String]
+    let eventProcessStatus: String
+    let eventProcess: [String]
+    let behaviorEvidenceStatus: String
+    let behaviorEvidence: [String]
+    let impactStatus: String
+    let impacts: [String]
+    let hasConcreteFocalEvent: Bool
+    let hasEventProcess: Bool
+    let hasUserBehaviorOrOmission: Bool
+    let isEpisodeStructurallyComplete: Bool
+
+    init(_ state: EffectiveEventDisclosureState) {
+        let episode = state.episode
+        concreteFacts = episode?.concreteFacts ?? []
+        eventProcessStatus = episode?.eventProcessStatus.rawValue ?? "missing"
+        eventProcess = episode?.eventProcess ?? []
+        behaviorEvidenceStatus = episode?.behaviorEvidenceStatus.rawValue ?? "missing"
+        behaviorEvidence = episode?.behaviorEvidence ?? []
+        impactStatus = episode?.impactStatus.rawValue ?? "missing"
+        impacts = episode?.impacts ?? []
+        hasConcreteFocalEvent = state.hasConcreteFocalEvent
+        hasEventProcess = state.hasEventProcess
+        hasUserBehaviorOrOmission = state.hasUserBehaviorOrOmission
+        isEpisodeStructurallyComplete = isEventDisclosureCoreComplete(state)
+    }
+}
+
+private struct LiveEventPatchSnapshot: Codable, Sendable {
+    let providedFields: [String]
+    let focalEvent: [String]?
+    let eventProcess: [String]?
+    let userBehaviorOrOmission: [String]?
+    let immediateOutcome: [String]?
+
+    init(_ update: TurnSemanticMemoryUpdate) {
+        let episode = update.episodeStructure
+        providedFields = episode?.explicitlyProvidedFieldNames ?? []
+        focalEvent = episode?.explicitlyProvidedFieldNames.contains("concreteFacts") == true
+            ? episode?.concreteFacts : nil
+        eventProcess = episode?.explicitlyProvidedFieldNames.contains("eventProcess") == true
+            ? episode?.eventProcess : nil
+        userBehaviorOrOmission = episode?.explicitlyProvidedFieldNames.contains("behaviorEvidence") == true
+            ? episode?.behaviorEvidence : nil
+        immediateOutcome = episode?.explicitlyProvidedFieldNames.contains("impacts") == true
+            ? episode?.impacts : nil
+    }
+}
+
+private struct LiveEventPlannerDiagnostic: Codable, Sendable {
+    let rawSemanticOperation: String?
+    let responseFocus: String
+    let patch: LiveEventPatchSnapshot
+    let persistedEvent: LiveEventStateSnapshot
+    let candidateEvent: LiveEventStateSnapshot
+    let persistedReceivedDisclosurePurposes: [String]
+    let allowedSemanticOperations: [String]
+    var validateSemanticPayloadResult: String
+    var capabilityValidationResult: String
+    var projectorReplayResult: String
+    var executableValidationResult: String
+
+    init(request: LLMTurnControllerRequest, plan: LLMTurnResponsePlan) {
+        rawSemanticOperation = plan.semanticOperation?.rawValue
+        responseFocus = plan.replyGuidance
+        patch = LiveEventPatchSnapshot(plan.memoryUpdate)
+        let persisted = EffectiveEventDisclosureState(memory: request.semanticMemory)
+        let candidate = EffectiveEventDisclosureState(
+            memory: request.semanticMemory,
+            update: plan.memoryUpdate
+        )
+        persistedEvent = LiveEventStateSnapshot(persisted)
+        candidateEvent = LiveEventStateSnapshot(candidate)
+        persistedReceivedDisclosurePurposes = request.semanticMemory
+            .receivedDisclosureQuestionPurposes.map(\.rawValue)
+        allowedSemanticOperations = request.permissions.allowedSemanticOperations.map(\.rawValue)
+
+        guard let operation = plan.semanticOperation else {
+            validateSemanticPayloadResult = "failure:missing_semantic_operation"
+            capabilityValidationResult = "failure:missing_semantic_operation"
+            projectorReplayResult = "not_called:missing_semantic_operation"
+            executableValidationResult = "not_called:missing_semantic_operation"
+            return
+        }
+
+        capabilityValidationResult = request.permissions.allowedSemanticOperations.contains(operation)
+            ? "success" : "failure:operation_not_allowed"
+        var shadow = ReflectionSession()
+        shadow.protocolVersion = request.protocolVersion
+        shadow.protocolStage = request.protocolStage
+        shadow.condition = request.condition
+        shadow.semanticMemory = request.semanticMemory
+        let controller = ReflectionProtocolController()
+        do {
+            let update = try controller.validateSemanticPayload(
+                for: operation,
+                plan: plan,
+                session: shadow
+            )
+            validateSemanticPayloadResult = "success"
+            guard request.permissions.allowedSemanticOperations.contains(operation) else {
+                projectorReplayResult = "not_called:operation_not_allowed"
+                executableValidationResult = "not_called:operation_not_allowed"
+                return
+            }
+            let decision = PlannerSemanticDecision(
+                operation: operation,
+                memoryUpdate: update,
+                responseFocus: plan.replyGuidance,
+                clarificationFocus: plan.replyGuidance
+            )
+            let projected = try controller.projectExecutablePlan(
+                decision: decision,
+                session: shadow,
+                effectiveEventState: EffectiveEventDisclosureState(
+                    memory: request.semanticMemory,
+                    update: update
+                ),
+                effectiveCardState: controller.effectiveCardState(
+                    for: shadow,
+                    applying: update
+                )
+            )
+            projectorReplayResult = "success"
+            do {
+                let executable = controller.executablePlanAdapter(from: projected)
+                _ = try controller.validate(executable, for: shadow)
+                executableValidationResult = "success"
+            } catch {
+                executableValidationResult = "failure:\(String(reflecting: error))"
+            }
+        } catch {
+            let rendered = String(reflecting: error)
+            if rendered.contains("semanticOperationPayloadMismatch") {
+                validateSemanticPayloadResult = "failure:\(rendered)"
+                projectorReplayResult = "not_called:payload_validation_failed"
+                executableValidationResult = "not_called:payload_validation_failed"
+            } else {
+                validateSemanticPayloadResult = "success"
+                projectorReplayResult = "failure:\(rendered)"
+                executableValidationResult = "not_called:projector_failed"
+            }
+        }
+    }
 }
 
 private actor RecordingReflectionTurnController: ReflectionTurnControlling {
@@ -1382,7 +1823,10 @@ private actor RecordingReflectionTurnController: ReflectionTurnControlling {
                     protocolCorrection: request.protocolCorrection,
                     plannerPlan: plan,
                     writerResponse: nil,
-                    error: nil
+                    error: nil,
+                    eventDiagnostic: request.protocolStage == .contextualDisclosure
+                        ? LiveEventPlannerDiagnostic(request: request, plan: plan)
+                        : nil
                 )
             )
             return plan
@@ -1396,7 +1840,8 @@ private actor RecordingReflectionTurnController: ReflectionTurnControlling {
                     protocolCorrection: request.protocolCorrection,
                     plannerPlan: nil,
                     writerResponse: nil,
-                    error: String(reflecting: error)
+                    error: String(reflecting: error),
+                    eventDiagnostic: nil
                 )
             )
             throw error
@@ -1421,7 +1866,8 @@ private actor RecordingReflectionTurnController: ReflectionTurnControlling {
                     protocolCorrection: request.protocolCorrection,
                     plannerPlan: validatedPlan,
                     writerResponse: response,
-                    error: nil
+                    error: nil,
+                    eventDiagnostic: nil
                 )
             )
             return response
@@ -1435,7 +1881,8 @@ private actor RecordingReflectionTurnController: ReflectionTurnControlling {
                     protocolCorrection: request.protocolCorrection,
                     plannerPlan: validatedPlan,
                     writerResponse: nil,
-                    error: String(reflecting: error)
+                    error: String(reflecting: error),
+                    eventDiagnostic: nil
                 )
             )
             throw error
@@ -1483,6 +1930,36 @@ private struct LiveStudyEventSnapshot: Codable {
     let action: String
 }
 
+private struct LiveExecutionAuditSnapshot: Codable {
+    let semanticMapper: Int
+    let projector: Int
+    let transactionCommit: Int
+
+    init(_ recorder: ProtocolExecutionAuditRecorder) {
+        semanticMapper = recorder.count(for: .semanticMapper)
+        projector = recorder.count(for: .projector)
+        transactionCommit = recorder.count(for: .transactionCommit)
+    }
+
+    init(semanticMapper: Int, projector: Int, transactionCommit: Int) {
+        self.semanticMapper = semanticMapper
+        self.projector = projector
+        self.transactionCommit = transactionCommit
+    }
+}
+
+private struct LiveExecutionAuditDelta: Codable {
+    let semanticMapper: Int
+    let projector: Int
+    let transactionCommit: Int
+
+    init(before: LiveExecutionAuditSnapshot, after: LiveExecutionAuditSnapshot) {
+        semanticMapper = after.semanticMapper - before.semanticMapper
+        projector = after.projector - before.projector
+        transactionCommit = after.transactionCommit - before.transactionCommit
+    }
+}
+
 private struct LiveScenarioTurnReport: Codable {
     let index: Int
     let userInput: String?
@@ -1492,6 +1969,9 @@ private struct LiveScenarioTurnReport: Codable {
     let plannerAndWriterCalls: [LiveModelCallTrace]
     let nextPrompt: LiveNextPromptSnapshot?
     let pendingConfirmation: String?
+    let latestAnswerMessageID: String?
+    let answerToPromptID: String?
+    let executionAudit: LiveExecutionAuditDelta
     let studyEvents: [LiveStudyEventSnapshot]
     let retryAndErrorLog: [String]
     let timedOut: Bool
@@ -1519,6 +1999,7 @@ private struct LiveTrackingCueSnapshot: Codable {
 
 private struct LiveScenarioRunReport: Codable {
     let caseID: String
+    let variant: String
     let title: String
     let condition: String
     let completed: Bool

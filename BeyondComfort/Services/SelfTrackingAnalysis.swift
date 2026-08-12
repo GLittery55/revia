@@ -267,11 +267,28 @@ protocol ContextualLoadInferring: Sendable {
 struct DeterministicContextualLoadInferer: ContextualLoadInferring {
     func infer(from analysis: SelfTrackingAnalysis) -> ContextualLoadInference {
         let comparable = analysis.insights.filter(isReliableBaselineComparison)
+        let reliableRecent = analysis.insights.filter(isReliableRecentObservation)
         let shorterSleep = comparable.first {
             $0.metric == .sleepDuration && ($0.absoluteDifference ?? 0) <= -0.75
         }
+        // A stable personal baseline is not an adequacy judgment. Regularly sleeping less than
+        // seven hours can remain useful lived context even when there is no recent deviation.
+        let persistentlyShortSleep = reliableRecent.first {
+            $0.metric == .sleepDuration && ($0.recentMedian ?? .greatestFiniteMagnitude) < 7
+        }
+        let sleepDurationContext = shorterSleep ?? persistentlyShortSleep
         let lessContinuousSleep = comparable.first {
             $0.metric == .sleepContinuity && ($0.absoluteDifference ?? 0) <= -0.10
+        }
+        let lateSleepTiming = reliableRecent.first {
+            guard $0.metric == .sleepTiming,
+                  let recent = $0.recentMedian else { return false }
+            let laterThanPersonalBaseline = ($0.absoluteDifference ?? 0) >= 0.75
+            let recordedInEarlyMorning = recent >= 0.5 && recent <= 5
+            return laterThanPersonalBaseline || recordedInEarlyMorning
+        }
+        let reducedActivity = comparable.first {
+            $0.metric == .steps && ($0.relativeDifference ?? 0) <= -0.20
         }
         let higherRestingHeartRate = comparable.first {
             guard $0.metric == .restingHeartRate,
@@ -288,15 +305,27 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
         }
         let recordedSchedule = analysis.insights.first(where: isUsableRecordedSchedule)
 
-        let sleepSignals = [shorterSleep, lessContinuousSleep].compactMap { $0 }
+        let sleepSignals = uniqueInsights([sleepDurationContext, lessContinuousSleep])
         let cardiovascularSignals = [
             higherRestingHeartRate,
             lowerHeartRateVariability,
         ].compactMap { $0 }
+        let visibleContext = uniqueInsights([
+            sleepDurationContext,
+            recordedSchedule,
+            lateSleepTiming,
+            reducedActivity,
+        ])
+        let dialogueHypothesis = makeDialogueHypothesis(
+            from: visibleContext,
+            maximumCueCount: 2
+        )
 
         if !sleepSignals.isEmpty, !cardiovascularSignals.isEmpty {
             let physiologicalSignals = sleepSignals + cardiovascularSignals
-            let supporting = physiologicalSignals + [recordedSchedule].compactMap { $0 }
+            let supporting = uniqueInsights(
+                physiologicalSignals.map(Optional.some) + visibleContext.map(Optional.some)
+            )
             let hasStrongAgreement =
                 physiologicalSignals.count >= 3 &&
                 physiologicalSignals.allSatisfy {
@@ -312,14 +341,14 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
                     from: comparable,
                     supporting: supporting
                 ),
-                dialogueHypothesis: recordedSchedule == nil
-                    ? "用户最近可能有点累，压力也比平时大一些。"
-                    : "用户最近有一些已经排定、会占用时间的安排，也可能有点累，压力也比平时大一些。"
+                dialogueHypothesis: dialogueHypothesis
             )
         }
 
         if !sleepSignals.isEmpty {
-            let supporting = sleepSignals + [recordedSchedule].compactMap { $0 }
+            let supporting = uniqueInsights(
+                sleepSignals.map(Optional.some) + visibleContext.map(Optional.some)
+            )
             return makeInference(
                 state: .possibleReducedRecovery,
                 confidence: .moderate,
@@ -330,14 +359,14 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
                     from: comparable,
                     supporting: supporting
                 ),
-                dialogueHypothesis: recordedSchedule == nil
-                    ? "用户最近可能有点累。"
-                    : "用户最近有一些已经排定、会占用时间的安排，也可能有点累。"
+                dialogueHypothesis: dialogueHypothesis
             )
         }
 
         if let recordedSchedule {
-            let supporting = [recordedSchedule]
+            let supporting = uniqueInsights(
+                [Optional(recordedSchedule), lateSleepTiming, reducedActivity]
+            )
             return makeInference(
                 state: .recordedScheduleContext,
                 confidence: .moderate,
@@ -348,7 +377,32 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
                     from: comparable,
                     supporting: supporting
                 ),
-                dialogueHypothesis: "用户最近有一些已经排定、会占用时间的安排。"
+                dialogueHypothesis: makeDialogueHypothesis(
+                    from: supporting,
+                    maximumCueCount: 2
+                )
+            )
+        }
+
+        // A factual late-sleep or reduced-activity pattern may still be worth one restrained
+        // contextual reveal even when the coarse load state is unchanged. It is never promoted to
+        // fatigue, pressure, emotion, cause, responsibility, or a workflow precondition.
+        let descriptiveContext = uniqueInsights([lateSleepTiming, reducedActivity])
+        if let dialogueHypothesis = makeDialogueHypothesis(
+            from: descriptiveContext,
+            maximumCueCount: 2
+        ) {
+            return makeInference(
+                state: .usualRange,
+                confidence: .moderate,
+                activation: .unknown,
+                energy: .unknown,
+                supporting: descriptiveContext,
+                alternatives: alternativeExplanations(
+                    from: comparable,
+                    supporting: descriptiveContext
+                ),
+                dialogueHypothesis: dialogueHypothesis
             )
         }
 
@@ -376,6 +430,63 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
             return false
         }
         return insight.validSampleCount >= 4
+    }
+
+    private func isReliableRecentObservation(_ insight: TrackingInsight) -> Bool {
+        insight.confidence != .low
+            && insight.validSampleCount >= 4
+            && insight.recentMedian != nil
+    }
+
+    private func uniqueInsights(_ values: [TrackingInsight?]) -> [TrackingInsight] {
+        var seen = Set<UUID>()
+        return values.compactMap { insight in
+            guard let insight, seen.insert(insight.id).inserted else { return nil }
+            return insight
+        }
+    }
+
+    /// Produces only concrete, ordinary-life context. HRV and resting heart rate may strengthen
+    /// confidence internally, but are intentionally absent from visible wording because they do
+    /// not translate into one specific lived or psychological state.
+    private func makeDialogueHypothesis(
+        from insights: [TrackingInsight],
+        maximumCueCount: Int
+    ) -> String? {
+        guard maximumCueCount > 0 else { return nil }
+        var clauses: [String] = []
+        for insight in insights {
+            let clause: String?
+            switch insight.metric {
+            case .sleepDuration:
+                if let recent = insight.recentMedian, recent < 7 {
+                    clause = "睡得不多"
+                } else if (insight.absoluteDifference ?? 0) < 0 {
+                    clause = "睡得比平时少一些"
+                } else {
+                    clause = nil
+                }
+            case .sleepTiming:
+                if let recent = insight.recentMedian, recent >= 0.5 && recent <= 5 {
+                    clause = "多在凌晨入睡"
+                } else {
+                    clause = "入睡比平时晚一些"
+                }
+            case .calendarLoad:
+                clause = "日程里排着一些事情"
+            case .steps:
+                clause = "走动比平时少一些"
+            case .sleepWakeTime, .sleepContinuity, .restingHeartRate,
+                 .heartRateVariability, .screenTime, .weather:
+                clause = nil
+            }
+            if let clause, !clauses.contains(clause) {
+                clauses.append(clause)
+            }
+            if clauses.count == maximumCueCount { break }
+        }
+        guard !clauses.isEmpty else { return nil }
+        return "用户最近几天" + clauses.joined(separator: "，而且") + "。"
     }
 
     private func isUsableRecordedSchedule(_ insight: TrackingInsight) -> Bool {
@@ -449,10 +560,10 @@ struct DeterministicContextualLoadInferer: ContextualLoadInferring {
 /// Computes occupied calendar time as a union of intervals so simultaneous events are counted
 /// once. Only the clipped duration inside the requested day contributes to the total.
 struct CalendarOccupiedTimeCalculator {
-    static func occupiedHours(
+    private static func clippedAndMerged(
         intervals: [DateInterval],
         within window: DateInterval
-    ) -> Double {
+    ) -> [DateInterval] {
         let clipped = intervals.compactMap { interval -> DateInterval? in
             let start = max(interval.start, window.start)
             let end = min(interval.end, window.end)
@@ -462,22 +573,61 @@ struct CalendarOccupiedTimeCalculator {
             if lhs.start != rhs.start { return lhs.start < rhs.start }
             return lhs.end < rhs.end
         }
-        guard let first = clipped.first else { return 0 }
-
-        var occupiedSeconds = 0.0
-        var currentStart = first.start
-        var currentEnd = first.end
+        guard let first = clipped.first else { return [] }
+        var merged = [first]
         for interval in clipped.dropFirst() {
-            if interval.start <= currentEnd {
-                currentEnd = max(currentEnd, interval.end)
+            guard let last = merged.last else { continue }
+            if interval.start <= last.end {
+                merged[merged.count - 1] = DateInterval(
+                    start: last.start,
+                    end: max(last.end, interval.end)
+                )
             } else {
-                occupiedSeconds += currentEnd.timeIntervalSince(currentStart)
-                currentStart = interval.start
-                currentEnd = interval.end
+                merged.append(interval)
             }
         }
-        occupiedSeconds += currentEnd.timeIntervalSince(currentStart)
-        return occupiedSeconds / 3_600
+        return merged
+    }
+
+    static func occupiedHours(
+        intervals: [DateInterval],
+        within window: DateInterval
+    ) -> Double {
+        clippedAndMerged(intervals: intervals, within: window)
+            .reduce(0) { $0 + $1.duration } / 3_600
+    }
+
+    static func longestFreeBlockMinutes(
+        intervals: [DateInterval],
+        within window: DateInterval
+    ) -> Double {
+        let occupied = clippedAndMerged(intervals: intervals, within: window)
+        guard !occupied.isEmpty else { return window.duration / 60 }
+        var longest = max(occupied[0].start.timeIntervalSince(window.start), 0)
+        for pair in zip(occupied, occupied.dropFirst()) {
+            longest = max(longest, pair.1.start.timeIntervalSince(pair.0.end))
+        }
+        if let last = occupied.last {
+            longest = max(longest, window.end.timeIntervalSince(last.end))
+        }
+        return longest / 60
+    }
+
+    static func backToBackPairCount(
+        intervals: [DateInterval],
+        within window: DateInterval,
+        maximumGap: TimeInterval = 300
+    ) -> Int {
+        let clipped = intervals.compactMap { interval -> DateInterval? in
+            let start = max(interval.start, window.start)
+            let end = min(interval.end, window.end)
+            guard start < end else { return nil }
+            return DateInterval(start: start, end: end)
+        }.sorted { $0.start < $1.start }
+        return zip(clipped, clipped.dropFirst()).reduce(0) { count, pair in
+            let gap = pair.1.start.timeIntervalSince(pair.0.end)
+            return count + ((0...maximumGap).contains(gap) ? 1 : 0)
+        }
     }
 }
 
@@ -598,7 +748,7 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
         if !supportsBaseline { limitations.append("个人历史覆盖不足，不能进行可靠的基线比较") }
         if provenance.isEmpty { limitations.append("数据来源元信息不完整") }
 
-        return TrackingInsight(
+        var insight = TrackingInsight(
             id: UUID(),
             metric: metric,
             observationWindow: DateInterval(start: recentStart, end: recentEnd),
@@ -637,6 +787,13 @@ struct DeterministicSelfTrackingAnalyzer: SelfTrackingAnalyzing {
             longestConsecutiveRun: longestRun,
             userRelevance: .notReviewed
         )
+        insight.recentDailyPoints = recentPoints
+        // Current-v5 exposes the observed baseline and its coverage as facts. It does not use
+        // Swift's `supportsBaseline` decision to hide the value or label its quality.
+        insight.factualBaselineMedian = baselineMedian
+        insight.baselineObservedDays = baselineValues.count
+        insight.baselineExpectedDays = configuration.stableBaselineDays
+        return insight
     }
 
     private func difference(

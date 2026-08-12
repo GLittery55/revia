@@ -334,7 +334,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
 
         XCTAssertTrue(value.user.contains(hypothesis))
         XCTAssertFalse(value.user.contains("RAW_TRACKING_OBSERVATION"))
-        XCTAssertTrue(value.system.contains("Contextual data is only a tentative background cue"))
+        XCTAssertTrue(value.system.contains("Context is tentative, exact-scope background"))
     }
 
     func testCardImagePromptCannotReceiveAggregateContextCue() {
@@ -369,7 +369,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
     func testCompatibilityDialoguePromptIsCompactAndDomainNeutral() {
         let value = prompt(cues: [])
         XCTAssertLessThan(value.system.count, 3_500)
-        XCTAssertTrue(value.system.contains("reported facts, self-evaluation"))
+        XCTAssertTrue(value.system.contains("fact, self-evaluation"))
         XCTAssertTrue(value.system.contains("at most one open question"))
         XCTAssertTrue(value.system.contains(#"{"reflection":"","question":"","actionOptions":[]}"#))
         XCTAssertTrue(value.user.contains("Application-owned state"))
@@ -398,8 +398,8 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         )
 
         XCTAssertLessThan(value.system.count, 5_500)
-        XCTAssertTrue(value.system.contains("domain-neutral semantic structure"))
-        XCTAssertTrue(value.system.contains("observable episode facts"))
+        XCTAssertTrue(value.system.contains("domain-neutral typed structure"))
+        XCTAssertTrue(value.system.contains("fact, experience, self-evaluation"))
         XCTAssertTrue(value.system.contains("semanticRelations"))
         XCTAssertTrue(value.user.contains("Swift planning boundary"))
         XCTAssertTrue(value.user.contains("developImageRelation"))
@@ -456,7 +456,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         let system = value.system.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        XCTAssertTrue(system.contains("Follow the supplied typed response purpose"))
+        XCTAssertTrue(system.contains("write one Chinese reflection reply for the typed purpose"))
     }
 
     func testEmotionFallbackForAdvisorCriticismDoesNotUseProcrastinationTemplate() {
@@ -500,8 +500,8 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
 
-        XCTAssertTrue(system.contains("Build every sentence from user-supported evidence"))
-        XCTAssertTrue(system.contains("Candid reflection is optional and requires concrete evidence"))
+        XCTAssertTrue(system.contains("use only user-supported evidence"))
+        XCTAssertTrue(system.contains("candid reflection requires concrete evidence"))
         XCTAssertTrue(generated.user.contains("答应当天回复同事，但后来忘了"))
 
         let rewritten = RemoteDialogueGenerator().concreteRepairQuestion(
@@ -680,9 +680,9 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         let system = imagePhase.system.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        XCTAssertTrue(system.contains("person develops the image relation before any life relation"))
-        XCTAssertTrue(system.contains("only their accepted or revised mapping"))
-        XCTAssertTrue(system.contains("A card is a projective object"))
+        XCTAssertTrue(system.contains("person interprets a card first"))
+        XCTAssertTrue(system.contains("only their accepted/revised mapping"))
+        XCTAssertTrue(system.contains("an image proves nothing about them"))
         XCTAssertTrue(generated.user.contains("reality connection"))
     }
 
@@ -710,8 +710,8 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             let system = scoped.system.components(separatedBy: .whitespacesAndNewlines)
                 .filter { !$0.isEmpty }
                 .joined(separator: " ")
-            XCTAssertTrue(system.contains("Swift exclusively owns workflow state"))
-            XCTAssertTrue(system.contains("Follow the supplied typed response purpose"))
+            XCTAssertTrue(system.contains("Swift owns state, cards, local actions, persistence, and completion"))
+            XCTAssertTrue(system.contains("write one Chinese reflection reply for the typed purpose"))
             XCTAssertTrue(scoped.user.contains("Application-owned state: \(state.rawValue)"))
             XCTAssertTrue(scoped.user.contains("follow only the current Swift gate"))
         }
@@ -786,7 +786,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
             nextQuestionGoal: "one meaningful detail",
             recentMessages: []
         ).system
-        XCTAssertTrue(text.contains("Do not infer a cause, motive, emotion"))
+        XCTAssertTrue(text.contains("infer no cause, motive, emotion"))
         XCTAssertTrue(text.contains("at most one open question"))
         XCTAssertFalse(text.contains("焦虑、羞愧"))
     }
@@ -805,7 +805,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         let system = text.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        XCTAssertTrue(system.contains("Build every sentence from user-supported evidence"))
+        XCTAssertTrue(system.contains("use only user-supported evidence"))
         XCTAssertTrue(system.contains("Respect correction, refusal, no change, and uncertainty"))
         XCTAssertFalse(text.contains("身体哪里最明显"))
     }
@@ -1263,7 +1263,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         let reply = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
         XCTAssertFalse(reply.contains("睡眠"))
         XCTAssertFalse(reply.localizedCaseInsensitiveContains("HRV"))
-        XCTAssertTrue(reply.contains("有点累"))
+        XCTAssertTrue(reply.contains("睡得比平时少一些"))
         XCTAssertTrue(reply.contains("更难"))
         XCTAssertFalse(reply.contains("活动量和身体状态与平时有些不同"))
         XCTAssertEqual(reply.filter { $0 == "？" || $0 == "?" }.count, 1)
@@ -1333,7 +1333,7 @@ final class ReflectionPromptAndTrackingTests: XCTestCase {
         let reply = model.session.messages.last(where: { $0.role == .assistant })?.content ?? ""
         XCTAssertFalse(reply.contains("睡眠"))
         XCTAssertFalse(reply.contains("运动量"))
-        XCTAssertTrue(reply.contains("有点累"))
+        XCTAssertTrue(reply.contains("睡得比平时少一些"))
         XCTAssertTrue(reply.contains("昨晚") || reply.contains("当时") || reply.contains("这件事"))
         XCTAssertEqual(model.session.stage, .readinessCheck)
         XCTAssertEqual(model.session.workflowPhase, .contextConfirmation)
@@ -1835,7 +1835,7 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertTrue(inference.hasDialogueCue)
         XCTAssertEqual(
             inference.dialogueHypothesis,
-            "用户最近可能有点累，压力也比平时大一些。"
+            "用户最近几天睡得不多。"
         )
         XCTAssertFalse(inference.dialogueHypothesis?.localizedCaseInsensitiveContains("HRV") == true)
         XCTAssertFalse(inference.dialogueHypothesis?.contains("心率") == true)
@@ -1871,7 +1871,7 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertEqual(inference.supportingMetrics, [.calendarLoad])
         XCTAssertEqual(
             inference.dialogueHypothesis,
-            "用户最近有一些已经排定、会占用时间的安排。"
+            "用户最近几天日程里排着一些事情。"
         )
         XCTAssertFalse(inference.dialogueHypothesis?.contains("累") == true)
         XCTAssertFalse(inference.dialogueHypothesis?.contains("压力") == true)
@@ -1905,7 +1905,7 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertEqual(Set(inference.supportingMetrics), Set([.calendarLoad, .sleepDuration]))
         XCTAssertEqual(
             inference.dialogueHypothesis,
-            "用户最近有一些已经排定、会占用时间的安排，也可能有点累。"
+            "用户最近几天睡得不多，而且日程里排着一些事情。"
         )
         XCTAssertFalse(inference.dialogueHypothesis?.contains("压力") == true)
     }
@@ -1941,7 +1941,7 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         )
         XCTAssertEqual(
             inference.dialogueHypothesis,
-            "用户最近有一些已经排定、会占用时间的安排，也可能有点累，压力也比平时大一些。"
+            "用户最近几天睡得不多，而且日程里排着一些事情。"
         )
     }
 
@@ -1967,7 +1967,7 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertEqual(inference.state, .recordedScheduleContext)
         XCTAssertEqual(
             inference.dialogueHypothesis,
-            "用户最近有一些已经排定、会占用时间的安排。"
+            "用户最近几天日程里排着一些事情。"
         )
         XCTAssertTrue(inference.hasDialogueCue)
     }
@@ -2024,6 +2024,44 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertEqual(hours, 5, accuracy: 0.001)
     }
 
+    func testCalendarTemporalFactsPreserveFreeTimeAndBackToBackStructure() {
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let window = DateInterval(
+            start: day.addingTimeInterval(8 * 3_600),
+            end: day.addingTimeInterval(22 * 3_600)
+        )
+        let intervals = [
+            DateInterval(
+                start: day.addingTimeInterval(9 * 3_600),
+                end: day.addingTimeInterval(10 * 3_600)
+            ),
+            DateInterval(
+                start: day.addingTimeInterval(10 * 3_600 + 180),
+                end: day.addingTimeInterval(11 * 3_600)
+            ),
+            DateInterval(
+                start: day.addingTimeInterval(18 * 3_600),
+                end: day.addingTimeInterval(20 * 3_600)
+            ),
+        ]
+
+        XCTAssertEqual(
+            CalendarOccupiedTimeCalculator.longestFreeBlockMinutes(
+                intervals: intervals,
+                within: window
+            ),
+            7 * 60,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            CalendarOccupiedTimeCalculator.backToBackPairCount(
+                intervals: intervals,
+                within: window
+            ),
+            1
+        )
+    }
+
     func testSingleCardiovascularChangeCannotBecomePressureOrEmotionCue() async throws {
         let reference = Date(timeIntervalSince1970: 1_800_000_000)
         let baseline = (-34 ... -7).map {
@@ -2073,9 +2111,57 @@ final class SelfTrackingAnalysisTests: XCTestCase {
         XCTAssertEqual(inference.state, .possibleReducedRecovery)
         XCTAssertEqual(inference.activation, .unknown)
         XCTAssertEqual(inference.energy, .possiblyReduced)
-        XCTAssertEqual(inference.dialogueHypothesis, "用户最近可能有点累。")
+        XCTAssertEqual(inference.dialogueHypothesis, "用户最近几天睡得不多。")
         XCTAssertFalse(inference.dialogueHypothesis?.contains("焦虑") == true)
         XCTAssertFalse(inference.dialogueHypothesis?.contains("难过") == true)
+    }
+
+    func testStableShortSleepRemainsUsableContextWithoutBaselineChange() async throws {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        let baseline = (-34 ... -7).map {
+            TrackingDataPoint(date: date($0, from: reference), value: 6.2, count: 1)
+        }
+        let recent = (-6...0).map {
+            TrackingDataPoint(date: date($0, from: reference), value: 6.2, count: 1)
+        }
+        let analyzer = DeterministicSelfTrackingAnalyzer(calendar: calendar)
+        let analysis = try await analyzer.analyze(
+            eventDate: reference,
+            availableData: SelfTrackingDataset(
+                dailyMetrics: [.sleepDuration: baseline + recent],
+                provenance: [:]
+            )
+        )
+
+        let inference = analysis.contextualLoadInference()
+
+        XCTAssertEqual(inference.state, .possibleReducedRecovery)
+        XCTAssertEqual(inference.dialogueHypothesis, "用户最近几天睡得不多。")
+        XCTAssertTrue(inference.hasDialogueCue)
+    }
+
+    func testStableEarlyMorningSleepTimingRemainsDescriptiveContext() async throws {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        let baseline = (-34 ... -7).map {
+            TrackingDataPoint(date: date($0, from: reference), value: 2, count: 1)
+        }
+        let recent = (-6...0).map {
+            TrackingDataPoint(date: date($0, from: reference), value: 2, count: 1)
+        }
+        let analyzer = DeterministicSelfTrackingAnalyzer(calendar: calendar)
+        let analysis = try await analyzer.analyze(
+            eventDate: reference,
+            availableData: SelfTrackingDataset(
+                dailyMetrics: [.sleepTiming: baseline + recent],
+                provenance: [:]
+            )
+        )
+
+        let inference = analysis.contextualLoadInference()
+
+        XCTAssertEqual(inference.state, .usualRange)
+        XCTAssertEqual(inference.dialogueHypothesis, "用户最近几天多在凌晨入睡。")
+        XCTAssertTrue(inference.hasDialogueCue)
     }
 
     func testScreenTimeInsightUsesQuestionInsteadOfAvoidanceConclusion() async throws {
@@ -2863,8 +2949,8 @@ final class ReflectionCardTests: XCTestCase {
             nextQuestionGoal: "observation",
             recentMessages: []
         )
-        XCTAssertTrue(prompt.system.contains("A card is a projective object"))
-        XCTAssertTrue(prompt.system.contains("An image cannot prove anything about the person"))
+        XCTAssertTrue(prompt.system.contains("The person interprets a card first"))
+        XCTAssertTrue(prompt.system.contains("an image proves nothing about them"))
         XCTAssertFalse(prompt.user.localizedCaseInsensitiveContains("avoiding responsibility"))
     }
 
@@ -2883,17 +2969,17 @@ final class ReflectionCardTests: XCTestCase {
         XCTAssertFalse(prompt.system.contains("Self-kindness"))
         XCTAssertFalse(prompt.system.contains("Common humanity"))
         XCTAssertFalse(prompt.system.contains("Mindfulness"))
-        XCTAssertTrue(prompt.system.contains("Tender acknowledges difficulty and limits"))
-        XCTAssertTrue(prompt.system.contains("limits whole-person judgment without denying what happened"))
-        XCTAssertTrue(prompt.system.contains("Contextual data is only a tentative background cue"))
-        XCTAssertTrue(prompt.system.contains("only their accepted or revised mapping"))
+        XCTAssertTrue(prompt.system.contains("Tender may limit whole-person attack"))
+        XCTAssertTrue(prompt.system.contains("without denying conduct/impact"))
+        XCTAssertTrue(prompt.system.contains("Context is tentative, exact-scope background"))
+        XCTAssertTrue(prompt.system.contains("only their accepted/revised mapping"))
         let analyzerPrompt = factory.analyzerPrompt(context: ReflectionContext(), messages: [])
         let analyzerSystem = analyzerPrompt.system.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
         XCTAssertFalse(analyzerPrompt.system.contains("three self-compassion dimensions"))
-        XCTAssertTrue(analyzerSystem.contains("Separate observable episode facts"))
-        XCTAssertTrue(analyzerSystem.contains("Evidence arrays contain only short literal fragments"))
+        XCTAssertTrue(analyzerSystem.contains("Separate fact, experience, self-evaluation"))
+        XCTAssertTrue(analyzerSystem.contains("Evidence arrays use short literal user fragments"))
     }
 
     @MainActor
@@ -2958,9 +3044,9 @@ final class ReflectionCardTests: XCTestCase {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
 
-        XCTAssertTrue(candor.contains("Candid reflection is optional and requires concrete evidence"))
-        XCTAssertTrue(candor.contains("only their accepted or revised mapping"))
-        XCTAssertTrue(candor.contains("Contextual data is only a tentative background cue"))
+        XCTAssertTrue(candor.contains("candid reflection requires concrete evidence"))
+        XCTAssertTrue(candor.contains("only their accepted/revised mapping"))
+        XCTAssertTrue(candor.contains("Context is tentative, exact-scope background"))
         XCTAssertFalse(candor.contains("OPTIONAL PRACTICE:"))
 
         let action = ReflectionPromptFactory().dialoguePrompt(
@@ -2973,8 +3059,7 @@ final class ReflectionCardTests: XCTestCase {
             nextQuestionGoal: "offer the authorized practice",
             recentMessages: []
         ).system
-        XCTAssertTrue(action.contains("actionOptions is empty unless Swift"))
-        XCTAssertTrue(action.contains("explicitly authorizes action selection"))
+        XCTAssertTrue(action.contains("actionOptions is empty unless Swift authorizes action selection"))
         XCTAssertFalse(action.contains("OPTIONAL PRACTICE:"))
     }
 
@@ -2995,7 +3080,7 @@ final class ReflectionCardTests: XCTestCase {
             .joined(separator: " ")
         XCTAssertFalse(prompt.system.contains("有什么需要被挡在外面"))
         XCTAssertFalse(prompt.user.contains("边界"))
-        XCTAssertTrue(system.contains("the person develops the image relation"))
+        XCTAssertTrue(system.contains("The person interprets a card first"))
     }
 
     func testCardFollowUpPromptIsRouteNeutralAndAllowsOnlyOneQuestion() {
@@ -3015,9 +3100,14 @@ final class ReflectionCardTests: XCTestCase {
             ).system
         }
         XCTAssertEqual(Set(systems).count, 1)
-        XCTAssertTrue(systems.allSatisfy { $0.contains("asking at most one open question") })
-        XCTAssertTrue(systems.allSatisfy { $0.contains("only their accepted or revised mapping") })
-        XCTAssertTrue(systems.allSatisfy { $0.contains("require agreement") })
+        let normalizedSystems = systems.map {
+            $0.components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+        XCTAssertTrue(normalizedSystems.allSatisfy { $0.contains("ask at most one open question") })
+        XCTAssertTrue(normalizedSystems.allSatisfy { $0.contains("only their accepted/revised mapping") })
+        XCTAssertTrue(normalizedSystems.allSatisfy { $0.contains("ask for agreement") })
     }
 
     @MainActor
@@ -3562,6 +3652,105 @@ final class ReflectionCardTests: XCTestCase {
 final class ReflectionStateMachineTests: XCTestCase {
     private let machine = ReflectionStateMachine()
     private let workflowMachine = ReflectionWorkflowStateMachine()
+
+    @MainActor
+    func testExplicitEventDateInvalidatesAndRecomputesTrackingForNewAnchor() async {
+        let model = ReflectionViewModel(
+            analyzer: StaticAnalyzer(),
+            dialogueGenerator: StaticDialogueGenerator()
+        )
+        await model.refreshContextData()
+        XCTAssertNotNil(model.contextDataRefreshedAt)
+        let initialReadyEvents = model.session.studyEvents.filter {
+            $0.action.hasPrefix("contextual_tracking_profiles_ready_")
+        }.count
+
+        // Keep this test focused on the local tracking-anchor path; protocol routing is exercised
+        // by the current-v5 execution suite. Restoring the current version before the asynchronous
+        // refresh runs makes the recomputed profile lifecycle identical to production.
+        model.session.protocolVersion = 1
+        model.session.stage = .completed
+        model.draft = "昨天汇报时放错了一张图。"
+        model.send()
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+
+        XCTAssertTrue(model.session.eventDateIsUserSpecified)
+        XCTAssertNil(model.contextDataRefreshedAt)
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "tracking_recompute_scheduled_after_anchor_update"
+            }
+        )
+
+        for _ in 0..<200 where model.contextDataRefreshedAt == nil {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertNotNil(model.contextDataRefreshedAt)
+        XCTAssertGreaterThan(
+            model.session.studyEvents.filter {
+                $0.action.hasPrefix("contextual_tracking_profiles_ready_")
+            }.count,
+            initialReadyEvents
+        )
+    }
+
+    @MainActor
+    func testRecentEventLanguageKeepsExistingTrackingWindowWithoutInventingDate() async {
+        let model = ReflectionViewModel(
+            analyzer: StaticAnalyzer(),
+            dialogueGenerator: StaticDialogueGenerator()
+        )
+        await model.refreshContextData()
+        let refreshedAt = model.contextDataRefreshedAt
+
+        model.session.protocolVersion = 1
+        model.session.stage = .completed
+        model.draft = "我最近一直在改 app，但效果不太好。"
+        model.send()
+
+        XCTAssertFalse(model.session.eventDateIsUserSpecified)
+        XCTAssertEqual(model.contextDataRefreshedAt, refreshedAt)
+        XCTAssertFalse(
+            model.session.studyEvents.contains {
+                $0.action == "tracking_anchor_updated_from_user_date"
+                    || $0.action == "tracking_recompute_scheduled_after_anchor_update"
+            }
+        )
+    }
+
+    @MainActor
+    func testExplicitDateKeepsDeterministicInjectedTrackingSnapshotWhenRefreshIsDisabled() {
+        let model = ReflectionViewModel(
+            analyzer: StaticAnalyzer(),
+            dialogueGenerator: StaticDialogueGenerator(),
+            preparesContextDataAutomatically: false
+        )
+        let injected = TrackingCue(
+            id: "synthetic-sleep",
+            source: .healthSleep,
+            observation: "合成的近期睡眠汇总"
+        )
+        model.session.trackingCues = [injected]
+        model.session.protocolVersion = 1
+        model.session.stage = .completed
+        model.draft = "昨晚我在汇报时放错了图。"
+
+        model.send()
+
+        XCTAssertTrue(model.session.eventDateIsUserSpecified)
+        XCTAssertEqual(model.session.trackingCues, [injected])
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "tracking_anchor_kept_injected_test_snapshot"
+            }
+        )
+        XCTAssertFalse(
+            model.session.studyEvents.contains {
+                $0.action == "tracking_recompute_scheduled_after_anchor_update"
+            }
+        )
+    }
 
     @MainActor
     func testStartingFreshReflectionInvalidatesThenAutomaticallyRefreshesTrackingSnapshot() async {
@@ -6748,9 +6937,9 @@ private struct WorkflowContractDialogueGenerator: DialogueGenerating {
                     actionOptions: []
                 )
             }
-            if goal.contains("final concise narrative") ||
+            if goal.contains("final narrative") ||
                 goal.contains("revise the final narrative") ||
-                goal.contains("final card-derived delta") {
+                (goal.contains("final") && goal.contains("card-derived delta")) {
                 return DialogueTurn(
                     reflection: "这次你把临时交付、时间限制、睡眠背景和自己的判断分开来看。两条路的画面连到不同建议，也让你找到先写判断标准的可能；这次你选择先不决定行动。",
                     question: "这段最终记录需要改吗？",

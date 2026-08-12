@@ -128,6 +128,7 @@ xcodebuild test \
   -parallel-testing-enabled NO \
   -resultBundlePath "$RESULT_BUNDLE" \
   -only-testing:BeyondComfortTests/ReflectionLiveScenarioTests/testLivePairedScenarioMatrix \
+  -only-testing:BeyondComfortTests/ReflectionLiveScenarioTests/testLivePostCardReflectionDecisionMatrix \
   CODE_SIGNING_ALLOWED=NO \
   "OTHER_SWIFT_FLAGS=$SWIFT_FLAGS" \
   2>&1 | tee "$BUILD_LOG"

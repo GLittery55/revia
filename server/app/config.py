@@ -85,6 +85,12 @@ PROVIDER_RETRY_BACKOFF_SECONDS = float(os.getenv("PROVIDER_RETRY_BACKOFF_SECONDS
 
 AGENT_ENABLED = os.getenv("AGENT_ENABLED", "true").lower() == "true"
 AGENT_CRITIC_ENABLED = os.getenv("AGENT_CRITIC_ENABLED", "true").lower() == "true"
+# Temporary, privacy-bounded diagnostics for current-v5 Tracking selection. Disabled by default.
+# The diagnostic logs compact aggregate/profile metadata and selected IDs only; it never logs the
+# transcript, semantic memory, complete prompt, model body, or daily values.
+CURRENT_V5_TRACKING_DIAGNOSTICS = (
+    os.getenv("CURRENT_V5_TRACKING_DIAGNOSTICS", "false").lower() == "true"
+)
 
 
 def validate_production_config() -> None:

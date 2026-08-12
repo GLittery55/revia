@@ -13,10 +13,254 @@ import httpx
 from fastapi import HTTPException
 
 from . import config
+from .prompt_registry import (
+    CURRENT_V5_PLANNER_JSON_SHAPE,
+    PLANNER_JSON_SHAPE,
+    PromptLengthMetrics,
+    log_prompt_length,
+)
+from .schemas import (
+    CurrentV5PlannerContractError,
+    canonicalize_current_v5_planner_contract,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
 Role = Literal["planner", "writer", "critic"]
+
+
+def _current_v5_request(messages: list[dict[str, str]]) -> dict[str, Any]:
+    prefix = "CURRENT V5 TURN REQUEST JSON:\n"
+    for message in messages:
+        content = message.get("content", "")
+        if message.get("role") != "user" or not content.startswith(prefix):
+            continue
+        try:
+            request = json.loads(content[len(prefix):])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return request if isinstance(request, dict) else {}
+    return {}
+
+
+def _current_v5_allowed_operations(messages: list[dict[str, str]]) -> list[str]:
+    operations = _current_v5_request(messages).get("allowedSemanticOperations")
+    if not isinstance(operations, list):
+        return []
+    return [value for value in operations if isinstance(value, str)]
+
+
+def _current_v5_tracking_profile_summary(
+    messages: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    """Return a bounded diagnostic view of the exact final Planner request.
+
+    The summary deliberately excludes recentDaily values, transcript text, semantic memory, and
+    user-facing model fields. Counts and date bounds establish whether a temporal series reached
+    the server; aggregate medians and coverage establish whether the profile reached the Planner.
+    """
+    request = _current_v5_request(messages)
+    profiles = request.get("contextualTrackingProfiles")
+    if not isinstance(profiles, list) or not profiles:
+        return None
+
+    profile_summaries: list[dict[str, Any]] = []
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        metric_summaries: list[dict[str, Any]] = []
+        metrics = profile.get("metrics")
+        for metric in metrics if isinstance(metrics, list) else []:
+            if not isinstance(metric, dict):
+                continue
+            recent_daily = metric.get("recentDaily")
+            recent_daily = recent_daily if isinstance(recent_daily, list) else []
+            dates = [
+                point.get("date")
+                for point in recent_daily
+                if isinstance(point, dict) and isinstance(point.get("date"), str)
+            ]
+            coverage = metric.get("coverage")
+            coverage = coverage if isinstance(coverage, dict) else {}
+            metric_summaries.append(
+                {
+                    "metric": metric.get("metric"),
+                    "unit": metric.get("unit"),
+                    "recentDailyCount": len(recent_daily),
+                    "recentDailyStart": dates[0] if dates else None,
+                    "recentDailyEnd": dates[-1] if dates else None,
+                    "recentMedian": metric.get("recentMedian"),
+                    "baselineMedian": metric.get("baselineMedian"),
+                    "coverage": {
+                        "recentObservedDays": coverage.get("recentObservedDays"),
+                        "recentExpectedDays": coverage.get("recentExpectedDays"),
+                        "baselineObservedDays": coverage.get("baselineObservedDays"),
+                        "baselineExpectedDays": coverage.get("baselineExpectedDays"),
+                    },
+                }
+            )
+        profile_summaries.append(
+            {
+                "profileID": profile.get("profileID"),
+                "domain": profile.get("domain"),
+                "metrics": metric_summaries,
+            }
+        )
+
+    return {
+        "protocolStage": request.get("protocolStage"),
+        "reflectionMode": request.get("reflectionMode"),
+        "profiles": profile_summaries,
+    }
+
+
+def _current_v5_tracking_decision_summary(content: str) -> dict[str, Any]:
+    """Extract only canonical and misplaced Tracking selections from a Planner body."""
+    try:
+        decoded = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return {"canonicalOwner": "invalidJSON", "misplacedAlias": None}
+    if not isinstance(decoded, dict):
+        return {"canonicalOwner": "invalidObject", "misplacedAlias": None}
+
+    patch = decoded.get("semanticEvidencePatch")
+    patch = patch if isinstance(patch, dict) else {}
+    memory = patch.get("memoryUpdate")
+    memory = memory if isinstance(memory, dict) else {}
+
+    def metric_classifications(value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            return "invalidDecision"
+        eligibility = value.get("metricEligibility")
+        if not isinstance(eligibility, list):
+            return "invalidMetricEligibility"
+        return [
+            {
+                "profileID": item.get("profileID"),
+                "metric": item.get("metric"),
+                "status": item.get("status"),
+                "preferred": item.get("preferred"),
+            }
+            for item in eligibility
+            if isinstance(item, dict)
+        ]
+
+    return {
+        "canonicalOwner": metric_classifications(patch.get("contextualTrackingDecision")),
+        "misplacedAlias": metric_classifications(memory.get("contextualTrackingDecision")),
+    }
+
+
+def _log_current_v5_tracking_request(
+    *,
+    request_id: Optional[str],
+    agent_task: str,
+    messages: list[dict[str, str]],
+) -> bool:
+    if (
+        not config.CURRENT_V5_TRACKING_DIAGNOSTICS
+        or agent_task != "current_v5_core_planner"
+    ):
+        return False
+    summary = _current_v5_tracking_profile_summary(messages)
+    if summary is None:
+        return False
+    logger.info(
+        "current_v5_tracking_diag_request request_id=%s summary=%s",
+        request_id,
+        json.dumps(summary, ensure_ascii=True, separators=(",", ":")),
+    )
+    return True
+
+
+def _log_current_v5_tracking_decision(
+    *,
+    request_id: Optional[str],
+    stage: str,
+    content: str,
+) -> None:
+    logger.info(
+        "current_v5_tracking_diag_decision request_id=%s stage=%s decision=%s",
+        request_id,
+        stage,
+        json.dumps(
+            _current_v5_tracking_decision_summary(content),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
+PLANNER_JSON_REPAIR_CONTRACT = (
+    "Repair JSON syntax/types only; do not re-plan. Preserve DRAFT values and absence, including "
+    "semanticOperation; never infer a missing/unknown operation from legacy fields. Never add, remove, "
+    "or reinterpret intent, outcome, evidence, pending state, confirmation, question, action, "
+    "responsibility, or card/tracking relation. Optional omissions become null; invalid required values "
+    "remain invalid for typed validation. REPAIR_BOUNDS are limits, not content. Card connection uses only "
+    "cardConnectionTurnOutcome; episodeStructure is a patch; reflectionFrame/practiceTransition are complete "
+    "or null; IDs stay exact. Return only: "
+    + PLANNER_JSON_SHAPE
+)
+
+
+def _planner_repair_bounds(original_messages: list[dict[str, str]]) -> dict[str, Any]:
+    request: dict[str, Any] = {}
+    prefix = "TURN REQUEST JSON:\n"
+    for message in original_messages:
+        content = message.get("content", "")
+        if message.get("role") != "user" or not content.startswith(prefix):
+            continue
+        try:
+            decoded = json.loads(content[len(prefix):].split("\n\n", 1)[0])
+        except (TypeError, json.JSONDecodeError):
+            break
+        if isinstance(decoded, dict):
+            request = decoded
+        break
+    permissions = request.get("permissions")
+    permissions = permissions if isinstance(permissions, dict) else {}
+    memory = request.get("semanticMemory")
+    memory = memory if isinstance(memory, dict) else {}
+    next_prompt = memory.get("nextPrompt")
+    pending = (
+        next_prompt
+        if isinstance(next_prompt, dict) and next_prompt.get("kind") == "confirmationRequest"
+        else None
+    )
+    card = request.get("card")
+    card = card if isinstance(card, dict) else {}
+    return {
+        "protocolVersion": request.get("protocolVersion"),
+        "protocolStage": request.get("protocolStage"),
+        "allowedOperations": permissions.get("allowedOperations", []),
+        "pendingConfirmation": pending,
+        "cardConnectionInteractionState": card.get("connectionInteractionState"),
+        "presentedTrackingCueIDs": [
+            cue.get("id")
+            for cue in request.get("presentedTrackingCues", [])
+            if isinstance(cue, dict) and cue.get("id") is not None
+        ],
+    }
+
+
+def _planner_json_repair_messages(
+    *, draft: str,
+    original_messages: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    bounds = _planner_repair_bounds(original_messages)
+    return [
+        {"role": "system", "content": PLANNER_JSON_REPAIR_CONTRACT},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {"REPAIR_BOUNDS": bounds, "DRAFT": draft},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        },
+    ]
 
 
 class ProviderError(Exception):
@@ -228,6 +472,13 @@ class ProviderGateway:
                     role=role,
                     request_id=request_id,
                 )
+                normalized = self._validate_current_v5_contract(
+                    normalized,
+                    provider=result.provider,
+                    agent_task=agent_task,
+                    request_id=request_id,
+                    messages=messages,
+                )
                 logger.info(
                     "agent_role_completed request_id=%s role=%s agent_task=%s provider=openai model=%s",
                     request_id,
@@ -297,6 +548,11 @@ class ProviderGateway:
             max_tokens=max_tokens,
             temperature=temperature,
         )
+        tracking_diagnostic_active = _log_current_v5_tracking_request(
+            request_id=request_id,
+            agent_task=agent_task,
+            messages=messages,
+        )
         try:
             normalized = self._normalize_completion(
                 result,
@@ -304,10 +560,38 @@ class ProviderGateway:
                 role=role,
                 request_id=request_id,
             )
+            if tracking_diagnostic_active:
+                _log_current_v5_tracking_decision(
+                    request_id=request_id,
+                    stage="raw_initial",
+                    content=normalized,
+                )
+            normalized = self._validate_current_v5_contract(
+                normalized,
+                provider=result.provider,
+                agent_task=agent_task,
+                request_id=request_id,
+                messages=messages,
+            )
+            if tracking_diagnostic_active:
+                _log_current_v5_tracking_decision(
+                    request_id=request_id,
+                    stage="canonical_initial",
+                    content=normalized,
+                )
         except ProviderError as error:
             if (
-                error.reason in {"invalid_json", "json_not_object"}
+                error.reason in {
+                    "invalid_json",
+                    "json_not_object",
+                    "current_v5_planner_contract_shape_invalid",
+                    "current_v5_planner_contract_invalid",
+                }
                 and require_json_object
+                and not (
+                    agent_task == "current_v5_core_planner"
+                    and error.reason == "current_v5_planner_contract_invalid"
+                )
                 and (
                     self._is_repairable_dialogue_writer_task(
                         role=role,
@@ -352,6 +636,25 @@ class ProviderGateway:
                     role=role,
                     request_id=request_id,
                 )
+                if tracking_diagnostic_active:
+                    _log_current_v5_tracking_decision(
+                        request_id=request_id,
+                        stage="raw_repair",
+                        content=normalized,
+                    )
+                normalized = self._validate_current_v5_contract(
+                    normalized,
+                    provider=result.provider,
+                    agent_task=agent_task,
+                    request_id=request_id,
+                    messages=messages,
+                )
+                if tracking_diagnostic_active:
+                    _log_current_v5_tracking_decision(
+                        request_id=request_id,
+                        stage="canonical_repair",
+                        content=normalized,
+                    )
             else:
                 raise
         return Completion(
@@ -362,6 +665,50 @@ class ProviderGateway:
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
         )
+
+    @staticmethod
+    def _validate_current_v5_contract(
+        content: str,
+        *,
+        provider: str,
+        agent_task: str,
+        request_id: Optional[str],
+        messages: list[dict[str, str]],
+    ) -> str:
+        if agent_task != "current_v5_core_planner":
+            return content
+        try:
+            return canonicalize_current_v5_planner_contract(
+                content,
+                allowed_semantic_operations=_current_v5_allowed_operations(messages),
+            )
+        except CurrentV5PlannerContractError as error:
+            # Log only the schema location and violation class. The model body and reflection text
+            # remain private, while operations can distinguish contract failures from outages.
+            logger.warning(
+                "provider_contract_invalid request_id=%s provider=%s agent_task=%s "
+                "field_path=%s violation=%s",
+                request_id,
+                provider,
+                agent_task,
+                error.field_path,
+                error.violation,
+            )
+            # A missing/malformed outer patch envelope is a formatter defect: the one existing
+            # repair pass may restore that shape. The canonicalizer has already restored an
+            # operation when Swift supplied exactly one capability; any remaining missing/invalid
+            # operation is ambiguous. Provided-invalid typed evidence is authoritative and must
+            # not be repaired into a different decision.
+            repairable_envelope = (
+                error.field_path == "semanticEvidencePatch"
+                and error.violation in {"missing", "model_type", "dict_type"}
+            )
+            reason = (
+                "current_v5_planner_contract_shape_invalid"
+                if repairable_envelope
+                else "current_v5_planner_contract_invalid"
+            )
+            raise ProviderError(provider, reason) from error
 
     async def _acquire_deepseek_slot(self) -> None:
         try:
@@ -732,6 +1079,61 @@ class ProviderGateway:
         max_tokens: int,
     ) -> Completion:
         """Repair structure without allowing a formatter to invent protocol permissions."""
+        if agent_task == "current_v5_core_writer":
+            repair_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict JSON formatter. Preserve the DRAFT wording exactly and "
+                        'return only {"reply":""}. Do not add, remove, answer, or rewrite a question.'
+                    ),
+                },
+                {"role": "user", "content": json.dumps({"DRAFT": draft}, ensure_ascii=False)},
+            ]
+            return await self._request_openai_compatible(
+                provider="deepseek",
+                base_url=config.DEEPSEEK_BASE_URL,
+                api_key=config.DEEPSEEK_API_KEY,
+                model=model,
+                messages=repair_messages,
+                max_tokens=max(240, min(max_tokens, 700)),
+                temperature=0.0,
+                timeout_seconds=config.DEEPSEEK_TIMEOUT_SECONDS,
+                supports_json_mode=True,
+                extra_payload={"thinking": {"type": "disabled"}},
+            )
+
+        if agent_task == "current_v5_core_planner":
+            repair_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Repair JSON syntax and types only; do not re-plan or infer missing evidence. "
+                        "Preserve the DRAFT semanticOperation, sparse memoryUpdate, card connection "
+                        "outcome, and responseFocus. Return only: "
+                        + CURRENT_V5_PLANNER_JSON_SHAPE
+                    ),
+                },
+                {
+                    "role": "user",
+                    # Repair sees only the malformed draft. The original request can contain
+                    # persisted Swift-owned input context and has no role in syntax formatting.
+                    "content": json.dumps({"DRAFT": draft}, ensure_ascii=False),
+                },
+            ]
+            return await self._request_openai_compatible(
+                provider="deepseek",
+                base_url=config.DEEPSEEK_BASE_URL,
+                api_key=config.DEEPSEEK_API_KEY,
+                model=model,
+                messages=repair_messages,
+                max_tokens=max(500, min(max_tokens, 1300)),
+                temperature=0.0,
+                timeout_seconds=config.DEEPSEEK_TIMEOUT_SECONDS,
+                supports_json_mode=True,
+                extra_payload={"thinking": {"type": "disabled"}},
+            )
+
         if agent_task in {"turn_controller_plan_critic", "turn_controller_critic"}:
             permission_context = "\n".join(
                 message.get("content", "")
@@ -818,100 +1220,31 @@ class ProviderGateway:
                 extra_payload={"thinking": {"type": "disabled"}},
             )
 
-        permission_context = "\n".join(
-            message.get("content", "")
-            for message in original_messages
-            if message.get("role") in {"system", "user"}
+        repair_messages = _planner_json_repair_messages(
+            draft=draft,
+            original_messages=original_messages,
         )
-        repair_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a strict JSON formatter for an LLM TurnPlanner. Return exactly one "
-                    "JSON object with requestedStage, localAction, memoryUpdate, "
-                    "resolvedConfirmation, nextPrompt, replyIntent, and "
-                    "replyGuidance. Preserve "
-                    "DRAFT meaning. requestedStage and localAction must use only values explicitly "
-                    "listed under CURRENT PERMISSIONS in ORIGINAL_REQUEST. Use null for memory fields "
-                    "that DRAFT did not establish. Never add a card meaning, tracking interpretation, "
-                    "responsibility claim, advice, or extra question. Required shape: "
-                    '{"requestedStage":"","localAction":{"kind":"none","trackingCueIDs":[]},'
-                    '"memoryUpdate":{"situationUnderstanding":null,'
-                    '"answeredQuestionPurposes":null,'
-                    '"receivedDisclosureQuestionPurposes":null,'
-                    '"eventDisclosureOutcome":null,"selfCriticismStatus":null,'
-                    '"selfCriticalStatement":null,"selfCriticismLink":null,'
-                    '"episodeStructure":null,"contextRelationship":null,'
-                    '"contextCueOffered":null,"trackingAssessments":null,'
-                    '"cardRealityConnection":null,'
-                    '"pendingCardRealityConnection":null,'
-                    '"clearPendingCardRealityConnection":null,'
-                    '"clearCardRealityConnection":null,"cardConnectionOutcome":null,'
-                    '"cardInterpretiveTension":null,'
-                    '"cardNegotiatedMeaning":null,"candidUnderstanding":null,'
-                    '"fierceUnderstanding":null,"finalNarrative":null,'
-                    '"practiceTransition":null},'
-                    '"resolvedConfirmation":null,'
-                    '"nextPrompt":{"kind":"none","purpose":null,"focus":null,'
-                    '"disclosurePurpose":null,"disclosureTarget":null,'
-                    '"disclosureReopenReason":null,"target":null,"referenceID":null},'
-                    '"replyIntent":"","replyGuidance":""}. '
-                    "resolvedConfirmation is null unless the latest user reply resolves the exact "
-                    "confirmationRequest stored in semanticMemory.nextPrompt; then it must copy "
-                    "that target and referenceID and use a legal decision. nextPrompt must always "
-                    "be one tagged shape: none with all optional fields null; openQuestion with "
-                    "non-empty purpose and focus and the contextual disclosureTarget required by "
-                    "ORIGINAL_REQUEST; or confirmationRequest with target only. A new "
-                    "nextPrompt.referenceID is normally null because Swift assigns it; the sole "
-                    "exception is a practice proposal, whose referenceID must exactly equal "
-                    "proposal.id. "
-                    "trackingAssessments must be null or an array of objects whose relevance is "
-                    "exactly related, partlyRelated, unrelated, or uncertain. Every assessment "
-                    "cueID must be copied exactly and unchanged from presentedTrackingCues in "
-                    "ORIGINAL_REQUEST. Never use trackingCandidates, a metric name, translated "
-                    "label, or an invented ID; if presentedTrackingCues is empty, use null. Every optional "
-                    "narrative memory field is a string or null, and answeredQuestionPurposes is "
-                    "an array of strings or null. selfCriticismStatus is null or exactly "
-                    "unresolved, present, absent, or uncertain. contextRelationship is null or "
-                    "an object with relevance and userInterpretation. null always means leave "
-                    "stored memory unchanged. episodeStructure is null or a nested field-level "
-                    "patch: preserve only nested keys established by DRAFT, omit unchanged nested "
-                    "keys, and never emit default empty arrays for omitted evidence. "
-                    "cardRealityConnection must be null or one complete object with non-empty "
-                    "imageRelation, non-empty realityMapping, source exactly userAuthored, "
-                    "userAccepted, or userRevised, and status exactly confirmed. Never emit a "
-                    "source-only, relation-only, or mapping-only connection. Never emit the "
-                    "retired cardImageRelation, cardRealityMapping, or cardRealityMappingSource "
-                    "keys, even with null values. pendingCardRealityConnection must be "
-                    "null or a complete object with id, imageRelation, and "
-                    "candidateRealityMapping and a matching cardRealityConnection confirmation. "
-                    "A confirmation target must be exactly trackingRelationship, cardConsent, "
-                    "cardRealityConnection, cardMapping, finalNarrative, or practice. "
-                    "practiceTransition must be null or one object with transactionID, optional "
-                    "narrativeReferenceID, proposal, and noActionReason. An active proposal must "
-                    "contain non-empty id, content, and basis; kind exactly care, repair, protect, "
-                    "or change; status pendingConfirmation or confirmed; and source "
-                    "assistantProposed or userRevised. suggestPractice/revisePractice requires "
-                    "requestedStage=optionalAction, pendingConfirmation, noActionReason=null, and "
-                    "a practice confirmation; transactionID, proposal.id, and its referenceID "
-                    "must be identical. A "
-                    "formal noAction transition has proposal=null and reason exactly userDeclined, "
-                    "userNotReady, or insufficientSupportedMaterial. Non-null arrays update "
-                    "typed entries, while [] makes no "
-                    "additions and does not clear stored entries."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "ORIGINAL_REQUEST": permission_context,
-                        "DRAFT": draft,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
+        bounds = _planner_repair_bounds(original_messages)
+        total_characters = sum(len(message["content"]) for message in repair_messages)
+        encoded_draft = json.dumps(draft, ensure_ascii=False, separators=(",", ":"))
+        log_prompt_length(
+            PromptLengthMetrics(
+                component="planner_json_repair",
+                stage=str(bounds.get("protocolStage") or "unknown"),
+                protocol_version=int(bounds.get("protocolVersion") or 0),
+                substate=str(bounds.get("cardConnectionInteractionState") or "none"),
+                shared_characters=len(PLANNER_JSON_REPAIR_CONTRACT) - len(PLANNER_JSON_SHAPE),
+                stage_characters=0,
+                substate_characters=0,
+                dynamic_state_characters=len(repair_messages[1]["content"]) - len(encoded_draft),
+                schema_characters=len(PLANNER_JSON_SHAPE),
+                conversation_characters=0,
+                recovery_characters=len(encoded_draft),
+                provider_format_characters=0,
+                total_characters=total_characters,
+                estimated_tokens=(total_characters + 3) // 4,
+            )
+        )
         return await self._request_openai_compatible(
             provider="deepseek",
             base_url=config.DEEPSEEK_BASE_URL,
@@ -941,6 +1274,8 @@ class ProviderGateway:
     @staticmethod
     def _is_repairable_turn_controller_task(*, role: Role, agent_task: str) -> bool:
         expected_roles: dict[str, Role] = {
+            "current_v5_core_planner": "writer",
+            "current_v5_core_writer": "writer",
             "turn_controller_planner": "writer",
             "turn_controller_plan_critic": "critic",
             "turn_controller_writer": "writer",

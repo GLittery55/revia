@@ -1516,31 +1516,102 @@ actor CalendarService {
         // a claim that the person has had more things to handle.
         guard !timedItems.isEmpty else { return [] }
         let historyDays = (0..<35).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
-        let dailyHistory = historyDays.map { day -> TrackingDataPoint in
+        let dayFacts = historyDays.map { day -> (
+            day: Date,
+            intervals: [DateInterval],
+            eventCount: Int,
+            dayEnd: Date
+        ) in
             let dayEnd = calendar.date(byAdding: .day, value: 1, to: day) ?? day
             let overlapping = items.filter { $0.startDate < dayEnd && $0.endDate > day }
             let timed = overlapping.filter { !$0.isAllDay }
-            let timedHours = CalendarOccupiedTimeCalculator.occupiedHours(
+            return (
+                day: day,
                 intervals: timed.map {
                     DateInterval(start: $0.startDate, end: max($0.startDate, $0.endDate))
                 },
-                within: DateInterval(start: day, end: dayEnd)
+                eventCount: timed.count,
+                dayEnd: dayEnd
             )
-            return .init(date: day, value: timedHours, count: timed.count)
+        }
+        let dailyHistory = dayFacts.map { facts in
+            TrackingDataPoint(
+                date: facts.day,
+                value: CalendarOccupiedTimeCalculator.occupiedHours(
+                    intervals: facts.intervals,
+                    within: DateInterval(start: facts.day, end: facts.dayEnd)
+                ),
+                count: facts.eventCount
+            )
+        }
+        let eventCountHistory = dayFacts.map {
+            TrackingDataPoint(date: $0.day, value: Double($0.eventCount), count: $0.eventCount)
+        }
+        let longestFreeBlockHistory = dayFacts.map { facts in
+            let windowStart = calendar.date(byAdding: .hour, value: 8, to: facts.day) ?? facts.day
+            let windowEnd = calendar.date(byAdding: .hour, value: 22, to: facts.day) ?? facts.dayEnd
+            return TrackingDataPoint(
+                date: facts.day,
+                value: CalendarOccupiedTimeCalculator.longestFreeBlockMinutes(
+                    intervals: facts.intervals,
+                    within: DateInterval(start: windowStart, end: windowEnd)
+                ),
+                count: facts.eventCount
+            )
+        }
+        let backToBackHistory = dayFacts.map { facts in
+            TrackingDataPoint(
+                date: facts.day,
+                value: Double(CalendarOccupiedTimeCalculator.backToBackPairCount(
+                    intervals: facts.intervals,
+                    within: DateInterval(start: facts.day, end: facts.dayEnd)
+                )),
+                count: facts.eventCount
+            )
+        }
+        let eveningScheduledHistory = dayFacts.map { facts in
+            let eveningStart = calendar.date(byAdding: .hour, value: 18, to: facts.day) ?? facts.day
+            return TrackingDataPoint(
+                date: facts.day,
+                value: CalendarOccupiedTimeCalculator.occupiedHours(
+                    intervals: facts.intervals,
+                    within: DateInterval(start: eveningStart, end: facts.dayEnd)
+                ) * 60,
+                count: facts.eventCount
+            )
         }
         let recentDaily = Array(dailyHistory.suffix(7))
         let recentTimed = timedItems.filter { $0.endDate > recentStart }
+        var calendarMetrics = TrackingMetrics(
+            periodStart: recentStart,
+            periodEnd: referenceDay,
+            summaryValue: recentDaily.compactMap(\.value).reduce(0, +),
+            unit: "小时",
+            sampleCount: recentTimed.count,
+            daily: recentDaily
+        )
+        calendarMetrics.supplementalSeries = [
+            .init(metric: "calendarEventCount", unit: "events", daily: eventCountHistory),
+            .init(
+                metric: "calendarLongestFreeBlock",
+                unit: "minutesBetween08And22",
+                daily: longestFreeBlockHistory
+            ),
+            .init(
+                metric: "calendarBackToBackPairs",
+                unit: "pairsWithin5Minutes",
+                daily: backToBackHistory
+            ),
+            .init(
+                metric: "calendarEveningScheduled",
+                unit: "minutesAfter18",
+                daily: eveningScheduledHistory
+            ),
+        ]
         var cue = TrackingCue(
             source: .calendarLoad,
             observation: "最近 7 天中记录到 \(recentTimed.count) 个定时日程；这里只统计去重后的占用时间，不读取标题或内容。",
-            metrics: .init(
-                periodStart: recentStart,
-                periodEnd: referenceDay,
-                summaryValue: recentDaily.compactMap(\.value).reduce(0, +),
-                unit: "小时",
-                sampleCount: recentTimed.count,
-                daily: recentDaily
-            )
+            metrics: calendarMetrics
         )
         let provenance = TrackingProvenance(
             sampleType: "calendarEvents",

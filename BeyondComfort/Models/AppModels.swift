@@ -157,14 +157,31 @@ enum ReflectionProtocolStage: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// Turn-local recovery contract selected from Swift-owned protocol state. This is never
+/// persisted and never advances the workflow; it only tells the server which already-permitted
+/// operation must be reconstructed after an invalid Planner object.
+enum TurnRecoveryOperation: String, Codable, CaseIterable, Sendable {
+    case eventDisclosure
+    case cardConsent
+    case cardOpenExploration
+    case cardCandidateResolution
+    case legacyCardReading
+    case currentCardGuidance
+    case directReflection
+    case directSynthesis
+    case optionalAction
+    case finalNarrative
+    case complete
+    case safety
+}
+
 /// Coarse readiness is an application-owned progress lock, not a psychological judgment. The LLM
-/// requests the transition by selecting a Tender/Fierce/final-narrative intent; Swift persists it
+/// requests the transition by selecting reflection or final-narrative intent; Swift persists it
 /// so a formatting repair cannot send an already-ready conversation back into more questioning.
 enum ReflectionReadiness: String, Codable, Sendable {
     case needsTender
-    /// Tender grounding is complete. The LLM may now request one evidence-supported candid
-    /// reflection, or move directly to the integrated narrative when responsibility, boundary,
-    /// behavior, or change work would be unsupported or unhelpful.
+    /// Post-connection reflection is open. Tender is the semantic default; Fierce is an optional,
+    /// evidence-bounded mode inside the same stage rather than a required later checkpoint.
     case reflectionOpen
     /// Legacy persisted value. New sessions use `reflectionOpen`; keeping this case preserves
     /// older research sessions without turning their stored label into a compulsory Fierce turn.
@@ -208,8 +225,9 @@ enum TurnSelfCriticismStatus: String, Codable, CaseIterable, Sendable {
     case uncertain
 }
 
-/// Planner-authored semantic readiness for the current Event Disclosure. Swift validates only
-/// its relationship to typed memory and capabilities; it never derives this value from Chinese.
+/// Deterministic readiness projection for the current Event Disclosure. The Planner may emit the
+/// field for readability, but Swift canonicalizes it from the effective typed episode before
+/// validation so it cannot become a second completion gate.
 enum TurnEventDisclosureOutcome: String, Codable, CaseIterable, Sendable {
     case needsConcreteEpisode
     case needsBehaviorOrProcess
@@ -278,6 +296,9 @@ struct TurnEpisodeStructure: Codable, Equatable, Sendable {
     /// require a definite cause: `uncertain` preserves an explicit inability or refusal to know,
     /// while `absent` preserves a user-grounded account that no additional process is available.
     var eventProcessStatus: TurnEpisodeEvidenceStatus = .unresolved
+    /// Grounded sequence or development of the focal event. This is distinct from what the user
+    /// did: one answer may supply both, but each relation has one content source of its own.
+    var eventProcess: [String] = []
     var possibleContributors: [String] = []
     var contextualConstraints: [String] = []
     var controllableParts: [String] = []
@@ -295,6 +316,7 @@ struct TurnEpisodeStructure: Codable, Equatable, Sendable {
         behaviorEvidenceStatus: TurnEpisodeEvidenceStatus = .unresolved,
         behaviorEvidence: [String] = [],
         eventProcessStatus: TurnEpisodeEvidenceStatus = .unresolved,
+        eventProcess: [String] = [],
         possibleContributors: [String] = [],
         contextualConstraints: [String] = [],
         controllableParts: [String] = [],
@@ -306,6 +328,7 @@ struct TurnEpisodeStructure: Codable, Equatable, Sendable {
         self.behaviorEvidenceStatus = behaviorEvidenceStatus
         self.behaviorEvidence = behaviorEvidence
         self.eventProcessStatus = eventProcessStatus
+        self.eventProcess = eventProcess
         self.possibleContributors = possibleContributors
         self.contextualConstraints = contextualConstraints
         self.controllableParts = controllableParts
@@ -315,7 +338,7 @@ struct TurnEpisodeStructure: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case concreteFacts, behaviorEvidenceStatus, behaviorEvidence, eventProcessStatus
+        case concreteFacts, behaviorEvidenceStatus, behaviorEvidence, eventProcessStatus, eventProcess
         case possibleContributors
         case contextualConstraints, controllableParts, impactStatus, impacts, keyUncertainty
     }
@@ -331,6 +354,7 @@ struct TurnEpisodeStructure: Codable, Equatable, Sendable {
         eventProcessStatus =
             (try? box.decode(TurnEpisodeEvidenceStatus.self, forKey: .eventProcessStatus))
             ?? .unresolved
+        eventProcess = (try? box.decode([String].self, forKey: .eventProcess)) ?? []
         possibleContributors =
             (try? box.decode([String].self, forKey: .possibleContributors)) ?? []
         contextualConstraints =
@@ -344,83 +368,157 @@ struct TurnEpisodeStructure: Codable, Equatable, Sendable {
         keyUncertainty = try? box.decodeIfPresent(String.self, forKey: .keyUncertainty)
     }
 
-    /// Applies only fields explicitly supplied by the latest Planner. Supplied arrays replace prior
-    /// values when they remain consistent with the effective typed status, preserving explicit
-    /// corrections; omitted fields retain their cumulative value instead of resetting to defaults.
+    /// Applies only fields explicitly supplied by the latest Planner. Event evidence is cumulative:
+    /// a sparse turn patch contributes grounded items and cannot replace the focal event with a
+    /// later detail. An explicit `absent` status is the only representation that clears a resolved
+    /// relation. This is the single merge boundary for both persisted memory and candidate state.
     func merging(_ patch: TurnEpisodeStructure) -> TurnEpisodeStructure {
         var merged = self
         if patch.providedFields.contains(.concreteFacts) {
-            merged.concreteFacts = patch.concreteFacts
+            merged.concreteFacts = Self.accumulating(
+                existing: concreteFacts,
+                additions: patch.concreteFacts
+            )
         }
         if patch.providedFields.contains(.behaviorEvidenceStatus) {
             merged.behaviorEvidenceStatus = patch.behaviorEvidenceStatus
+            if patch.behaviorEvidenceStatus == .absent {
+                merged.behaviorEvidence = []
+            }
         }
         if patch.providedFields.contains(.behaviorEvidence) {
-            merged.behaviorEvidence = patch.behaviorEvidence
+            if patch.providedFields.contains(.behaviorEvidenceStatus),
+               patch.behaviorEvidenceStatus == .absent {
+                merged.behaviorEvidence = []
+            } else {
+                merged.behaviorEvidence = Self.accumulating(
+                    existing: behaviorEvidence,
+                    additions: patch.behaviorEvidence
+                )
+            }
         }
         if patch.providedFields.contains(.eventProcessStatus) {
             merged.eventProcessStatus = patch.eventProcessStatus
+            if patch.eventProcessStatus == .absent {
+                merged.eventProcess = []
+            }
+        }
+        if patch.providedFields.contains(.eventProcess) {
+            if patch.providedFields.contains(.eventProcessStatus),
+               patch.eventProcessStatus == .absent {
+                merged.eventProcess = []
+            } else {
+                merged.eventProcess = Self.accumulating(
+                    existing: eventProcess,
+                    additions: patch.eventProcess
+                )
+            }
         }
         if patch.providedFields.contains(.possibleContributors) {
-            merged.possibleContributors = patch.possibleContributors
+            merged.possibleContributors = Self.accumulating(
+                existing: possibleContributors,
+                additions: patch.possibleContributors
+            )
         }
         if patch.providedFields.contains(.contextualConstraints) {
-            merged.contextualConstraints = patch.contextualConstraints
+            merged.contextualConstraints = Self.accumulating(
+                existing: contextualConstraints,
+                additions: patch.contextualConstraints
+            )
         }
         if patch.providedFields.contains(.controllableParts) {
-            merged.controllableParts = patch.controllableParts
+            merged.controllableParts = Self.accumulating(
+                existing: controllableParts,
+                additions: patch.controllableParts
+            )
         }
         if patch.providedFields.contains(.impactStatus) {
             merged.impactStatus = patch.impactStatus
+            if patch.impactStatus == .absent {
+                merged.impacts = []
+            }
         }
         if patch.providedFields.contains(.impacts) {
-            merged.impacts = patch.impacts
+            if patch.providedFields.contains(.impactStatus),
+               patch.impactStatus == .absent {
+                merged.impacts = []
+            } else {
+                merged.impacts = Self.accumulating(
+                    existing: impacts,
+                    additions: patch.impacts
+                )
+            }
         }
         if patch.providedFields.contains(.keyUncertainty) {
             merged.keyUncertainty = patch.keyUncertainty
         }
 
-        // Empty arrays are valid only when the accompanying typed status also says that the
-        // relation is absent, uncertain, or otherwise no longer evidence-bearing. A Planner that
-        // repeats a resolved `present`/`mixed` status while accidentally emitting [] must not
-        // reopen a completed relation and send the dialogue backwards. Explicit corrections still
-        // work by changing the status or by supplying replacement evidence.
-        if [.present, .mixed].contains(merged.behaviorEvidenceStatus),
-           !merged.behaviorEvidence.contains(where: Self.nonempty),
-           behaviorEvidence.contains(where: Self.nonempty) {
-            merged.behaviorEvidence = behaviorEvidence
-        }
-        let mergedHasEventProcessEvidence = [
-            merged.behaviorEvidence,
-            merged.possibleContributors,
-            merged.contextualConstraints,
-            merged.controllableParts,
-        ].contains { $0.contains(where: Self.nonempty) }
-        let priorHasEventProcessEvidence = [
-            behaviorEvidence,
-            possibleContributors,
-            contextualConstraints,
-            controllableParts,
-        ].contains { $0.contains(where: Self.nonempty) }
-        if [.present, .mixed].contains(merged.eventProcessStatus),
-           !mergedHasEventProcessEvidence,
-           priorHasEventProcessEvidence {
-            merged.behaviorEvidence = behaviorEvidence
-            merged.possibleContributors = possibleContributors
-            merged.contextualConstraints = contextualConstraints
-            merged.controllableParts = controllableParts
-        }
-        if [.present, .mixed].contains(merged.impactStatus),
-           !merged.impacts.contains(where: Self.nonempty),
-           impacts.contains(where: Self.nonempty) {
-            merged.impacts = impacts
-        }
-        merged.providedFields = Set(CodingKeys.allCases)
-        return merged
+        return merged.normalizingGroundedPresence()
     }
 
     private static func nonempty(_ value: String) -> Bool {
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func accumulating(
+        existing: [String],
+        additions: [String]
+    ) -> [String] {
+        var seen = Set<String>()
+        return (existing + additions).compactMap { value in
+            let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty, seen.insert(clean).inserted else { return nil }
+            return clean
+        }
+    }
+
+    var hasBehaviorEvidenceContent: Bool {
+        behaviorEvidence.contains(where: Self.nonempty)
+    }
+
+    var hasEventProcessContent: Bool {
+        eventProcess.contains(where: Self.nonempty)
+    }
+
+    var hasImpactContent: Bool {
+        impacts.contains(where: Self.nonempty)
+    }
+
+    /// Presence is redundant with grounded content and is therefore canonicalized before full
+    /// protocol validation. Absence/uncertainty remain semantic claims and are never inferred.
+    /// In particular, this function does not invent evidence or turn an empty `present` status
+    /// into content.
+    func normalizingGroundedPresence() -> TurnEpisodeStructure {
+        var normalized = self
+        if normalized.hasBehaviorEvidenceContent,
+           normalized.behaviorEvidenceStatus == .unresolved {
+            normalized.behaviorEvidenceStatus = .present
+        }
+        if normalized.hasEventProcessContent,
+           normalized.eventProcessStatus == .unresolved {
+            normalized.eventProcessStatus = .present
+        }
+        if normalized.hasImpactContent,
+           normalized.impactStatus == .unresolved {
+            normalized.impactStatus = .present
+        }
+        normalized.providedFields = Set(CodingKeys.allCases)
+        return normalized
+    }
+
+    /// Saved sessions created before `eventProcess` had its own content field used the other
+    /// episode arrays as the only process representation. Migrate that representation only at the
+    /// persisted-session decode boundary; Planner patches never call this compatibility path.
+    mutating func migrateLegacyEventProcessContentIfNeeded() {
+        guard !providedFields.contains(.eventProcess),
+              [.present, .mixed].contains(eventProcessStatus),
+              !hasEventProcessContent else { return }
+        let legacyContent = possibleContributors
+            + contextualConstraints
+            + controllableParts
+            + behaviorEvidence
+        eventProcess = legacyContent.filter(Self.nonempty)
+        providedFields.insert(.eventProcess)
     }
 
     /// Field names only, for privacy-preserving protocol diagnostics and repair contracts.
@@ -433,6 +531,7 @@ struct TurnEpisodeStructure: Codable, Equatable, Sendable {
             && lhs.behaviorEvidenceStatus == rhs.behaviorEvidenceStatus
             && lhs.behaviorEvidence == rhs.behaviorEvidence
             && lhs.eventProcessStatus == rhs.eventProcessStatus
+            && lhs.eventProcess == rhs.eventProcess
             && lhs.possibleContributors == rhs.possibleContributors
             && lhs.contextualConstraints == rhs.contextualConstraints
             && lhs.controllableParts == rhs.controllableParts
@@ -487,7 +586,8 @@ struct TurnPracticeProposal: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// One application-owned transaction from accepted narrative to either one proposal or noAction.
+/// One application-owned transaction from reflection (or a legacy accepted narrative) to either
+/// one proposal or noAction.
 /// `proposal == nil && noActionReason == nil` is the durable awaiting-proposal state.
 struct TurnPracticeTransition: Codable, Equatable, Sendable {
     let transactionID: String
@@ -757,6 +857,14 @@ enum TurnCardRealityMappingSource: String, Codable, CaseIterable, Sendable {
     case userRevised
 }
 
+/// The persisted card-connection interaction boundary supplied to the Planner. It is derived
+/// from the current session's pending candidate and confirmation prompt; the Planner cannot select
+/// or rewrite it.
+enum CardConnectionInteractionState: String, Codable, CaseIterable, Sendable {
+    case openExploration
+    case awaitingCandidateResolution
+}
+
 enum TurnCardRealityConnectionStatus: String, Codable, CaseIterable, Sendable {
     case confirmed
 }
@@ -794,6 +902,83 @@ struct TurnCardRealityConnection: Codable, Equatable, Sendable {
     }
 }
 
+/// Mutually exclusive Planner outcomes for one card-reality turn. Connection objects are carried
+/// only by the two outcomes that create or revise a canonical user-grounded mapping. Candidate
+/// acceptance/rejection is resolved deterministically from persisted pending state.
+enum CardConnectionTurnOutcomeKind: String, Codable, CaseIterable, Sendable {
+    case userAuthoredConnection
+    case connectionStillUnclear
+    case candidateAccepted
+    case candidateRevised
+    case candidateRejected
+}
+
+struct CardConnectionTurnOutcome: Codable, Equatable, Sendable {
+    let kind: CardConnectionTurnOutcomeKind
+    let connection: TurnCardRealityConnection?
+
+    init(
+        kind: CardConnectionTurnOutcomeKind,
+        connection: TurnCardRealityConnection? = nil
+    ) throws {
+        self.kind = kind
+        self.connection = connection
+        try Self.validate(kind: kind, connection: connection)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case connection
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try box.decode(CardConnectionTurnOutcomeKind.self, forKey: .kind)
+        let connection = try box.decodeIfPresent(
+            TurnCardRealityConnection.self,
+            forKey: .connection
+        )
+        try Self.validate(kind: kind, connection: connection)
+        self.kind = kind
+        self.connection = connection
+    }
+
+    private static func validate(
+        kind: CardConnectionTurnOutcomeKind,
+        connection: TurnCardRealityConnection?
+    ) throws {
+        switch kind {
+        case .userAuthoredConnection:
+            guard connection?.normalizedConfirmed?.source == .userAuthored else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: [],
+                        debugDescription: "userAuthoredConnection requires userAuthored connection"
+                    )
+                )
+            }
+        case .candidateRevised:
+            guard connection?.normalizedConfirmed?.source == .userRevised else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: [],
+                        debugDescription: "candidateRevised requires userRevised connection"
+                    )
+                )
+            }
+        case .connectionStillUnclear, .candidateAccepted, .candidateRejected:
+            guard connection == nil else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: [],
+                        debugDescription: "this card connection outcome cannot carry a connection"
+                    )
+                )
+            }
+        }
+    }
+}
+
 /// A bounded, pre-guidance candidate. It is not user evidence and never unlocks guidance until a
 /// typed acceptance or revision promotes it into `TurnCardRealityConnection`.
 struct PendingCardRealityConnection: Codable, Equatable, Sendable {
@@ -811,6 +996,24 @@ struct PendingCardRealityConnection: Codable, Equatable, Sendable {
         self.candidateRealityMapping = candidateRealityMapping
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case imageRelation
+        case candidateRealityMapping
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        // Candidate identity is application-owned. Older responses may still carry an ID, but a
+        // current Planner only needs to provide the two semantic strings.
+        id = try box.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        imageRelation = try box.decode(String.self, forKey: .imageRelation)
+        candidateRealityMapping = try box.decode(
+            String.self,
+            forKey: .candidateRealityMapping
+        )
+    }
+
     var isStructurallyComplete: Bool {
         !imageRelation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !candidateRealityMapping.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -825,6 +1028,224 @@ enum TurnCardConnectionOutcome: String, Codable, CaseIterable, Sendable {
     case noConnectionFound
     case candidateRejected
     case userRequestedSkip
+}
+
+/// The functional emphasis of post-connection reflection. Tender is the safe default; Fierce is
+/// available only when the Planner can point to user-grounded conduct, impact, and a bounded
+/// caring direction. These values are private protocol metadata and never user-visible labels.
+enum TurnReflectionMode: String, Codable, CaseIterable, Sendable {
+    case tender
+    case fierce
+}
+
+/// The single persisted semantic phase inside the existing `directReflection` workflow boundary.
+/// Swift writes this value from the authorized semantic operation; `nextPrompt` remains a Writer
+/// contract and never participates in phase selection.
+enum TurnReflectionPhase: String, Codable, CaseIterable, Sendable {
+    case exploratory
+    case tender
+    case fierce
+    case synthesis
+}
+
+/// The one typed semantic operation performed by a reflection turn. Free-form question purposes
+/// may help the Writer phrase the turn, but only this closed value participates in capability
+/// validation. The catalogue is intentionally small: four Tender-only operations, five bounded
+/// Fierce operations, and one shared synthesis operation.
+enum TurnReflectionAction: String, Codable, CaseIterable, Sendable {
+    case acknowledgeExperience
+    case distinguishFactFromPrediction
+    case softenGlobalSelfJudgment
+    case connectCommonHumanity
+    case acknowledgeBehaviorImpact
+    case clarifyBoundaryOrNeed
+    case identifyRepairDirection
+    case identifyProtectionDirection
+    case identifyChangeDirection
+    case synthesizeUnderstanding
+
+    var isTenderCompatible: Bool {
+        switch self {
+        case .acknowledgeExperience,
+             .distinguishFactFromPrediction,
+             .softenGlobalSelfJudgment,
+             .connectCommonHumanity,
+             .synthesizeUnderstanding:
+            return true
+        case .acknowledgeBehaviorImpact,
+             .clarifyBoundaryOrNeed,
+             .identifyRepairDirection,
+             .identifyProtectionDirection,
+             .identifyChangeDirection:
+            return false
+        }
+    }
+
+    var requiredFierceDirection: TurnFierceDirection? {
+        switch self {
+        case .identifyRepairDirection:
+            return .repair
+        case .identifyProtectionDirection:
+            return .protect
+        case .identifyChangeDirection:
+            return .change
+        default:
+            return nil
+        }
+    }
+}
+
+/// Self-compassion dimensions are selectable lenses, not sequential stages or questionnaire
+/// slots. A reflection uses only the one or two dimensions that add meaning to this episode.
+enum TurnSelfCompassionDimension: String, Codable, CaseIterable, Hashable, Sendable {
+    case selfKindness
+    case commonHumanity
+    case mindfulness
+}
+
+/// A Fierce direction is motivated by care for the person, another person, or the relationship.
+/// It never represents punishment, a global character judgment, or evidence inferred from a card.
+enum TurnFierceDirection: String, Codable, CaseIterable, Sendable {
+    case repair
+    case protect
+    case change
+}
+
+/// Typed provenance lets Swift enforce that a card connection cannot be the sole basis for
+/// responsibility. It does not ask Swift to interpret the evidence text.
+enum TurnReflectionEvidenceSource: String, Codable, CaseIterable, Sendable {
+    case episode
+    case latestUserAnswer
+    case cardRealityConnection
+    case confirmedContext
+}
+
+struct TurnReflectionEvidence: Codable, Equatable, Sendable {
+    let source: TurnReflectionEvidenceSource
+    let content: String
+}
+
+struct TurnFierceEvidence: Codable, Equatable, Sendable {
+    let behavior: String
+    let impact: String
+    let direction: TurnFierceDirection
+
+    /// Compatibility predicate for legacy protocols that stored Fierce grounding inside these two
+    /// fields. Current-v5 instead validates the Planner direction together with the canonical
+    /// `TurnReflectionFrame.evidenceBasis`; it does not require current-turn history duplication.
+    var hasGroundedBehaviorOrImpact: Bool {
+        !behavior.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !impact.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Legacy protocol validation still expects both fields. Current v5 uses the narrower
+    /// provenance boundary above rather than treating completeness as semantic sufficiency.
+    var isStructurallyComplete: Bool {
+        !behavior.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !impact.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// The sole current-protocol truth source for the mode and semantic delta of post-connection
+/// reflection. `replyIntent` and `nextPrompt` continue to describe whether this turn asks a
+/// question or advances; duplicating that move here would create a second workflow authority.
+struct TurnReflectionFrame: Codable, Equatable, Sendable {
+    let mode: TurnReflectionMode
+    let action: TurnReflectionAction
+    let evidenceBasis: [TurnReflectionEvidence]
+    let dimensions: [TurnSelfCompassionDimension]
+    let reflectionDelta: String
+    let fierceEvidence: TurnFierceEvidence?
+    /// Decode provenance only. Protocol-4 sessions predate `action`; mapping them to synthesis
+    /// keeps their saved understanding readable. A current Planner payload using that omission is
+    /// rejected, so this flag never becomes a second semantic truth source.
+    let actionWasInferredForLegacyDecode: Bool
+
+    init(
+        mode: TurnReflectionMode,
+        action: TurnReflectionAction,
+        evidenceBasis: [TurnReflectionEvidence],
+        dimensions: [TurnSelfCompassionDimension],
+        reflectionDelta: String,
+        fierceEvidence: TurnFierceEvidence?
+    ) {
+        self.mode = mode
+        self.action = action
+        self.evidenceBasis = evidenceBasis
+        self.dimensions = dimensions
+        self.reflectionDelta = reflectionDelta
+        self.fierceEvidence = fierceEvidence
+        actionWasInferredForLegacyDecode = false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case action
+        case evidenceBasis
+        case dimensions
+        case reflectionDelta
+        case fierceEvidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try box.decode(TurnReflectionMode.self, forKey: .mode)
+        if let decodedAction = try box.decodeIfPresent(
+            TurnReflectionAction.self,
+            forKey: .action
+        ) {
+            action = decodedAction
+            actionWasInferredForLegacyDecode = false
+        } else {
+            action = .synthesizeUnderstanding
+            actionWasInferredForLegacyDecode = true
+        }
+        // Current-v5 may omit Planner-redundant provenance at the transport boundary. Swift
+        // deterministically restores already committed lineage before authorization; semantic
+        // frame fields such as action and reflectionDelta remain required above and below.
+        evidenceBasis = try box.decodeIfPresent(
+            [TurnReflectionEvidence].self,
+            forKey: .evidenceBasis
+        ) ?? []
+        dimensions = try box.decode(
+            [TurnSelfCompassionDimension].self,
+            forKey: .dimensions
+        )
+        reflectionDelta = try box.decode(String.self, forKey: .reflectionDelta)
+        fierceEvidence = try box.decodeIfPresent(TurnFierceEvidence.self, forKey: .fierceEvidence)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        try box.encode(mode, forKey: .mode)
+        try box.encode(action, forKey: .action)
+        try box.encode(evidenceBasis, forKey: .evidenceBasis)
+        try box.encode(dimensions, forKey: .dimensions)
+        try box.encode(reflectionDelta, forKey: .reflectionDelta)
+        try box.encodeIfPresent(fierceEvidence, forKey: .fierceEvidence)
+    }
+
+    var hasNonemptyEvidence: Bool {
+        evidenceBasis.contains {
+            !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    var hasRealityEvidence: Bool {
+        evidenceBasis.contains {
+            [.episode, .latestUserAnswer].contains($0.source)
+                && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    var hasUsableDimensions: Bool {
+        (1...2).contains(Set(dimensions).count)
+            && Set(dimensions).count == dimensions.count
+    }
+
+    var hasReflectionDelta: Bool {
+        !reflectionDelta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 enum LegacySavedCardRealityConnectionMigration: Equatable, Sendable {
@@ -874,6 +1295,98 @@ enum TurnCardRealityConnectionResolver {
     }
 }
 
+/// Typed evidence that the person has described visible content in the card image.
+/// Populated by the Planner from the person's answer; Swift reads it, never interprets it.
+struct CardObservationEvidence: Codable, Equatable, Sendable {
+    /// User-described visible elements, people, objects, or scene components.
+    var userDescribedElements: [String] = []
+
+    var hasContent: Bool {
+        userDescribedElements.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+}
+
+/// Typed evidence that the person has described a development relation in the image:
+/// what may happen next, how roles may act, what choice or change is anticipated.
+/// Populated by the Planner; Swift reads it, never interprets it.
+struct CardDevelopmentEvidence: Codable, Equatable, Sendable {
+    var actorsOrElements: [String] = []
+    /// The element, uncertainty, tension, or choice the person themselves selected as worth
+    /// staying with. This is a semantic judgment from the Planner, never a keyword match.
+    var projectiveFocus: String?
+    var relationOrAction: String?
+    var anticipatedChangeOrChoice: String?
+
+    init(
+        actorsOrElements: [String] = [],
+        projectiveFocus: String? = nil,
+        relationOrAction: String? = nil,
+        anticipatedChangeOrChoice: String? = nil
+    ) {
+        self.actorsOrElements = actorsOrElements
+        self.projectiveFocus = projectiveFocus
+        self.relationOrAction = relationOrAction
+        self.anticipatedChangeOrChoice = anticipatedChangeOrChoice
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case actorsOrElements
+        case projectiveFocus
+        case relationOrAction
+        case anticipatedChangeOrChoice
+    }
+
+    /// Planner development evidence is a sparse cross-turn patch. Missing actors mean "reuse the
+    /// already committed actors", not an invalid payload or a request to clear them.
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        actorsOrElements = try box.decodeIfPresent(
+            [String].self,
+            forKey: .actorsOrElements
+        ) ?? []
+        projectiveFocus = try box.decodeIfPresent(String.self, forKey: .projectiveFocus)
+        relationOrAction = try box.decodeIfPresent(String.self, forKey: .relationOrAction)
+        anticipatedChangeOrChoice = try box.decodeIfPresent(
+            String.self,
+            forKey: .anticipatedChangeOrChoice
+        )
+    }
+
+    var hasContent: Bool {
+        actorsOrElements.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            || projectiveFocus?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || relationOrAction?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || anticipatedChangeOrChoice?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    /// Development evidence may arrive across two natural turns. Preserve a user-authored
+    /// relationship while adding its later continuation, without creating a parallel lifecycle.
+    func merging(_ patch: CardDevelopmentEvidence) -> CardDevelopmentEvidence {
+        func nonempty(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
+        }
+        var merged = self
+        for element in patch.actorsOrElements {
+            let clean = element.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !clean.isEmpty, !merged.actorsOrElements.contains(clean) {
+                merged.actorsOrElements.append(clean)
+            }
+        }
+        if let relation = nonempty(patch.relationOrAction) {
+            merged.relationOrAction = relation
+        }
+        if let focus = nonempty(patch.projectiveFocus) {
+            merged.projectiveFocus = focus
+        }
+        if let continuation = nonempty(patch.anticipatedChangeOrChoice) {
+            merged.anticipatedChangeOrChoice = continuation
+        }
+        return merged
+    }
+}
+
 /// LLM-owned conversational memory. It records what has been understood and which question
 /// functions have already been completed, while protocol state and local permissions remain
 /// outside this structure.
@@ -906,14 +1419,36 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
     /// richer than a surface similarity. Catalogue meanings never enter this field.
     var cardInterpretiveTension: String?
     var cardNegotiatedMeaning: String?
-    /// Optional, user-negotiated candid understanding. It may concern responsibility, boundary,
-    /// impact, cost, change, protection, or uncertainty; absence never blocks final narrative.
+    /// Typed evidence that the person described visible content in the card image.
+    /// Nil for old sessions; populated by current-protocol Planner semantic patches.
+    var cardObservationEvidence: CardObservationEvidence?
+    /// Typed evidence that the person described a development relation in the image.
+    /// Nil for old sessions; populated by current-protocol Planner semantic patches.
+    var cardDevelopmentEvidence: CardDevelopmentEvidence?
+    /// Set to a timestamp when a candidate bridge was resolved (accepted, revised, or rejected).
+    /// Nil before the first candidate resolution. Used to derive `candidateBridgeOfferedOrResolved`.
+    var candidateBridgeResolvedAt: Date?
+    /// Canonical Tender/Fierce/synthesis content. It remains nil throughout Exploration; absence
+    /// never asks Swift to search the dialogue for responsibility or compassion keywords.
+    var reflectionFrame: TurnReflectionFrame?
+    /// Canonical current-protocol substate within `directReflection`. Current turns update this
+    /// only through the Swift projector. Older saved sessions infer it once while decoding.
+    var reflectionPhase: TurnReflectionPhase
+    /// User-explicit corrections of assistant interpretations. These are semantic propositions,
+    /// not keywords; later Planner turns must treat them as unavailable evidence.
+    var invalidatedInterpretations: [String]
+    /// LEGACY_DECODE_ONLY — retained so earlier research sessions remain readable. Current prompts,
+    /// capability decisions, and stage validation never read or write these as truth sources.
     var candidUnderstanding: String?
-    /// Legacy field retained for additive decoding of earlier sessions.
     var fierceUnderstanding: String?
     var finalNarrative: String?
     /// The sole current Optional Action truth source.
     var practiceTransition: TurnPracticeTransition?
+
+    var effectiveReflectionMode: TurnReflectionMode {
+        reflectionFrame?.mode ?? .tender
+    }
+
     init(
         situationUnderstanding: String = "",
         answeredQuestionPurposes: [String] = [],
@@ -933,6 +1468,9 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         cardRealityMappingSource: TurnCardRealityMappingSource? = nil,
         cardInterpretiveTension: String? = nil,
         cardNegotiatedMeaning: String? = nil,
+        reflectionFrame: TurnReflectionFrame? = nil,
+        reflectionPhase: TurnReflectionPhase? = nil,
+        invalidatedInterpretations: [String] = [],
         candidUnderstanding: String? = nil,
         fierceUnderstanding: String? = nil,
         finalNarrative: String? = nil,
@@ -945,7 +1483,7 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.selfCriticismStatus = selfCriticismStatus
         self.selfCriticalStatement = selfCriticalStatement
         self.selfCriticismLink = selfCriticismLink
-        self.episodeStructure = episodeStructure
+        self.episodeStructure = episodeStructure?.normalizingGroundedPresence()
         self.contextRelationship = contextRelationship
         self.nextPrompt = nextPrompt
         self.trackingAssessments = trackingAssessments
@@ -957,6 +1495,9 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         self.cardRealityMappingSource = canonical?.source ?? cardRealityMappingSource
         self.cardInterpretiveTension = cardInterpretiveTension
         self.cardNegotiatedMeaning = cardNegotiatedMeaning
+        self.reflectionFrame = reflectionFrame
+        self.reflectionPhase = reflectionPhase ?? Self.inferredReflectionPhase(from: reflectionFrame)
+        self.invalidatedInterpretations = invalidatedInterpretations
         self.candidUnderstanding = candidUnderstanding
         self.fierceUnderstanding = fierceUnderstanding
         self.finalNarrative = finalNarrative
@@ -982,6 +1523,12 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         case cardRealityMappingSource
         case cardInterpretiveTension
         case cardNegotiatedMeaning
+        case cardObservationEvidence
+        case cardDevelopmentEvidence
+        case candidateBridgeResolvedAt
+        case reflectionFrame
+        case reflectionPhase
+        case invalidatedInterpretations
         case candidUnderstanding
         case fierceUnderstanding
         case finalNarrative
@@ -1026,8 +1573,9 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             try? box.decodeIfPresent(String.self, forKey: .selfCriticalStatement)
         selfCriticismLink =
             try? box.decodeIfPresent(String.self, forKey: .selfCriticismLink)
-        episodeStructure =
+        episodeStructure = (
             try? box.decodeIfPresent(TurnEpisodeStructure.self, forKey: .episodeStructure)
+        )?.normalizingGroundedPresence()
         contextRelationship =
             try? box.decodeIfPresent(TurnContextRelationship.self, forKey: .contextRelationship)
         nextPrompt = try? box.decodeIfPresent(TurnNextPrompt.self, forKey: .nextPrompt)
@@ -1072,6 +1620,19 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             try? box.decodeIfPresent(String.self, forKey: .cardInterpretiveTension)
         cardNegotiatedMeaning =
             try? box.decodeIfPresent(String.self, forKey: .cardNegotiatedMeaning)
+        cardObservationEvidence =
+            try? box.decodeIfPresent(CardObservationEvidence.self, forKey: .cardObservationEvidence)
+        cardDevelopmentEvidence =
+            try? box.decodeIfPresent(CardDevelopmentEvidence.self, forKey: .cardDevelopmentEvidence)
+        candidateBridgeResolvedAt =
+            try? box.decodeIfPresent(Date.self, forKey: .candidateBridgeResolvedAt)
+        reflectionFrame =
+            try? box.decodeIfPresent(TurnReflectionFrame.self, forKey: .reflectionFrame)
+        reflectionPhase =
+            (try? box.decode(TurnReflectionPhase.self, forKey: .reflectionPhase))
+            ?? Self.inferredReflectionPhase(from: reflectionFrame)
+        invalidatedInterpretations =
+            (try? box.decode([String].self, forKey: .invalidatedInterpretations)) ?? []
         candidUnderstanding =
             try? box.decodeIfPresent(String.self, forKey: .candidUnderstanding)
         fierceUnderstanding =
@@ -1119,6 +1680,16 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
                 )
             }
         }
+    }
+
+    /// LEGACY_DECODE_ONLY — current turns persist `reflectionPhase` directly. This migration keeps
+    /// an older saved Tender/Fierce/synthesis frame in its existing semantic position after reload.
+    private static func inferredReflectionPhase(
+        from frame: TurnReflectionFrame?
+    ) -> TurnReflectionPhase {
+        guard let frame else { return .exploratory }
+        if frame.action == .synthesizeUnderstanding { return .synthesis }
+        return frame.mode == .fierce ? .fierce : .tender
     }
 
     /// The sole legacy scalar-to-canonical migration entry. It is called only while decoding a
@@ -1200,7 +1771,9 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         if let value = update.selfCriticalStatement { selfCriticalStatement = value }
         if let value = update.selfCriticismLink { selfCriticismLink = value }
         if let value = update.episodeStructure {
-            episodeStructure = episodeStructure?.merging(value) ?? value
+            episodeStructure = (
+                episodeStructure?.merging(value) ?? value
+            ).normalizingGroundedPresence()
         }
         if let value = update.contextRelationship { contextRelationship = value }
         if let committedNextPrompt {
@@ -1212,6 +1785,11 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
             trackingAssessments = indexed.values.sorted { $0.cueID < $1.cueID }
         }
         if update.clearPendingCardRealityConnection == true {
+            // Recording the resolution timestamp makes candidateBridgeOfferedOrResolved
+            // durable even after the pending candidate is cleared.
+            if pendingCardRealityConnection != nil {
+                candidateBridgeResolvedAt = update.candidateBridgeResolvedAt ?? Date()
+            }
             pendingCardRealityConnection = nil
         }
         if let pending = update.pendingCardRealityConnection,
@@ -1237,6 +1815,21 @@ struct TurnSemanticMemory: Codable, Equatable, Sendable {
         }
         if let value = update.cardInterpretiveTension { cardInterpretiveTension = value }
         if let value = update.cardNegotiatedMeaning { cardNegotiatedMeaning = value }
+        if let value = update.cardObservationEvidence { cardObservationEvidence = value }
+        if let value = update.cardDevelopmentEvidence {
+            cardDevelopmentEvidence = cardDevelopmentEvidence?.merging(value) ?? value
+        }
+        if let value = update.candidateBridgeResolvedAt { candidateBridgeResolvedAt = value }
+        if let value = update.reflectionFrame { reflectionFrame = value }
+        if let value = update.reflectionPhase { reflectionPhase = value }
+        if let values = update.invalidatedInterpretations {
+            for value in values {
+                let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clean.isEmpty, !invalidatedInterpretations.contains(clean) {
+                    invalidatedInterpretations.append(clean)
+                }
+            }
+        }
         if let value = update.candidUnderstanding { candidUnderstanding = value }
         if let value = update.fierceUnderstanding { fierceUnderstanding = value }
         if let value = update.finalNarrative { finalNarrative = value }
@@ -1278,6 +1871,19 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
     var legacyConnectionFieldsPresentInPayload = false
     var cardInterpretiveTension: String?
     var cardNegotiatedMeaning: String?
+    /// Typed observation evidence from the Planner's semantic patch.
+    var cardObservationEvidence: CardObservationEvidence?
+    /// Typed development evidence from the Planner's semantic patch.
+    var cardDevelopmentEvidence: CardDevelopmentEvidence?
+    /// Set by Swift when a candidate bridge resolution is committed.
+    var candidateBridgeResolvedAt: Date?
+    var reflectionFrame: TurnReflectionFrame?
+    /// Swift-owned transition output. Current Planner prompts never request this field; the gate
+    /// clears any supplied value and writes the phase implied by the authorized operation.
+    var reflectionPhase: TurnReflectionPhase?
+    /// User-explicitly rejected assistant interpretations supplied as semantic propositions.
+    var invalidatedInterpretations: [String]?
+    /// LEGACY_DECODE_ONLY — current Planner output must use `reflectionFrame`.
     var candidUnderstanding: String?
     var fierceUnderstanding: String?
     var finalNarrative: String?
@@ -1305,6 +1911,12 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         cardRealityMappingSource: TurnCardRealityMappingSource? = nil,
         cardInterpretiveTension: String? = nil,
         cardNegotiatedMeaning: String? = nil,
+        cardObservationEvidence: CardObservationEvidence? = nil,
+        cardDevelopmentEvidence: CardDevelopmentEvidence? = nil,
+        candidateBridgeResolvedAt: Date? = nil,
+        reflectionFrame: TurnReflectionFrame? = nil,
+        reflectionPhase: TurnReflectionPhase? = nil,
+        invalidatedInterpretations: [String]? = nil,
         candidUnderstanding: String? = nil,
         fierceUnderstanding: String? = nil,
         finalNarrative: String? = nil,
@@ -1334,6 +1946,12 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
             || cardRealityMappingSource != nil
         self.cardInterpretiveTension = cardInterpretiveTension
         self.cardNegotiatedMeaning = cardNegotiatedMeaning
+        self.cardObservationEvidence = cardObservationEvidence
+        self.cardDevelopmentEvidence = cardDevelopmentEvidence
+        self.candidateBridgeResolvedAt = candidateBridgeResolvedAt
+        self.reflectionFrame = reflectionFrame
+        self.reflectionPhase = reflectionPhase
+        self.invalidatedInterpretations = invalidatedInterpretations
         self.candidUnderstanding = candidUnderstanding
         self.fierceUnderstanding = fierceUnderstanding
         self.finalNarrative = finalNarrative
@@ -1362,6 +1980,12 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
         case cardRealityMappingSource
         case cardInterpretiveTension
         case cardNegotiatedMeaning
+        case cardObservationEvidence
+        case cardDevelopmentEvidence
+        case candidateBridgeResolvedAt
+        case reflectionFrame
+        case reflectionPhase
+        case invalidatedInterpretations
         case candidUnderstanding
         case fierceUnderstanding
         case finalNarrative
@@ -1469,6 +2093,30 @@ struct TurnSemanticMemoryUpdate: Codable, Equatable, Sendable {
             String.self,
             forKey: .cardNegotiatedMeaning
         )
+        cardObservationEvidence = try? box.decode(
+            CardObservationEvidence.self,
+            forKey: .cardObservationEvidence
+        )
+        cardDevelopmentEvidence = try? box.decode(
+            CardDevelopmentEvidence.self,
+            forKey: .cardDevelopmentEvidence
+        )
+        candidateBridgeResolvedAt = try? box.decode(
+            Date.self,
+            forKey: .candidateBridgeResolvedAt
+        )
+        reflectionFrame = try? box.decode(
+            TurnReflectionFrame.self,
+            forKey: .reflectionFrame
+        )
+        reflectionPhase = try? box.decode(
+            TurnReflectionPhase.self,
+            forKey: .reflectionPhase
+        )
+        invalidatedInterpretations = try? box.decode(
+            [String].self,
+            forKey: .invalidatedInterpretations
+        )
         candidUnderstanding = try? box.decode(
             String.self,
             forKey: .candidUnderstanding
@@ -1532,14 +2180,27 @@ struct EffectiveEventDisclosureState: Equatable, Sendable {
         self.memory = projected
     }
 
-    var episode: TurnEpisodeStructure? { memory.episodeStructure }
+    var episode: TurnEpisodeStructure? {
+        memory.episodeStructure?.normalizingGroundedPresence()
+    }
 
     var hasConcreteFocalEvent: Bool {
         episode?.concreteFacts.contains(where: Self.nonempty) == true
     }
 
     var hasEventProcess: Bool {
-        [.present, .mixed].contains(episode?.eventProcessStatus ?? .unresolved)
+        guard let episode else { return false }
+        switch episode.eventProcessStatus {
+        case .unresolved:
+            return false
+        case .present, .mixed:
+            return episode.hasEventProcessContent
+        case .absent:
+            return !episode.hasEventProcessContent
+        case .uncertain:
+            return episode.hasEventProcessContent
+                || Self.nonempty(episode.keyUncertainty ?? "")
+        }
     }
 
     var hasUserBehaviorOrOmission: Bool {
@@ -1570,9 +2231,20 @@ struct CardReferenceSelection: Codable, Equatable, Sendable {
 }
 
 struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
+    /// Planner-authored semantic choice. Current protocol normal and recovery turns require this
+    /// closed value; only legacy responses may decode it as nil.
+    let semanticOperation: PlannerSemanticOperation?
+    /// Runtime-only provenance for a plan deterministically produced by the Swift projector.
+    /// It is deliberately excluded from Codable. The adapter is the only producer and it records
+    /// the operation actually used by the projector, independently of legacy Planner fields.
+    let projectedOperation: PlannerSemanticOperation?
     let requestedStage: ReflectionProtocolStage
     let localAction: TurnLocalActionRequest
     let memoryUpdate: TurnSemanticMemoryUpdate
+    /// Current card-reality Planner output. For protocol v5 this is the only direct card
+    /// connection decision; Swift maps it against persisted interaction state and creates any
+    /// confirmation resolution deterministically.
+    let cardConnectionTurnOutcome: CardConnectionTurnOutcome?
     /// Resolution of the prompt visible before this turn. Missing only for legacy responses.
     let resolvedConfirmation: TurnResolvedConfirmation?
     /// Prompt established by the new visible reply. Missing only for legacy responses.
@@ -1586,18 +2258,24 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
     let cardReferenceSelection: CardReferenceSelection?
 
     init(
+        semanticOperation: PlannerSemanticOperation? = nil,
+        projectedOperation: PlannerSemanticOperation? = nil,
         requestedStage: ReflectionProtocolStage,
         localAction: TurnLocalActionRequest,
         memoryUpdate: TurnSemanticMemoryUpdate,
+        cardConnectionTurnOutcome: CardConnectionTurnOutcome? = nil,
         resolvedConfirmation: TurnResolvedConfirmation? = nil,
         nextPrompt: TurnNextPrompt? = nil,
         replyIntent: TurnReplyIntent,
         replyGuidance: String,
         cardReferenceSelection: CardReferenceSelection? = nil
     ) {
+        self.semanticOperation = semanticOperation
+        self.projectedOperation = projectedOperation
         self.requestedStage = requestedStage
         self.localAction = localAction
         self.memoryUpdate = memoryUpdate
+        self.cardConnectionTurnOutcome = cardConnectionTurnOutcome
         self.resolvedConfirmation = resolvedConfirmation
         self.nextPrompt = nextPrompt
         self.replyIntent = replyIntent
@@ -1606,15 +2284,26 @@ struct LLMTurnResponsePlan: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case requestedStage, localAction, memoryUpdate, resolvedConfirmation, nextPrompt
+        case semanticOperation
+        case requestedStage, localAction, memoryUpdate, cardConnectionTurnOutcome
+        case resolvedConfirmation, nextPrompt
         case replyIntent, replyGuidance, cardReferenceSelection
     }
 
     init(from decoder: Decoder) throws {
         let box = try decoder.container(keyedBy: CodingKeys.self)
+        semanticOperation = try box.decodeIfPresent(
+            PlannerSemanticOperation.self,
+            forKey: .semanticOperation
+        )
+        projectedOperation = nil
         requestedStage = try box.decode(ReflectionProtocolStage.self, forKey: .requestedStage)
         localAction = try box.decode(TurnLocalActionRequest.self, forKey: .localAction)
         memoryUpdate = try box.decode(TurnSemanticMemoryUpdate.self, forKey: .memoryUpdate)
+        cardConnectionTurnOutcome = try box.decodeIfPresent(
+            CardConnectionTurnOutcome.self,
+            forKey: .cardConnectionTurnOutcome
+        )
         resolvedConfirmation = try box.decodeIfPresent(
             TurnResolvedConfirmation.self,
             forKey: .resolvedConfirmation
@@ -1643,6 +2332,7 @@ struct LLMTurnControllerResponse: Codable, Equatable, Sendable {
     let requestedStage: ReflectionProtocolStage
     let localAction: TurnLocalActionRequest
     let memoryUpdate: TurnSemanticMemoryUpdate
+    let cardConnectionTurnOutcome: CardConnectionTurnOutcome?
     let resolvedConfirmation: TurnResolvedConfirmation?
     let nextPrompt: TurnNextPrompt?
     let replyIntent: TurnReplyIntent
@@ -1652,6 +2342,7 @@ struct LLMTurnControllerResponse: Codable, Equatable, Sendable {
         requestedStage: ReflectionProtocolStage,
         localAction: TurnLocalActionRequest,
         memoryUpdate: TurnSemanticMemoryUpdate,
+        cardConnectionTurnOutcome: CardConnectionTurnOutcome? = nil,
         resolvedConfirmation: TurnResolvedConfirmation? = nil,
         nextPrompt: TurnNextPrompt? = nil,
         replyIntent: TurnReplyIntent,
@@ -1660,12 +2351,198 @@ struct LLMTurnControllerResponse: Codable, Equatable, Sendable {
         self.requestedStage = requestedStage
         self.localAction = localAction
         self.memoryUpdate = memoryUpdate
+        self.cardConnectionTurnOutcome = cardConnectionTurnOutcome
         self.resolvedConfirmation = resolvedConfirmation
         self.nextPrompt = nextPrompt
         self.replyIntent = replyIntent
         self.reply = reply
     }
 }
+
+// MARK: - Semantic Operation (non-persisted internal classification)
+
+/// Each case has exactly one business meaning. Unlike `TurnReplyIntent`, a semantic operation is
+/// never also a stage transition, a reply form, a legacy compatibility label, or a recovery hint.
+/// It classifies only the Planner's intended conversational action from typed state evidence.
+enum PlannerSemanticOperation: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    // MARK: - Event Disclosure
+    /// Continue gathering a missing event-structure relation (focal event, process, or behavior).
+    case clarifyEvent
+    /// The disclosure core is complete; transition to card-consent invitation.
+    case advanceToCardConsent
+
+    // MARK: - Card Consent
+    /// Continue inviting the person to consent to the optional card draw.
+    case inviteCardConsent
+    /// Person accepted; Swift draws the card and displays it locally.
+    case acknowledgeCardConsent
+    /// Person declined the card; proceed without it.
+    case declineCardConsent
+
+    // MARK: - Card Observation / Development
+    /// Continue inviting the person to describe what is visibly happening in the image.
+    case continueCardObservation
+    /// Continue developing the image—ask about what may happen/change next.
+    case continueCardDevelopment
+    /// The image relation is ready; invite the person to connect it to their real episode.
+    case inviteRealityConnection
+
+    // MARK: - Card Reality Connection
+    /// Continue an open-ended image-to-reality exploration turn.
+    case continueOpenCardConnection
+    /// Offer one scaffold/narrowing question that helps the person form a connection
+    /// without proposing a candidate. Only legal in openExploration after first difficulty.
+    case offerCardConnectionScaffold
+    /// Offer one system-proposed candidate mapping and ask the person to accept, revise, or reject.
+    case offerCardConnectionCandidate
+    /// Person spontaneously authored a complete image-to-reality mapping,
+    /// bypassing the candidate path. Canonical connection is created directly.
+    case establishUserAuthoredCardConnection
+    /// Person accepted the pending candidate; promote it to a canonical connection.
+    case acceptCardConnectionCandidate
+    /// Person revised the pending candidate; save the user-supplied mapping.
+    case reviseCardConnectionCandidate
+    /// Person rejected the pending candidate; clear it without a new mapping.
+    case rejectCardConnectionCandidate
+
+    // MARK: - Explicit Card Bypass
+    /// The person cannot or does not want a card–reality connection. Leave the card stage and
+    /// enter Direct Reflection. This is only legal when the connection is typed as unavailable,
+    /// the person has requested a skip, or the current protocol allows bypass.
+    case bypassCardConnectionToDirectReflection
+
+    // MARK: - Card Canonical Connection (post-guidance)
+    /// v5: silently authorize card guidance and enter Direct Reflection.
+    case authorizeCardGuidance
+    /// v4: present the legacy negotiated card reading.
+    case presentLegacyCardReading
+
+    // MARK: - Direct Reflection
+    /// Continue from the established reality connection without interpreting it yet. The question
+    /// seeks one concrete experience, behavior, tension, expectation, constraint, or choice.
+    case continueExploratoryReflection
+    /// Continue Tender reflection with one grounded distinction.
+    case continueTenderReflection
+    /// Continue Fierce reflection grounded in Tender, with behavior/impact/caring-direction evidence.
+    case continueTenderGroundedFierceReflection
+    /// Synthesize the reflection. A later proposePractice turn owns the optional action.
+    case synthesizeDirectReflection
+
+    // MARK: - Optional Action
+    /// Propose one new practice (care/repair/protect/change/noAction).
+    case proposePractice
+    /// Resolve a pending practice proposal (accept, revise, decline, or reject).
+    case resolvePractice
+
+    // MARK: - Narrative
+    /// Present or confirm the final narrative.
+    case confirmNarrative
+    /// Revise the final narrative.
+    case reviseNarrative
+
+    // MARK: - Completion
+    /// Complete the conversation.
+    case completeConversation
+
+    // MARK: - Safety
+    /// Provide immediate safety support.
+    case provideSafetySupport
+}
+
+/// The minimal non-persisted semantic payload produced by classifying a Planner turn.
+/// It carries only the operation and its evidence patch; stage transitions, nextPrompt,
+/// confirmations, and outcome projections belong to a separate projector.
+struct PlannerSemanticDecision: Equatable, Sendable {
+    let operation: PlannerSemanticOperation
+    let memoryUpdate: TurnSemanticMemoryUpdate
+    /// What the visible response should express (derived from replyGuidance).
+    let responseFocus: String?
+    /// What question the turn should clarify, when the operation asks a question.
+    let clarificationFocus: String?
+}
+
+/// Typed substate for the card-reflection stage. This mirrors the server-side `_card_substate`
+/// classification but is computed deterministically from persisted session state.
+enum CardSemanticSubstate: String, Equatable, Sendable {
+    case none
+    case observation
+    case development
+    case openExploration
+    case awaitingCandidateResolution
+    case guidance
+}
+
+/// Thrown when a Planner `replyIntent` + current state combination cannot be classified into
+/// exactly one semantic operation.
+enum SemanticMappingViolation: Error, Equatable {
+    case missingSemanticOperation
+    case unknownSemanticOperation(String)
+    case semanticOperationPayloadMismatch(PlannerSemanticOperation, String)
+    case semanticOperationNotAllowed(PlannerSemanticOperation, ReflectionProtocolStage)
+    case legacyOperationInferenceUsedInCurrentProtocol
+    case explicitLegacyOperationDivergence(
+        explicit: PlannerSemanticOperation,
+        legacy: PlannerSemanticOperation
+    )
+    case ambiguousReplyIntent(TurnReplyIntent, ReflectionProtocolStage)
+    case cardSubstateMismatch(TurnReplyIntent, CardSemanticSubstate)
+    case missingRequiredOutcome(TurnReplyIntent)
+    case unclassifiablePlan(String)
+}
+
+/// Thrown when a valid semantic operation cannot be projected into an executable turn
+/// because required typed preconditions are not satisfied.
+enum ProjectionViolation: Error, Equatable {
+    case illegalOperationForStage(PlannerSemanticOperation, ReflectionProtocolStage)
+    case illegalOperationForCardSubstate(PlannerSemanticOperation, CardSemanticSubstate)
+    case missingTypedPrecondition(PlannerSemanticOperation, String)
+    case capabilityNotAvailable(PlannerSemanticOperation, String)
+    case structuralInvariant(PlannerSemanticOperation, String)
+}
+
+// MARK: - Projected Executable Turn Plan
+
+/// Deterministically projected from a semantic operation and typed state.
+/// Contains no Planner-authored protocol fields (no `requestedStage`, `nextPrompt`,
+/// `confirmation`, or `outcome` from the old LLM output). Non-Codable, non-persisted.
+struct ProjectedExecutableTurnPlan: Equatable, Sendable {
+    let semanticDecision: PlannerSemanticDecision
+
+    let sourceStage: ReflectionProtocolStage
+    let requestedStage: ReflectionProtocolStage
+    let replyIntent: TurnReplyIntent
+    let localAction: TurnLocalActionRequest
+
+    let nextPrompt: TurnNextPrompt
+    let resolvedConfirmation: TurnResolvedConfirmation?
+
+    let memoryUpdate: TurnSemanticMemoryUpdate
+    let responseFocus: String?
+
+    init(
+        semanticDecision: PlannerSemanticDecision,
+        sourceStage: ReflectionProtocolStage,
+        requestedStage: ReflectionProtocolStage,
+        replyIntent: TurnReplyIntent,
+        localAction: TurnLocalActionRequest,
+        nextPrompt: TurnNextPrompt,
+        resolvedConfirmation: TurnResolvedConfirmation?,
+        memoryUpdate: TurnSemanticMemoryUpdate,
+        responseFocus: String?
+    ) {
+        self.semanticDecision = semanticDecision
+        self.sourceStage = sourceStage
+        self.requestedStage = requestedStage
+        self.replyIntent = replyIntent
+        self.localAction = localAction
+        self.nextPrompt = nextPrompt
+        self.resolvedConfirmation = resolvedConfirmation
+        self.memoryUpdate = memoryUpdate
+        self.responseFocus = responseFocus
+    }
+}
+
+// MARK: - Legacy workflow phase (unchanged)
 
 /// A persisted, research-facing workflow phase that is intentionally finer grained than the
 /// legacy UI/LLM `ReflectionState`. Keeping the two separate lets Swift own the fixed study
@@ -2078,12 +2955,21 @@ struct TrackingProvenance: Codable, Equatable {
 enum TrackingCueRelevance: String, Codable, CaseIterable, Sendable {
     /// The cue was made available in dialogue but the person has not related it to the event.
     /// It remains ineligible for the final narrative.
-    case notReviewed, offered, relevant, irrelevant, uncertain
+    case notReviewed, offered, reviewedNotUsed, relevant, irrelevant, uncertain
+}
+
+/// Exact identity of the one compact Tracking metric actually presented in current-v5 dialogue.
+/// It contains no values or interpretation; it binds the later user relationship to the same cue.
+struct ContextualTrackingMetricIdentity: Codable, Equatable, Hashable, Sendable {
+    let profileID: String
+    let metric: String
 }
 
 /// A deliberately coarse interpretation of several tracking deviations. It is not a measured
 /// psychological stress level and is never used to name a specific emotion.
 enum ContextualLoadState: String, Codable, Sendable {
+    /// Current-v5 lifecycle holder only: no local contextual interpretation was performed.
+    case notAssessed
     case insufficientEvidence
     case usualRange
     case recordedScheduleContext
@@ -2093,6 +2979,8 @@ enum ContextualLoadState: String, Codable, Sendable {
 }
 
 enum ContextualLoadConfidence: String, Codable, Sendable {
+    /// Current-v5 does not assign confidence to a contextual interpretation.
+    case notAssessed
     case low
     case moderate
     case high
@@ -2108,8 +2996,9 @@ enum ContextualEnergyState: String, Codable, Sendable {
     case possiblyReduced
 }
 
-/// Local research/debug representation. Supporting measurements and alternative explanations stay
-/// on device. `dialogueHypothesis` is the only measurement-free wording eligible for an LLM.
+/// Legacy research/debug representation retained for saved-session compatibility. Current-v5 does
+/// not use `dialogueHypothesis`: it sends cleaned aggregates and their limitations to the Planner,
+/// which decides whether they add useful context and leaves the Writer to phrase any reveal.
 /// Valence and emotion labels are intentionally absent: sleep, activity, heart rate and HRV cannot
 /// distinguish anxiety, sadness, anger, excitement, or another specific feeling.
 struct ContextualLoadInference: Codable, Equatable {
@@ -2123,16 +3012,19 @@ struct ContextualLoadInference: Codable, Equatable {
     let alternativeExplanations: [String]
     let dialogueHypothesis: String?
     var relevance: TrackingCueRelevance
+    /// Additive current-v5 provenance. Eligibility classifications remain turn-local; only the
+    /// identity of the metric that was actually shown survives for the following relation turn.
+    var presentedMetricIdentity: ContextualTrackingMetricIdentity? = nil
 
     var hasDialogueCue: Bool {
-        guard confidence != .low,
+        guard ![.notAssessed, .low].contains(confidence),
               let dialogueHypothesis else { return false }
         return !dialogueHypothesis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
-/// The narrow typed interface allowed to cross from local context inference into dialogue
-/// generation. It contains no metric names, values, samples, provenance, or emotion label.
+/// Legacy-only typed interface retained for saved-session dialogue compatibility. Current-v5 does
+/// not construct this cue or grant its locally authored hypothesis any Planner/Writer authority.
 struct DialogueContextCue: Codable, Equatable, Sendable {
     let hypothesis: String
     let confidence: ContextualLoadConfidence
@@ -2177,6 +3069,13 @@ struct TrackingInsight: Identifiable, Codable, Equatable {
     let interquartileRange: Double?
     let longestConsecutiveRun: Int
     var userRelevance: TrackingCueRelevance
+    /// Additive factual snapshots used by the current-v5 input projection. These are cleaned
+    /// daily aggregates, never raw HealthKit/EventKit samples. Optional defaults keep sessions
+    /// saved before temporal profiles were introduced decodable.
+    var recentDailyPoints: [TrackingDataPoint]? = nil
+    var factualBaselineMedian: Double? = nil
+    var baselineObservedDays: Int? = nil
+    var baselineExpectedDays: Int? = nil
 }
 
 struct ConfirmedTrackingContext: Codable, Equatable {
@@ -2212,6 +3111,15 @@ struct TrackingMetrics: Codable, Equatable {
     let summaryValue: Double?
     let unit: String
     let sampleCount: Int
+    let daily: [TrackingDataPoint]
+    /// Optional factual dimensions derived from the same cleaned source. Current-v5 can expose
+    /// them as separate temporal series without sending titles, samples, or a quality judgment.
+    var supplementalSeries: [TrackingSupplementalSeries]? = nil
+}
+
+struct TrackingSupplementalSeries: Codable, Equatable {
+    let metric: String
+    let unit: String
     let daily: [TrackingDataPoint]
 }
 
@@ -2337,8 +3245,10 @@ struct CardVisualGuidance: Codable, Equatable {
 
 /// A small set of reality-translated Major Arcana relationships. These are closed reference
 /// lenses, not default card meanings or user facts. The app withholds this object until the
-/// person has established an image relation and an image-to-life mapping; the model may then use
-/// at most one supported relationship to shape a question, never as the person's answer.
+/// person has established an image relation and an image-to-life mapping. It is available only as
+/// an Exploratory Planner question lens when Card development, the canonical connection, and the
+/// current episode support the same relationship. It is never grounded evidence, Writer content,
+/// a Tender/Fierce premise, synthesis material, final narrative content, or an action source.
 struct CardReferenceGuidance: Codable, Equatable, Sendable {
     let relations: [String]
     let activationBoundary: String
@@ -2904,9 +3814,12 @@ struct AdaptiveDisclosureResolver {
 
 struct ReflectionSession: Identifiable, Codable {
     /// Protocol 3 introduced the typed interaction contract used by later card and practice
-    /// operations. Protocol 4 consolidates all TurnController sessions onto one runtime contract.
+    /// operations. Protocol 4 consolidated the TurnController runtime. Protocol 5 adds the typed
+    /// reflection action and makes the existing optional-action node precede the final narrative.
     static let structuredTurnProtocolVersion = 3
-    static let currentProtocolVersion = 4
+    static let consolidatedTurnProtocolVersion = 4
+    static let actionFirstReflectionProtocolVersion = 5
+    static let currentProtocolVersion = actionFirstReflectionProtocolVersion
     static let simpleGentleControlProtocolVersion = 3
 
     var id = UUID()
@@ -3075,11 +3988,16 @@ struct ReflectionSession: Identifiable, Codable {
         createdAt = (try? box.decode(Date.self, forKey: .createdAt)) ?? Date()
         stage = (try? box.decode(ReflectionState.self, forKey: .stage)) ?? .welcome
         let savedProtocolVersion = (try? box.decode(Int.self, forKey: .protocolVersion)) ?? 1
-        // All TurnController sessions now enter the single current runtime contract after decode.
-        // Version 1 belongs to the pre-Turn workflow and remains separately resumable.
-        protocolVersion = savedProtocolVersion >= 2
-            ? Self.currentProtocolVersion
-            : savedProtocolVersion
+        // Protocol-4 sessions keep their established narrative-first ordering. Older typed
+        // sessions normalize to that compatible contract, while only newly created protocol-5
+        // sessions receive the action-first capability sequence.
+        if savedProtocolVersion >= Self.actionFirstReflectionProtocolVersion {
+            protocolVersion = Self.currentProtocolVersion
+        } else if savedProtocolVersion >= 2 {
+            protocolVersion = Self.consolidatedTurnProtocolVersion
+        } else {
+            protocolVersion = savedProtocolVersion
+        }
         protocolStage = (try? box.decode(ReflectionProtocolStage.self, forKey: .protocolStage))
             ?? Self.inferredProtocolStage(from: stage)
         reflectionReadiness =
@@ -3092,6 +4010,10 @@ struct ReflectionSession: Identifiable, Codable {
         var decodedSemanticMemory =
             (try? box.decode(TurnSemanticMemory.self, forKey: .semanticMemory))
             ?? TurnSemanticMemory()
+        if var episode = decodedSemanticMemory.episodeStructure {
+            episode.migrateLegacyEventProcessContentIfNeeded()
+            decodedSemanticMemory.episodeStructure = episode
+        }
         let savedCardConnectionMigration =
             decodedSemanticMemory.migrateLegacySavedCardRealityConnection()
         semanticMemory = decodedSemanticMemory

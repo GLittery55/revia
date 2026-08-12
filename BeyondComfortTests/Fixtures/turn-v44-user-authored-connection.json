@@ -1,0 +1,75 @@
+{
+  "requestedStage": "contextualDisclosure",
+  "localAction": {
+    "kind": "none",
+    "trackingCueIDs": []
+  },
+  "memoryUpdate": {
+    "situationUnderstanding": null,
+    "answeredQuestionPurposes": ["card_reality_connection"],
+    "receivedDisclosureQuestionPurposes": null,
+    "eventDisclosureOutcome": null,
+    "selfCriticismStatus": null,
+    "selfCriticalStatement": null,
+    "selfCriticismLink": null,
+    "episodeStructure": null,
+    "contextRelationship": null,
+    "contextCueOffered": true,
+    "trackingAssessments": null,
+    "cardRealityConnection": null,
+    "pendingCardRealityConnection": null,
+    "clearPendingCardRealityConnection": null,
+    "clearCardRealityConnection": null,
+    "cardConnectionOutcome": null,
+    "cardInterpretiveTension": null,
+    "cardNegotiatedMeaning": null,
+    "cardObservationEvidence": null,
+    "cardDevelopmentEvidence": null,
+    "candidateBridgeResolvedAt": null,
+    "reflectionFrame": {
+      "mode": "tender",
+      "action": "softenGlobalSelfJudgment",
+      "evidenceBasis": [
+        {
+          "source": "episode",
+          "content": "用户已经说明的具体经历"
+        },
+        {
+          "source": "cardRealityConnection",
+          "content": "用户把画面中的重新安排连接到当前事件"
+        }
+      ],
+      "dimensions": ["selfKindness", "mindfulness"],
+      "reflectionDelta": "区分具体经历与对整个人的扩大判断",
+      "fierceEvidence": null
+    },
+    "finalNarrative": null,
+    "practiceTransition": null
+  },
+  "cardConnectionTurnOutcome": {
+    "kind": "userAuthoredConnection",
+    "connection": {
+      "imageRelation": "画面里的人正在重新安排随身物品",
+      "realityMapping": "用户把重新安排与当前事件中想放下一项负担联系起来",
+      "source": "userAuthored",
+      "status": "confirmed"
+    }
+  },
+  "resolvedConfirmation": null,
+  "nextPrompt": {
+    "kind": "none",
+    "purpose": null,
+    "focus": null,
+    "disclosurePurpose": null,
+    "disclosureTarget": null,
+    "disclosureReopenReason": null,
+    "target": null,
+    "referenceID": null
+  },
+  "replyIntent": "inviteCardConnection",
+  "replyGuidance": "把卡牌桥接和一个有事实依据的 Tender 问题写在同一条回复里",
+  "cardReferenceSelection": null,
+  "serverOptionalTrace": {
+    "fixtureSource": "turn-v4-server-v44"
+  }
+}

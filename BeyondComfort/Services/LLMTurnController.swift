@@ -18,6 +18,47 @@ struct LLMTurnTrackingCandidate: Codable, Equatable {
     let observation: String
 }
 
+/// One cleaned daily aggregate. It is intentionally smaller than a HealthKit/EventKit sample and
+/// contains no source identity or event text.
+struct LLMTurnTemporalDataPoint: Codable, Equatable, Sendable {
+    let date: String
+    let value: Double
+    let sampleCount: Int
+}
+
+/// Factual observation counts. Coverage is sent instead of a Swift-authored quality label so the
+/// Planner can decide how much weight, if any, the profile deserves beside the current episode.
+struct LLMTurnTemporalCoverage: Codable, Equatable, Sendable {
+    let recentObservedDays: Int
+    let recentExpectedDays: Int
+    let recentSampleCount: Int
+    let baselineObservedDays: Int
+    let baselineExpectedDays: Int
+}
+
+/// A compact temporal profile for one measured dimension. Recent facts, window summaries and the
+/// personal baseline remain separate; there is no good/bad, stress, recovery or relevance label.
+struct LLMTurnTemporalMetricProfile: Codable, Equatable, Sendable {
+    let metric: String
+    let unit: String
+    let recentDaily: [LLMTurnTemporalDataPoint]
+    let recentMedian: Double?
+    let recentTotal: Double?
+    let recentRecordCount: Int?
+    let baselineMedian: Double?
+    let coverage: LLMTurnTemporalCoverage
+}
+
+/// Current-v5 input-only grouping of compact factual profiles. The Planner classifies each exact
+/// metric and chooses at most one preferred contextual cue; Swift only validates and compiles it.
+struct LLMTurnContextualTrackingProfile: Codable, Equatable, Sendable {
+    /// Stable input-only identity used for the Planner's one-shot metric review. It grants no
+    /// semantic meaning and is never inferred back from Writer prose.
+    let profileID: String
+    let domain: String
+    let metrics: [LLMTurnTemporalMetricProfile]
+}
+
 struct LLMTurnTrackingPresentationContext: Codable, Equatable {
     let id: String
     let cueIDs: [String]
@@ -49,6 +90,9 @@ struct LLMTurnCardContext: Codable, Equatable {
     let connectionAttemptCount: Int
     let connectionScaffoldUsed: Bool
     let connectionUnavailable: Bool
+    /// Derived from persisted pending-candidate state. The Planner may only select an outcome
+    /// belonging to this interaction state.
+    let connectionInteractionState: CardConnectionInteractionState
     /// The one current episode that every pre-guidance reality connection must remain inside.
     /// Nil means the app has no committed event basis and the model may not search for a
     /// substitute example elsewhere in the person's life.
@@ -71,6 +115,7 @@ struct LLMTurnCardContext: Codable, Equatable {
         connectionAttemptCount: Int = 0,
         connectionScaffoldUsed: Bool = false,
         connectionUnavailable: Bool = false,
+        connectionInteractionState: CardConnectionInteractionState = .openExploration,
         realityAnchor: LLMTurnCardRealityAnchor? = nil,
         visualScaffolds: [CardVisualScaffold],
         reflectionApproaches: SystemReflectionApproaches?,
@@ -82,6 +127,7 @@ struct LLMTurnCardContext: Codable, Equatable {
         self.connectionAttemptCount = connectionAttemptCount
         self.connectionScaffoldUsed = connectionScaffoldUsed
         self.connectionUnavailable = connectionUnavailable
+        self.connectionInteractionState = connectionInteractionState
         self.realityAnchor = realityAnchor
         self.visualScaffolds = visualScaffolds
         self.reflectionApproaches = reflectionApproaches
@@ -92,7 +138,8 @@ struct LLMTurnCardContext: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case imageIsDisplayed, imageDevelopmentTurnCount, connectionAttemptCount
         case connectionScaffoldUsed
-        case connectionUnavailable, realityAnchor, visualScaffolds, reflectionApproaches
+        case connectionUnavailable, connectionInteractionState, realityAnchor
+        case visualScaffolds, reflectionApproaches
         case prohibitedClaims
         case referenceGuidance
     }
@@ -108,6 +155,10 @@ struct LLMTurnCardContext: Codable, Equatable {
             (try? box.decode(Bool.self, forKey: .connectionScaffoldUsed)) ?? false
         connectionUnavailable =
             (try? box.decode(Bool.self, forKey: .connectionUnavailable)) ?? false
+        connectionInteractionState = (try? box.decode(
+            CardConnectionInteractionState.self,
+            forKey: .connectionInteractionState
+        )) ?? .openExploration
         realityAnchor =
             try? box.decodeIfPresent(LLMTurnCardRealityAnchor.self, forKey: .realityAnchor)
         visualScaffolds =
@@ -128,20 +179,30 @@ struct LLMTurnTranscriptItem: Codable, Equatable {
 
 struct LLMTurnControllerRequest: Codable, Equatable {
     let trigger: LLMTurnTrigger
-    /// Selects an immutable server prompt contract. Older in-progress sessions continue using the
-    /// v1 registry entry after an app update; only current sessions opt into the v2 interaction.
+    /// Selects an immutable server prompt contract. Older in-progress sessions keep their saved
+    /// protocol compatibility; only newly created sessions opt into the current action-first turn.
     let protocolVersion: Int
     let protocolStage: ReflectionProtocolStage
+    /// Present only for a protocol-correction request. Swift derives it from the last valid
+    /// persisted session; neither the failed plan nor the server can select a different recovery
+    /// operation.
+    let recoveryOperation: TurnRecoveryOperation?
     let condition: ExperimentalCondition
     let permissions: ReflectionProtocolPermissions
     let recentMessages: [LLMTurnTranscriptItem]
     let semanticMemory: TurnSemanticMemory
     /// Unused cues that may still be selected by the presentTrackingCue local action.
     let trackingCandidates: [LLMTurnTrackingCandidate]
-    /// One local, measurement-free hypothesis. Current sessions may use it in one ordinary
-    /// functional-relationship question; only the person's typed interpretation can enter later
-    /// reflection. It never creates a separate pre-card confirmation in the current protocol.
+    /// Legacy-only measurement-free hypothesis retained for stored-session compatibility.
+    /// Current-v5 always leaves this nil and uses `contextualTrackingProfiles` instead.
     let contextualLoadCue: DialogueContextCue?
+    /// Cleaned temporal facts available to the current-v5 Planner and Writer. This is turn-local
+    /// input, not persisted semantic state and not permission to present a tracking reading.
+    let contextualTrackingProfiles: [LLMTurnContextualTrackingProfile]
+    /// Exact local calendar day supplied or resolved from the person's own event-time wording.
+    /// Nil means the event remains broadly recent. This is factual scope for temporal alignment,
+    /// not evidence that any metric mattered.
+    let eventAnchorDate: String?
     /// Cues already shown to the person. Their exact opaque IDs are the only IDs permitted in a
     /// later trackingAssessment; keeping this list separate prevents a presented cue from being
     /// selected again as a new local action.
@@ -160,12 +221,15 @@ struct LLMTurnControllerRequest: Codable, Equatable {
         trigger: LLMTurnTrigger,
         protocolVersion: Int = ReflectionSession.currentProtocolVersion,
         protocolStage: ReflectionProtocolStage,
+        recoveryOperation: TurnRecoveryOperation? = nil,
         condition: ExperimentalCondition,
         permissions: ReflectionProtocolPermissions,
         recentMessages: [LLMTurnTranscriptItem],
         semanticMemory: TurnSemanticMemory,
         trackingCandidates: [LLMTurnTrackingCandidate],
         contextualLoadCue: DialogueContextCue? = nil,
+        contextualTrackingProfiles: [LLMTurnContextualTrackingProfile] = [],
+        eventAnchorDate: String? = nil,
         presentedTrackingCues: [LLMTurnTrackingCandidate] = [],
         activeTrackingPresentation: LLMTurnTrackingPresentationContext? = nil,
         cardMappingConfirmed: Bool = false,
@@ -175,12 +239,15 @@ struct LLMTurnControllerRequest: Codable, Equatable {
         self.trigger = trigger
         self.protocolVersion = protocolVersion
         self.protocolStage = protocolStage
+        self.recoveryOperation = recoveryOperation
         self.condition = condition
         self.permissions = permissions
         self.recentMessages = recentMessages
         self.semanticMemory = semanticMemory
         self.trackingCandidates = trackingCandidates
         self.contextualLoadCue = contextualLoadCue
+        self.contextualTrackingProfiles = contextualTrackingProfiles
+        self.eventAnchorDate = eventAnchorDate
         self.presentedTrackingCues = presentedTrackingCues
         self.activeTrackingPresentation = activeTrackingPresentation
         self.cardMappingConfirmed = cardMappingConfirmed
@@ -394,6 +461,7 @@ struct TurnPlannerDecodingDiagnostic: Equatable, Sendable {
 
 enum LLMTurnControllerClientError: Error {
     case plannerDecoding(TurnPlannerDecodingDiagnostic)
+    case semanticPlanRejected([String])
 }
 
 enum LLMTurnCriticVerdict: String, Codable, Sendable {
@@ -421,7 +489,7 @@ struct LLMTurnCriticResponse: Codable, Equatable, Sendable {
 enum ServerTurnPrompt {
     /// Immutable server registry key. A prompt update must introduce a new value rather than
     /// changing the meaning of this version for an in-progress research session.
-    static let version = "turn-v4-server-v37"
+    static let version = "turn-v4-server-v45"
 
     static func version(for _: Int) -> String {
         version
@@ -476,7 +544,9 @@ struct RemoteLLMTurnPlanner: LLMTurnPlanning {
         )
         guard let data = content.data(using: .utf8) else { throw LLMError.malformedResponse }
         do {
-            return try JSONDecoder().decode(LLMTurnResponsePlan.self, from: data)
+            let plan = try JSONDecoder().decode(LLMTurnResponsePlan.self, from: data)
+            try validateCurrentCardConnectionShape(plan, for: request)
+            return plan
         } catch {
             let diagnostic = TurnPlannerDecodingDiagnostic.make(
                 error: error,
@@ -493,6 +563,85 @@ struct RemoteLLMTurnPlanner: LLMTurnPlanning {
                 "TurnPlanner JSON invalid kind=\(diagnostic.kind, privacy: .public) key_path=\(diagnostic.keyPath, privacy: .public) invalid_tracking_relevance=\(invalidRelevance, privacy: .public) invalid_reply_intent=\(invalidIntent, privacy: .public) invalid_confirmation_target=\(invalidConfirmation, privacy: .public) invalid_next_prompt_kind=\(invalidPromptKind, privacy: .public) invalid_confirmation_decision=\(invalidDecision, privacy: .public) invalid_practice_kind=\(invalidPractice, privacy: .public) invalid_no_action_reason=\(invalidNoActionReason, privacy: .public)"
             )
             throw LLMTurnControllerClientError.plannerDecoding(diagnostic)
+        }
+    }
+
+    /// Request-bound half of the Planner's Card Reality Connection union. Codable validates the
+    /// payload carried by each outcome; this boundary validates which cases exist in the current
+    /// persisted interaction state before the plan reaches regeneration or protocol validation.
+    private func validateCurrentCardConnectionShape(
+        _ plan: LLMTurnResponsePlan,
+        for request: LLMTurnControllerRequest
+    ) throws {
+        guard request.protocolVersion >= ReflectionSession.currentProtocolVersion,
+              request.protocolStage == .cardReflection else { return }
+
+        func reject(_ field: String, _ message: String) throws {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: [PlannerContractCodingKey(stringValue: field)],
+                    debugDescription: message
+                )
+            )
+        }
+
+        if plan.resolvedConfirmation?.target == .cardRealityConnection {
+            try reject(
+                "resolvedConfirmation.target",
+                "Current Card Reality Connection resolution is derived by Swift from the typed outcome."
+            )
+        }
+        if plan.memoryUpdate.cardRealityConnection != nil
+            || plan.memoryUpdate.cardConnectionOutcome != nil
+            || plan.memoryUpdate.clearCardRealityConnection != nil
+            || plan.memoryUpdate.clearPendingCardRealityConnection != nil {
+            try reject(
+                "memoryUpdate.cardRealityConnection",
+                "Current Planner output cannot write deterministic card-connection projections."
+            )
+        }
+
+        guard request.card?.imageIsDisplayed == true,
+              request.card?.reflectionApproaches == nil else {
+            if plan.cardConnectionTurnOutcome != nil {
+                try reject(
+                    "cardConnectionTurnOutcome",
+                    "A card-connection outcome is legal only before card guidance is available."
+                )
+            }
+            return
+        }
+        // Image-only observation/development turns do not decide Card Reality Connection and
+        // therefore carry no outcome. Once the Planner does return an outcome, the union below
+        // makes its state-specific alternatives exhaustive and mutually exclusive.
+        guard let outcome = plan.cardConnectionTurnOutcome else { return }
+
+        let permitted: Set<CardConnectionTurnOutcomeKind>
+        switch request.card?.connectionInteractionState ?? .openExploration {
+        case .openExploration:
+            permitted = [.userAuthoredConnection, .connectionStillUnclear]
+        case .awaitingCandidateResolution:
+            permitted = [.candidateAccepted, .candidateRevised, .candidateRejected]
+        }
+        guard permitted.contains(outcome.kind) else {
+            try reject(
+                "cardConnectionTurnOutcome.kind",
+                "The outcome is not part of the persisted card-connection interaction state."
+            )
+            return
+        }
+    }
+
+    private struct PlannerContractCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        init?(intValue: Int) {
+            return nil
         }
     }
 }
@@ -659,12 +808,29 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             return candidate
         }
 
-        // A Swift-authored protocol correction is already a narrowed repair contract. Running a
-        // semantic Critic around that repair can re-open the forbidden choice and previously
-        // expanded one failed disclosure turn into Planner-Critic-Planner-Critic twice. Let Swift
-        // validate the one repaired candidate directly.
-        guard request.trigger != .protocolCorrection else {
-            return candidate
+        // Current recovery uses the same semantic audit as a normal current turn, but a rejected
+        // recovery candidate is handed back to the outer bounded recovery loop. Do not ask the
+        // Planner for an additional in-Critic revision: that would increase the Planner budget
+        // and create a second repair authority inside one recovery request.
+        if request.trigger == .protocolCorrection,
+           request.protocolVersion >= ReflectionSession.currentProtocolVersion {
+            do {
+                let critique = try await planCritic.critiquePlan(
+                    request: request,
+                    plan: candidate
+                )
+                guard critique.verdict == .pass else {
+                    throw LLMTurnControllerClientError.semanticPlanRejected(
+                        critique.reasonCodes
+                    )
+                }
+                return candidate
+            } catch let error as LLMTurnControllerClientError {
+                throw error
+            } catch {
+                logger.warning("turn_recovery_semantic_critic_unavailable")
+                return candidate
+            }
         }
 
         // Semantic progression remains LLM-owned. Swift only invokes one bounded plan audit and
@@ -706,51 +872,18 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                     // memory patch, and question purpose remain unchanged.
                     return removingCardReferenceSelection(from: revised)
                 }
-                let fallbackPermissions = narrowedDisclosurePermissions(
-                    request.permissions,
-                    rejecting: revised,
-                    reasonCodes: finalCritique.reasonCodes
-                )
-                let fallbackRequest = requestWithPlanCorrection(
-                    request,
-                    critique: finalCritique,
-                    permissions: fallbackPermissions
-                )
-                do {
-                    let fallback = normalizeApplicationEventPlan(
-                        try await planner.planTurn(fallbackRequest),
-                        request: fallbackRequest
-                    )
-                    if deterministicPlanCritique(fallback, request: fallbackRequest) == nil {
-                        let fallbackCritique = try await planCritic.critiquePlan(
-                            request: fallbackRequest,
-                            plan: fallback
-                        )
-                        if fallbackCritique.verdict == .pass {
-                            logger.notice("turn_planner_bounded_fallback result=semantic_pass")
-                            return fallback
-                        }
-                    }
-                } catch {
-                    logger.warning("turn_planner_bounded_fallback result=unavailable")
-                }
-                logger.notice("turn_planner_bounded_fallback result=typed_safe_plan")
-                return boundedDisclosureFallbackPlan(
-                    request: fallbackRequest,
-                    rejected: revised,
-                    reasonCodes: finalCritique.reasonCodes
+                // An unvalidated semantic patch is never converted into a local question or
+                // transition. The outer typed-operation recovery receives only the safe reason
+                // category and reconstructs the turn from persisted state plus the latest input.
+                throw LLMTurnControllerClientError.semanticPlanRejected(
+                    finalCritique.reasonCodes
                 )
             }
             return revised
+        } catch let error as LLMTurnControllerClientError {
+            throw error
         } catch {
             logger.warning("turn_planner_semantic_critic_unavailable")
-            if request.protocolStage == .contextualDisclosure {
-                return boundedDisclosureFallbackPlan(
-                    request: request,
-                    rejected: candidate,
-                    reasonCodes: ["semantic_critic_unavailable"]
-                )
-            }
             return candidate
         }
     }
@@ -761,6 +894,38 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
         _ plan: LLMTurnResponsePlan,
         request: LLMTurnControllerRequest
     ) -> LLMTurnPlanCriticResponse? {
+        if request.protocolVersion >= ReflectionSession.currentProtocolVersion {
+            // Current execution consumes only the explicit semantic choice. Missing operation is
+            // left to the typed contract boundary (and its bounded recovery), never repaired by
+            // inferring from the legacy tuple.
+            guard let operation = plan.semanticOperation else { return nil }
+            guard request.permissions.allowedSemanticOperations.contains(operation) else {
+                return LLMTurnPlanCriticResponse(
+                    verdict: .revisePlanner,
+                    reasonCodes: ["semantic_operation_not_allowed"],
+                    revisionGuidance: "Choose one semanticOperation from allowedSemanticOperations and keep its evidence payload grounded in the latest answer."
+                )
+            }
+            if let selection = plan.cardReferenceSelection {
+                let relationCount = request.card?.referenceGuidance?.relations.count ?? 0
+                let canUseReference = [
+                    PlannerSemanticOperation.continueTenderReflection,
+                    .continueTenderGroundedFierceReflection,
+                    .presentLegacyCardReading,
+                ].contains(operation)
+                if relationCount == 0
+                    || !(0..<relationCount).contains(selection.relationIndex)
+                    || !canUseReference {
+                    return LLMTurnPlanCriticResponse(
+                        verdict: .revisePlanner,
+                        reasonCodes: ["card_reference_permission_invalid"],
+                        revisionGuidance: "Remove cardReferenceSelection unless current evidence exposes that reference lens for this reflection operation."
+                    )
+                }
+            }
+            return nil
+        }
+
         let isDerivedGuidanceSuccessor = isDeterministicGuidanceSuccessor(
             plan,
             request: request
@@ -820,6 +985,7 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
            request.protocolStage == .cardReflection,
            [.developCardImage, .inviteCardConnection].contains(plan.replyIntent),
            plan.nextPrompt?.kind != .openQuestion,
+           plan.cardConnectionTurnOutcome == nil,
            !(plan.replyIntent == .inviteCardConnection
                 && plan.memoryUpdate.pendingCardRealityConnection?.isStructurallyComplete == true
                 && plan.nextPrompt?.kind == .confirmationRequest
@@ -863,9 +1029,11 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             .contains(request.trigger),
            plan.resolvedConfirmation != nil {
             normalized = LLMTurnResponsePlan(
+                semanticOperation: plan.semanticOperation,
                 requestedStage: plan.requestedStage,
                 localAction: plan.localAction,
                 memoryUpdate: plan.memoryUpdate,
+                cardConnectionTurnOutcome: plan.cardConnectionTurnOutcome,
                 resolvedConfirmation: nil,
                 nextPrompt: plan.nextPrompt,
                 replyIntent: plan.replyIntent,
@@ -874,59 +1042,7 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             )
         }
 
-        if normalized.resolvedConfirmation?.target == .cardRealityConnection,
-           let promoted = TurnCardRealityConnectionResolver.effective(
-               memory: request.semanticMemory,
-               update: normalized.memoryUpdate,
-               resolution: normalized.resolvedConfirmation
-           ) {
-            var promotedMemory = normalized.memoryUpdate
-            promotedMemory.cardRealityConnection = promoted
-            promotedMemory.clearPendingCardRealityConnection = true
-            promotedMemory.cardConnectionOutcome = .connectionConfirmed
-            normalized = LLMTurnResponsePlan(
-                requestedStage: normalized.requestedStage,
-                localAction: normalized.localAction,
-                memoryUpdate: promotedMemory,
-                resolvedConfirmation: normalized.resolvedConfirmation,
-                nextPrompt: normalized.nextPrompt,
-                replyIntent: normalized.replyIntent,
-                replyGuidance: normalized.replyGuidance,
-                cardReferenceSelection: normalized.cardReferenceSelection
-            )
-        }
-
-        guard request.protocolVersion >= ReflectionSession.currentProtocolVersion,
-              request.protocolStage == .cardReflection,
-              request.card?.imageIsDisplayed == true,
-              request.card?.connectionUnavailable == false,
-              request.card?.reflectionApproaches == nil,
-              normalized.memoryUpdate.cardRealityConnection?.normalizedConfirmed != nil else {
-            return normalized
-        }
-
-        // Once the Planner has emitted the typed user-authored reality mapping, every remaining
-        // field of this transition is application mechanics. Canonicalize it before a second LLM
-        // audit can turn a valid connection into another visible question or an invalid mixed
-        // operation. Swift does not inspect the person's words or create the mapping.
-        var evidenceOnlyMemory = normalized.memoryUpdate
-        evidenceOnlyMemory.cardConnectionOutcome = .connectionConfirmed
-        evidenceOnlyMemory.clearPendingCardRealityConnection = true
-        evidenceOnlyMemory.cardNegotiatedMeaning = nil
-        evidenceOnlyMemory.contextCueOffered = nil
-        evidenceOnlyMemory.candidUnderstanding = nil
-        evidenceOnlyMemory.fierceUnderstanding = nil
-        evidenceOnlyMemory.finalNarrative = nil
-        evidenceOnlyMemory.practiceTransition = nil
-        return LLMTurnResponsePlan(
-            requestedStage: .cardReflection,
-            localAction: .init(kind: .shareCardGuidance),
-            memoryUpdate: evidenceOnlyMemory,
-            resolvedConfirmation: normalized.resolvedConfirmation,
-            nextPrompt: TurnNextPrompt.none,
-            replyIntent: .authorizeCardGuidance,
-            replyGuidance: "Commit the typed user-authored image-to-life mapping and silently authorize one candidate reading."
-        )
+        return normalized
     }
 
     private func hasText(_ value: String?) -> Bool {
@@ -937,9 +1053,11 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
         from plan: LLMTurnResponsePlan
     ) -> LLMTurnResponsePlan {
         LLMTurnResponsePlan(
+            semanticOperation: plan.semanticOperation,
             requestedStage: plan.requestedStage,
             localAction: plan.localAction,
             memoryUpdate: plan.memoryUpdate,
+            cardConnectionTurnOutcome: plan.cardConnectionTurnOutcome,
             resolvedConfirmation: plan.resolvedConfirmation,
             nextPrompt: plan.nextPrompt,
             replyIntent: plan.replyIntent,
@@ -952,6 +1070,41 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
         _ plan: LLMTurnResponsePlan,
         request: LLMTurnControllerRequest
     ) -> Bool {
+        if request.protocolVersion >= ReflectionSession.currentProtocolVersion {
+            guard let operation = plan.semanticOperation else { return false }
+            switch operation {
+            case .acknowledgeCardConsent,
+                 .authorizeCardGuidance,
+                 .completeConversation,
+                 .provideSafetySupport:
+                return false
+            case .clarifyEvent,
+                 .advanceToCardConsent,
+                 .inviteCardConsent,
+                 .declineCardConsent,
+                 .continueCardObservation,
+                 .continueCardDevelopment,
+                 .inviteRealityConnection,
+                 .continueOpenCardConnection,
+                 .offerCardConnectionScaffold,
+                 .offerCardConnectionCandidate,
+                 .establishUserAuthoredCardConnection,
+                 .acceptCardConnectionCandidate,
+                 .reviseCardConnectionCandidate,
+                 .rejectCardConnectionCandidate,
+                 .bypassCardConnectionToDirectReflection,
+                 .presentLegacyCardReading,
+                 .continueExploratoryReflection,
+                 .continueTenderReflection,
+                 .continueTenderGroundedFierceReflection,
+                 .synthesizeDirectReflection,
+                 .proposePractice,
+                 .resolvePractice,
+                 .confirmNarrative,
+                 .reviseNarrative:
+                return true
+            }
+        }
         switch request.protocolStage {
         case .contextualDisclosure:
             // The Planner and semantic Critic—not Swift—decide whether another event question adds
@@ -979,7 +1132,8 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                 .presentFinalNarrative,
             ].contains(plan.replyIntent)
         case .directReflection:
-            return [.directCandidReflection, .presentFinalNarrative].contains(plan.replyIntent)
+            return [.directCandidReflection, .presentFinalNarrative, .suggestPractice]
+                .contains(plan.replyIntent)
         case .narrativeConfirmation:
             return plan.replyIntent == .completeConversation
                 || plan.replyIntent == .suggestPractice
@@ -1013,100 +1167,19 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             trigger: .protocolCorrection,
             protocolVersion: request.protocolVersion,
             protocolStage: request.protocolStage,
+            recoveryOperation: request.recoveryOperation,
             condition: request.condition,
             permissions: permissions ?? request.permissions,
             recentMessages: request.recentMessages,
             semanticMemory: request.semanticMemory,
             trackingCandidates: request.trackingCandidates,
             contextualLoadCue: request.contextualLoadCue,
+            contextualTrackingProfiles: request.contextualTrackingProfiles,
             presentedTrackingCues: request.presentedTrackingCues,
             activeTrackingPresentation: request.activeTrackingPresentation,
             cardMappingConfirmed: request.cardMappingConfirmed,
             card: request.card,
             protocolCorrection: correction
-        )
-    }
-
-    private func narrowedDisclosurePermissions(
-        _ permissions: ReflectionProtocolPermissions,
-        rejecting plan: LLMTurnResponsePlan,
-        reasonCodes: [String]
-    ) -> ReflectionProtocolPermissions {
-        guard plan.replyIntent == .exploreContext,
-              let rejectedPurpose = plan.nextPrompt?.disclosurePurpose,
-              let rejectedTarget = plan.nextPrompt?.disclosureTarget,
-              !Set(reasonCodes).isDisjoint(with: Set([
-                  "duplicate_question_function",
-                  "resolved_relation_reopened",
-                  "latest_answer_ignored",
-                  "unnecessary_event_detail",
-              ])) else {
-            return permissions
-        }
-        return ReflectionProtocolPermissions(
-            currentStage: permissions.currentStage,
-            allowedStages: permissions.allowedStages,
-            allowedActions: permissions.allowedActions,
-            allowedReplyIntents: permissions.allowedReplyIntents,
-            allowedDisclosurePurposes: permissions.allowedDisclosurePurposes.filter {
-                $0 != rejectedPurpose
-            },
-            allowedDisclosureTargets: permissions.allowedDisclosureTargets.filter {
-                $0 != rejectedTarget
-            },
-            allowedOperations: permissions.allowedOperations
-        )
-    }
-
-    /// Last semantic-resilience boundary for disclosure only. It chooses from typed state and
-    /// capabilities after two Critic failures; it never reads Chinese or invents episode content.
-    private func boundedDisclosureFallbackPlan(
-        request: LLMTurnControllerRequest,
-        rejected: LLMTurnResponsePlan,
-        reasonCodes: [String]
-    ) -> LLMTurnResponsePlan {
-        guard request.protocolStage == .contextualDisclosure else { return rejected }
-        let distrustsPatch = !Set(reasonCodes).isDisjoint(with: Set([
-            "latest_answer_not_committed",
-            "episode_structure_misclassified",
-            "unsupported_memory_inference",
-            "manufactured_global_self_judgment",
-        ]))
-        var update = distrustsPatch ? TurnSemanticMemoryUpdate() : rejected.memoryUpdate
-        let disclosureState = EffectiveEventDisclosureState(
-            memory: request.semanticMemory,
-            update: update
-        )
-
-        let canInvite = request.condition.usesCard
-            && isEventDisclosureCoreComplete(disclosureState)
-            && request.permissions.allowedReplyIntents.contains(.inviteCardConsent)
-        if canInvite {
-            update.eventDisclosureOutcome = .readyForTenderOrCard
-            return LLMTurnResponsePlan(
-                requestedStage: .cardConsent,
-                localAction: .none,
-                memoryUpdate: update,
-                nextPrompt: .confirmationRequest(target: .cardConsent),
-                replyIntent: .inviteCardConsent,
-                replyGuidance: "Use only the confirmed typed episode for one brief factual bridge, then invite one optional random reflection card."
-            )
-        }
-
-        let purpose = request.permissions.allowedDisclosurePurposes.first
-            ?? TurnDisclosureQuestionPurpose.identifyConcreteEpisode
-        return LLMTurnResponsePlan(
-            requestedStage: .contextualDisclosure,
-            localAction: .none,
-            memoryUpdate: update,
-            nextPrompt: .openQuestion(
-                purpose: purpose.rawValue,
-                focus: "the one unresolved typed disclosure relationship",
-                disclosurePurpose: purpose,
-                disclosureTarget: purpose.target
-            ),
-            replyIntent: .exploreContext,
-            replyGuidance: "Ask one direct, low-burden question for only the supplied typed disclosure purpose. Do not add a decision, stopping-awareness, emotion, responsibility, or action premise."
         )
     }
 
@@ -1151,10 +1224,10 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                 logger.warning(
                     "turn_writer_soft_revision_unavailable issue_count=\(qualityIssues.count, privacy: .public)"
                 )
-                // A wording-only repair is best-effort. The original draft realizes the validated
-                // intent, so display it rather than attempting another rewrite path or involving
-                // the Planner again.
-                return draft
+                // A reply that lacks the one planned question (or adds a forbidden question)
+                // does not realize the validated conversational function. Let the existing turn
+                // retry path handle the failure; never show a functionless original draft.
+                throw ReflectionProtocolViolation.unresolvedWriterQuality
             }
         }
 
@@ -1194,15 +1267,20 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                     return bounded
                 } catch {
                     logger.warning("bounded_fallback_used result=unavailable")
-                    return draft
+                    throw ReflectionProtocolViolation.unresolvedWriterQuality
                 }
             }
-            let revised = try await writer.reviseTurn(
-                request: request,
-                plan: validatedPlan,
-                draft: draft,
-                critique: firstCritique
-            )
+            let revised: LLMTurnWriterResponse
+            do {
+                revised = try await writer.reviseTurn(
+                    request: request,
+                    plan: validatedPlan,
+                    draft: draft,
+                    critique: firstCritique
+                )
+            } catch {
+                throw ReflectionProtocolViolation.unresolvedWriterQuality
+            }
             semanticCandidate = revised
             let finalCritique = try await critic.critiqueTurn(
                 request: request,
@@ -1228,9 +1306,12 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
                     return bounded
                 } catch {
                     logger.warning("bounded_fallback_used result=unavailable")
+                    throw ReflectionProtocolViolation.unresolvedWriterQuality
                 }
             }
             return revised
+        } catch let violation as ReflectionProtocolViolation {
+            throw violation
         } catch {
             logger.warning("turn_writer_semantic_critic_unavailable")
             return semanticCandidate
@@ -1260,7 +1341,9 @@ struct RemoteReflectionTurnController: ReflectionTurnControlling {
             and the exact question purpose/count. Use only: \(allowedEvidence). Do not use \
             unconfirmed tracking, an unselected reference relation, another life episode, or any \
             new motive, trait, diagnosis, need, cause, responsibility, or card meaning. Return one \
-            natural Chinese reply and no protocol fields beyond the Writer schema.
+            natural Chinese reply and no protocol fields beyond the Writer schema. A reflection \
+            reply must realize memoryUpdate.reflectionFrame.reflectionDelta or the planned question/\
+            transition; never return only a paraphrase of the person's latest words.
             """
         )
     }

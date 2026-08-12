@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -9,7 +10,8 @@ from fastapi import HTTPException
 from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
-TURN_PROMPT_VERSION = "turn-v4-server-v37"
+TURN_PROMPT_VERSION = "turn-v4-server-v45"
+CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v100"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -19,14 +21,219 @@ TurnPromptTask = Literal[
 ]
 
 
+# Single server-side registry for the current Planner's closed semantic choice. Prompt text,
+# repair instructions, fixtures, and contract tests consume this source rather than copying it.
+PLANNER_SEMANTIC_OPERATION_VALUES: tuple[str, ...] = (
+    "clarifyEvent",
+    "advanceToCardConsent",
+    "inviteCardConsent",
+    "acknowledgeCardConsent",
+    "declineCardConsent",
+    "continueCardObservation",
+    "continueCardDevelopment",
+    "inviteRealityConnection",
+    "continueOpenCardConnection",
+    "offerCardConnectionScaffold",
+    "offerCardConnectionCandidate",
+    "establishUserAuthoredCardConnection",
+    "acceptCardConnectionCandidate",
+    "reviseCardConnectionCandidate",
+    "rejectCardConnectionCandidate",
+    "bypassCardConnectionToDirectReflection",
+    "authorizeCardGuidance",
+    "presentLegacyCardReading",
+    "continueExploratoryReflection",
+    "continueTenderReflection",
+    "continueTenderGroundedFierceReflection",
+    "synthesizeDirectReflection",
+    "proposePractice",
+    "resolvePractice",
+    "confirmNarrative",
+    "reviseNarrative",
+    "completeConversation",
+    "provideSafetySupport",
+)
+
+PLANNER_SEMANTIC_OPERATION_SCHEMA = {
+    "type": "string",
+    "enum": PLANNER_SEMANTIC_OPERATION_VALUES,
+}
+
+PLANNER_SEMANTIC_OPERATION_CONTRACT = (
+    "semanticOperation required; choose exactly one permissions.allowedSemanticOperations value; "
+    "legacy fields never choose/replace it."
+)
+
+
+def validate_planner_semantic_operation(
+    plan: dict[str, Any], *, protocol_version: int, normal_turn: bool
+) -> str | None:
+    """Validate the server contract without inferring from legacy structural fields."""
+    value = plan.get("semanticOperation")
+    if protocol_version >= 5:
+        if not isinstance(value, str) or not value:
+            raise ValueError("missingSemanticOperation")
+        if value not in PLANNER_SEMANTIC_OPERATION_VALUES:
+            raise ValueError("unknownSemanticOperation")
+        return value
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in PLANNER_SEMANTIC_OPERATION_VALUES:
+        raise ValueError("unknownSemanticOperation")
+    return value
+
+
 @dataclass(frozen=True)
 class PromptMessages:
     system: str
     user: str
+    metrics: "PromptLengthMetrics | None" = None
+
+
+@dataclass(frozen=True)
+class PromptLengthMetrics:
+    component: str
+    stage: str
+    protocol_version: int
+    substate: str
+    shared_characters: int
+    stage_characters: int
+    substate_characters: int
+    dynamic_state_characters: int
+    schema_characters: int
+    conversation_characters: int
+    recovery_characters: int
+    provider_format_characters: int
+    total_characters: int
+    estimated_tokens: int
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _encoded(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _pending_confirmation(request: dict[str, Any]) -> bool:
+    memory = request.get("semanticMemory")
+    prompt = memory.get("nextPrompt") if isinstance(memory, dict) else None
+    return isinstance(prompt, dict) and prompt.get("kind") == "confirmationRequest"
+
+
+def _card_substate(request: dict[str, Any]) -> str:
+    if request.get("protocolStage") != "cardReflection":
+        return "none"
+    card = request.get("card")
+    if not isinstance(card, dict):
+        return "observation"
+    if request.get("trigger") == "cardDisplayed":
+        return "observation"
+    if card.get("reflectionApproaches") is not None or request.get("cardMappingConfirmed") is True:
+        return "guidance"
+    if card.get("connectionInteractionState") == "awaitingCandidateResolution":
+        return "awaitingCandidateResolution"
+    if (
+        int(card.get("connectionAttemptCount") or 0) > 0
+        or card.get("connectionScaffoldUsed") is True
+        or int(card.get("imageDevelopmentTurnCount") or 0) > 1
+    ):
+        return "openExploration"
+    if int(card.get("imageDevelopmentTurnCount") or 0) == 0:
+        return "development"
+    return "openExploration"
+
+
+def _is_card_guidance_reflection_entry(request: dict[str, Any]) -> bool:
+    if request.get("protocolStage") != "directReflection":
+        return False
+    card = request.get("card")
+    if not isinstance(card, dict) or card.get("reflectionApproaches") is None:
+        return False
+    if request.get("trigger") == "cardGuidanceAvailable":
+        return True
+    memory = request.get("semanticMemory")
+    return bool(request.get("protocolCorrection")) and (
+        not isinstance(memory, dict) or memory.get("reflectionFrame") is None
+    )
+
+
+def _prompt_messages(
+    *,
+    component: str,
+    request: dict[str, Any],
+    system: str,
+    user: str,
+    stage_contract: str = "",
+    substate_contract: str = "",
+    schema_contract: str = "",
+    recovery_contract: str = "",
+) -> PromptMessages:
+    conversation = _encoded(request.get("recentMessages", []))
+    conversation_characters = len(conversation) if conversation in user else 0
+    correction = request.get("protocolCorrection")
+    encoded_correction = _encoded(correction) if correction is not None else ""
+    recovery_payload_characters = (
+        len(encoded_correction) if encoded_correction and encoded_correction in user else 0
+    )
+    stage_characters = len(stage_contract)
+    substate_characters = len(substate_contract)
+    schema_characters = len(schema_contract)
+    recovery_characters = len(recovery_contract) + recovery_payload_characters
+    dynamic_state_characters = max(
+        0,
+        len(user) - conversation_characters - recovery_payload_characters,
+    )
+    shared_characters = max(
+        0,
+        len(system)
+        - stage_characters
+        - substate_characters
+        - schema_characters
+        - len(recovery_contract),
+    )
+    total_characters = len(system) + len(user)
+    metrics = PromptLengthMetrics(
+        component=component,
+        stage=str(request.get("protocolStage", "unknown")),
+        protocol_version=int(request.get("protocolVersion") or 0),
+        substate=_card_substate(request),
+        shared_characters=shared_characters,
+        stage_characters=stage_characters,
+        substate_characters=substate_characters,
+        dynamic_state_characters=dynamic_state_characters,
+        schema_characters=schema_characters,
+        conversation_characters=conversation_characters,
+        recovery_characters=recovery_characters,
+        provider_format_characters=0,
+        total_characters=total_characters,
+        estimated_tokens=(total_characters + 3) // 4,
+    )
+    return PromptMessages(system=system, user=user, metrics=metrics)
+
+
+def log_prompt_length(metrics: PromptLengthMetrics) -> None:
+    logger.info(
+        "turn_prompt_length component=%s stage=%s protocol_version=%s substate=%s "
+        "shared_characters=%s stage_characters=%s substate_characters=%s "
+        "dynamic_state_characters=%s schema_characters=%s conversation_characters=%s "
+        "recovery_characters=%s provider_format_characters=%s total_characters=%s "
+        "estimated_tokens=%s estimate=characters_div_4",
+        metrics.component,
+        metrics.stage,
+        metrics.protocol_version,
+        metrics.substate,
+        metrics.shared_characters,
+        metrics.stage_characters,
+        metrics.substate_characters,
+        metrics.dynamic_state_characters,
+        metrics.schema_characters,
+        metrics.conversation_characters,
+        metrics.recovery_characters,
+        metrics.provider_format_characters,
+        metrics.total_characters,
+        metrics.estimated_tokens,
+    )
 
 
 def _required_object(payload: dict[str, Any], key: str) -> dict[str, Any]:
@@ -40,286 +247,543 @@ def _permissions_text(request: dict[str, Any]) -> str:
     permissions = request.get("permissions")
     if not isinstance(permissions, dict):
         raise HTTPException(422, "turn request requires permissions")
-    stages = ", ".join(str(value) for value in permissions.get("allowedStages", []))
-    actions = ", ".join(str(value) for value in permissions.get("allowedActions", []))
-    intents = ", ".join(str(value) for value in permissions.get("allowedReplyIntents", []))
-    disclosure_purposes = ", ".join(
-        str(value) for value in permissions.get("allowedDisclosurePurposes", [])
-    )
-    disclosure_targets = ", ".join(
-        str(value) for value in permissions.get("allowedDisclosureTargets", [])
-    )
-    operations = permissions.get("allowedOperations", [])
+    catalogues = {
+        "requestedStage": permissions.get("allowedStages", []),
+        "localAction.kind": permissions.get("allowedActions", []),
+        "replyIntent": permissions.get("allowedReplyIntents", []),
+        "disclosurePurpose": permissions.get("allowedDisclosurePurposes", []),
+        "disclosureTarget": permissions.get("allowedDisclosureTargets", []),
+    }
+    if int(request.get("protocolVersion") or 0) >= 5:
+        if request.get("trigger") == "protocolCorrection":
+            # Recovery receives the same closed semantic capability set, but none of the legacy
+            # tuple catalogues can affect execution. Omitting those diagnostic-only catalogues
+            # keeps the repair request compact and avoids suggesting a second authority.
+            return (
+                "ALLOWED SEMANTIC OPERATIONS (authoritative; choose one exact value):\n"
+                f"{_encoded(permissions.get('allowedSemanticOperations', []))}"
+            )
+        return (
+            "ALLOWED SEMANTIC OPERATIONS (authoritative; choose one exact value):\n"
+            f"{_encoded(permissions.get('allowedSemanticOperations', []))}\n"
+            "LEGACY STRUCTURAL FIELDS (diagnostic compatibility only; never choose operation):\n"
+            f"{_encoded(permissions.get('allowedOperations', []))}\n"
+            "ENUM CATALOGUES (diagnostic only):\n"
+            f"{_encoded(catalogues)}"
+        )
     return (
-        "ALLOWED OPERATIONS (authoritative; select one whole object without mixing fields):\n"
-        f"{_encoded(operations)}\n"
-        "ENUM CATALOGUES (diagnostic only; they are not a Cartesian product):\n"
-        f"requestedStage: {stages}\n"
-        f"localAction.kind: {actions}\n"
-        f"replyIntent: {intents}\n"
-        f"disclosurePurpose: {disclosure_purposes}\n"
-        f"disclosureTarget: {disclosure_targets}"
+        "ALLOWED LEGACY OPERATIONS (authoritative for legacy execution):\n"
+        f"{_encoded(permissions.get('allowedOperations', []))}\n"
+        "ENUM CATALOGUES (diagnostic only; not a Cartesian product):\n"
+        f"{_encoded(catalogues)}"
     )
 
 
 def _condition_contract(request: dict[str, Any]) -> str:
     if request.get("condition") == "cardMediated":
         confirmed = "true" if request.get("cardMappingConfirmed") is True else "false"
+        if request.get("protocolStage") in {
+            "directReflection",
+            "narrativeConfirmation",
+            "optionalAction",
+            "complete",
+        }:
+            return (
+                f"cardMediated; cardMappingConfirmed={confirmed}. Later synthesis may use only a "
+                "confirmed user-accepted/revised mapping and preserves rejection or uncertainty."
+            )
         return (
-            "Condition=cardMediated. cardMappingConfirmed="
-            f"{confirmed}. Only a confirmed user-accepted or user-revised cardNegotiatedMeaning "
-            "may organize the final narrative. Otherwise preserve the absence, rejection, or "
-            "uncertainty of card-derived change."
+            f"cardMediated; cardMappingConfirmed={confirmed}. Unconfirmed assistant card material is "
+            "not user evidence."
         )
     return (
-        "Condition=modelAsserted. Never mention cards or images. The final narrative may use only "
-        "a distinction established through direct reflection; preserve uncertainty when none exists."
+        "modelAsserted. Never mention cards or images. Use only distinctions established through "
+        "direct reflection and preserve their absence or uncertainty."
     )
+
+
+# Shared prompt prose is advisory only. Typed state, AppModels, structured output, Swift
+# capabilities, and persisted memory remain the protocol truth sources.
+GLOBAL_PROTOCOL_INVARIANTS = """
+Capability: choose one complete operation from CURRENT PERMISSIONS. Do not recombine enum catalogues,
+advance workflow, select a card, or perform another local action; Swift owns and validates those
+mechanics. Progress: interpret the latest answer, commit every supported relation, and either add
+material understanding or make one legal transition. Do not repeat an answered function, revive
+rejected material, fill optional slots, or collect low-value detail.
+""".strip()
+
+
+GROUNDING_RULES = """
+Grounding: use only the person's words and confirmed persisted evidence. Keep reported fact,
+behavior/non-action, impact, present experience, future prediction, possible contributor,
+constraint, agency, and unknown information distinct. A card, tracking cue, external result, or
+assistant hypothesis cannot establish a personal fact, cause, motive, feeling, trait, diagnosis,
+responsibility, need, capacity, or excuse. Preserve corrections, refusal, and uncertainty.
+Contextual data keeps its measured/user-authored scope; never turn it into an unreported schedule,
+bodily state, emotion, motive, diagnosis, causal explanation, or relief response. Only a user-confirmed
+related/partlyRelated interpretation may enter later synthesis; silence means offered, not confirmed.
+""".strip()
+
+
+CONFIRMATION_RULES = """
+Confirmation: resolvedConfirmation only resolves the matching confirmationRequest visible before
+this user turn and copies its target/referenceID. It never means an object formed, an openQuestion
+was answered, or the workflow may advance. nextPrompt is only the interaction created by the new
+visible reply. Without a matching pending target, resolvedConfirmation is null.
+""".strip()
+
+
+CARD_EVIDENCE_RULES = """
+Card evidence: the person interprets the visible image first. Use only visual elements and relations
+they supplied; internal references are closed, question-only lenses, never card meaning or the
+person's answer. Before a confirmed Card Reality Connection, keep every comparison inside
+request.card.realityAnchor and infer no psychology or responsibility. Rejected or superseded card
+material cannot return.
+""".strip()
+
+CARD_TYPED_EVIDENCE_CONTRACT = """
+Typed card evidence: cardObservationEvidence saves user-described visible elements as
+{"userDescribedElements":["element or action","..."]}. cardDevelopmentEvidence saves a
+development relation as {"actorsOrElements":[""],"relationOrAction":null,"anticipatedChangeOrChoice":null}
+with at least one non-empty field when present. Both are null until the person supplies that
+content. candidateBridgeResolvedAt is always null—Swift sets it internally.
+""".strip()
+
+
+SELF_COMPASSION_RULES = """
+Tender grounds every reflection in one distinction. Its three dimensions are optional lenses, never
+forced questions. Keep fact/inference and event/identity distinct without praise,
+denial, excuse, or a positive opposite. Tender may stand alone. Self-criticism judges ability/character/
+worth; worry predicts; uncertainty marks missing information. Fierce optionally adds Tender-grounded candor
+only for supplied behavior, impact, boundary, support, or caring repair/protect/change; distress alone never requires it.
+""".strip()
+
+
+OUTPUT_DISCIPLINE = """
+Output discipline: return exactly the requested JSON object and nothing else. Preserve enum and field
+spelling. null leaves memory unchanged; a patch contains only newly supported or explicitly corrected
+values. Empty arrays do not clear or reopen established evidence.
+""".strip()
+
+
+WRITER_STYLE = """
+Write one concise, natural Chinese response to “你” that realizes only the validated plan. Do not
+expose labels/fields, replay the episode, mechanically seek approval, or repeat generic acknowledgements.
+Continue the newest concrete meaning. Ask one easy content question exactly when required; otherwise
+none. Add no fact, explanation, responsibility, action, or function. No generic reassurance, praise,
+normalization, minimization, excuse, or unsupported negation. Realize reflectionFrame without naming
+its theory or dimensions. A protective purpose needs user evidence and tentative wording; it never
+erases or excuses supported impact.
+""".strip()
+
+
+RECOVERY_DISCIPLINE = """
+Recovery: choose exactly one permissions.allowedSemanticOperations value and rebuild one grounded
+semantic patch from the last committed typed state plus the latest user turn. protocolCorrection is
+diagnosis only: do not repeat the rejected operation when it remains illegal, and copy none of its
+uncommitted patch. Do not repair stage, intent, action, prompt, confirmation, outcome, or transition;
+Swift projects those fields. Return one complete standalone plan and preserve the latest answer.
+""".strip()
+
+
+RECOVERY_OPERATION_CONTRACTS: dict[str, str] = {
+    "eventDisclosure": (
+        "Event recovery: consume the latest answer once. Either ask one still-needed permitted "
+        "event/process/behavior question, or atomically complete the episode bridge and card invitation."
+    ),
+    "cardConsent": (
+        "Card-consent recovery: resolve only the pending consent interaction or answer its immediate "
+        "question; card selection remains local and no card content may be invented."
+    ),
+    "cardOpenExploration": (
+        "Open-card recovery: continue only the permitted observation/development/current-event "
+        "connection operation; do not import guidance or a fixed card meaning."
+    ),
+    "cardCandidateResolution": (
+        "Candidate recovery: resolve the persisted candidate interaction from the latest answer; "
+        "do not create a second candidate or reuse rejected content."
+    ),
+    "legacyCardReading": (
+        "Legacy v4 recovery: preserve the negotiated reading path and its pending cardMapping "
+        "confirmation; do not use the v5 direct-guidance transition."
+    ),
+    "currentCardGuidance": (
+        "Current v5 recovery: the canonical connection is committed. Move through authorized "
+        "guidance into Direct Reflection; do not recreate a reading or cardMapping confirmation."
+    ),
+    "directReflection": (
+        "Direct-reflection recovery: produce one permitted grounded reflection delta or question "
+        "from committed evidence; do not jump to action or reopen the card connection."
+    ),
+    "directSynthesis": (
+        "Synthesis recovery: atomically produce the complete grounded synthesis operation required "
+        "by current permissions; do not add another exploration question."
+    ),
+    "optionalAction": (
+        "Optional-action recovery: resolve or create only the canonical single action transaction "
+        "allowed by current state; never manufacture noAction merely because a prior plan failed."
+    ),
+    "finalNarrative": (
+        "Final-narrative recovery: resolve or present the one canonical narrative transaction and "
+        "its complete permitted successor atomically; do not pre-commit either half."
+    ),
+    "complete": "Completion recovery: acknowledge only the already-complete state.",
+    "safety": "Safety recovery: remain in immediate safety support and do not resume reflection.",
+}
+
+
+def _recovery_contract(request: dict[str, Any]) -> str:
+    if not request.get("protocolCorrection"):
+        return ""
+    operation = str(request.get("recoveryOperation") or "")
+    operation_contract = RECOVERY_OPERATION_CONTRACTS.get(
+        operation,
+        "Use only the current typed operation and capability set; do not infer a replacement operation from the rejected plan.",
+    )
+    return f"{RECOVERY_DISCIPLINE}\n{operation_contract}"
+
+
+DISCLOSURE_MEMORY_CONTRACT = """
+Patch the cumulative episodeStructure. concreteFacts identify the event; eventProcess records how it
+developed without claiming cause; behaviorEvidence records explicit action/non-action and is non-empty
+when its status is present. Grounded content and status are one truth: non-empty behavior/process/impact
+evidence requires present or mixed, and present/mixed requires content. Use uncertain only when the
+relation is genuinely unavailable, never as omission beside supplied evidence. One answer may support
+several relations. Optional impact, constraint, contributor, agency, emotion, or self-criticism material
+is saved only when volunteered and never delays completion.
+""".strip()
+
+
+DIRECT_REFLECTION_MEMORY_CONTRACT = """
+Save one grounded reflectionFrame with a legal action and non-recap delta. Address an explicit
+selfCriticalStatement by distinguishing fact/inference or event/identity; never invent one. Tender
+has no fierceEvidence; Fierce uses supplied conduct/impact and caring direction.
+synthesizeUnderstanding may create one grounded action/noAction.
+""".strip()
+
+
+CARD_STAGE_CONTRACT = """
+Goal: move only the current visible-card interaction forward. Swift owns card selection, typed
+connection projection, guidance authorization, confirmation resolution, and stage transition. Use
+request.card.realityAnchor as the only reality episode and current permissions as the operation set.
+""".strip()
+
+
+CARD_SUBSTATE_CONTRACTS: dict[str, str] = {
+    "observation": (
+        "Observation: invite the person to describe what is visibly happening. Refer only to elements "
+        "they named; do not introduce symbols, fixed meaning, psychology, motive, responsibility, or diagnosis."
+    ),
+    "development": (
+        "Development: ask one question about what may happen or change next. Do not prescribe one "
+        "development, collect more static detail, or connect the image to reality for them. If the "
+        "person independently supplied a complete image–reality mapping, commit it without confirmation."
+    ),
+    "openExploration": (
+        "Open connection: compare one user-authored image action/relation with the current event through "
+        "similarity, difference, contrast, or absence. A complete user-authored mapping commits directly "
+        "without confirmation; inability returns connectionStillUnclear. Use only the currently allowed "
+        "scaffold/candidate capability and do not search another life episode or infer inner meaning."
+    ),
+    "awaitingCandidateResolution": (
+        "Candidate resolution: the persisted pending candidate is the only candidate. Substantive "
+        "acceptance returns candidateAccepted; a correction returns candidateRevised with the user's "
+        "complete mapping; rejection returns candidateRejected and withdraws the candidate. Do not reopen "
+        "image exploration or require an approval word."
+    ),
+    "guidance": (
+        "Guidance: a canonical connection is complete and never creates another mapping/meaning "
+        "confirmation. Move directly into the permitted reflection, using the image relation and reality "
+        "mapping only as a brief bridge to one new grounded distinction. Card material cannot establish "
+        "personality, motive, responsibility, diagnosis, or Fierce evidence. contextualLoadCue may be "
+        "offered once as non-causal background; silence is not confirmation. cardReferenceSelection is "
+        "null or one jointly supported question lens within activationBoundary/prohibitedClaims."
+    ),
+}
+
+
+LEGACY_CARD_GUIDANCE_CONTRACT = (
+    "Legacy guidance only: use the confirmed connection to present the currently permitted negotiable "
+    "reading in cardNegotiatedMeaning and preserve its existing cardMapping confirmation contract. "
+    "Do not alter v4 ordering."
+)
 
 
 _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
     "contextualDisclosure": (
-        "Commit every supported relation, including explicit conduct in behaviorEvidence. Then set one "
-        "supported eventDisclosureOutcome. Disclosure is sufficient when one focal episode, the person's "
-        "action or omission, and how the event developed form a coherent story. A direct result, emotion, "
-        "self-evaluation, importance, motive, responsibility, agency, constraint, and solution may be saved "
-        "when volunteered but are never completion gates. When sufficient, "
-        "set readyForTenderOrCard and use inviteCardConsent directly for cards. A brief bridge is a "
-        "Writer language choice, never another Planner credential. Grounding and the optional invitation "
-        "are one visible turn, with no Tender "
-        "confirmation. Otherwise ask one question using one advertised typed disclosurePurpose and its "
-        "canonical disclosureTarget: identifyConcreteEpisode, clarifyEventProcess, or clarifyBehavior. "
-        "Reopen a received-and-complete relation only with one typed, supported "
-        "disclosureReopenReason. Do not assume a decision, awareness that it "
-        "was time to stop, attempted stopping or hidden motive merely because conduct continued."
+        "Goal: establish a reality chain sufficient for card reflection: focal event, development, and "
+        "relevant user action/non-action. Each turn asks at most one highest-value unanswered typed pair: "
+        "identifyConcreteEpisode→focalEvent, clarifyEventProcess→eventProcess, or "
+        "clarifyBehavior→behavior; do not repeat a completed function or seek low-value date/name/category "
+        "detail. Behavior is clarified only when needed to understand the process and never presumes blame. "
+        "External-result episodes may be complete through preparation, submission, waiting, and receipt "
+        "without a known cause or omission. Set eventDisclosureOutcome every turn. Once the chain is clear, "
+        "use readyForTenderOrCard and inviteCardConsent with one brief factual/Tender bridge. Emotion, impact, "
+        "importance, self-judgment, motive, responsibility, and reflectionFocus are optional, never gates."
     ),
     "cardConsent": (
-        "Invite or resolve card consent. Swift selects and displays the card. When the pending "
-        "cardConsent is accepted, return resolvedConfirmation=cardConsent/accepted, "
-        "replyIntent=acknowledgeCardConsent, localAction.kind=drawRandomCard, "
-        "requestedStage=cardConsent, and nextPrompt=none. This authorization is silent. "
-        "Do not interpret or describe an unseen image."
+        "Goal: invite or resolve optional card consent. Swift selects/displays the card. Accepted "
+        "pending consent returns cardConsent/accepted, acknowledgeCardConsent, drawRandomCard, "
+        "requestedStage=cardConsent, nextPrompt=none; this authorization is silent. Never describe an "
+        "unseen image."
     ),
-    "cardReflection": (
-        "Use only the displayed card and application-owned capability limits. Image description "
-        "exists to establish one interpretable relationship structure, not to exhaust visual "
-        "detail. Save imageRelation in cardRealityConnection only when the account contains at least "
-        "one salient person/object and an action or relationship between elements. Before the "
-        "first life-connection invitation, use developCardImage at most as follows: if that "
-        "structure is missing, ask one targeted relational clarification; once it exists, ask at "
-        "most one temporal-development question about what may happen or change next. Do not ask "
-        "for finer positions, expressions, gaze, posture, background, lighting, or another object "
-        "after the relationship structure exists. If the person's account already includes likely "
-        "development, skip that question. Then use inviteCardConnection so the person—not the "
-        "assistant—relates the image process to reality. request.card.realityAnchor is the only "
-        "permitted real-world scope before a confirmed cardRealityConnection exists. Keep every initial connection, "
-        "smaller scaffold, and tentative candidate inside that same focal episode; never ask the "
-        "person to search for another memory, relationship, or life example to make the card fit. "
-        "If realityAnchor is absent, do not invent a substitute episode. Inability is not refusal. At the first "
-        "failed connection (attempt=1, scaffold=false), developCardImage asks one smaller comparison "
-        "between a user-described image relation and a confirmed event action/process/result; never "
-        "search for an unrelated life example or recap either story. If that fails, the final "
-        "inviteCardConnection offers one rejectable mapping using only similarity, difference, "
-        "contrast, or absence between those observable sides. Before guidance it cannot infer a "
-        "need, feeling, motive, protection, fear, trait, cause, responsibility, or Tender/Fierce "
-        "meaning. An unaccepted candidate is only pendingCardRealityConnection with a matching "
-        "confirmation, never cardRealityConnection. Every developCardImage "
-        "or inviteCardConnection turn has exactly one open question. Only an explicit refusal, or "
-        "failure to use the final candidate, permits setting the card aside. Once the latest answer "
-        "supplies a user-authored mapping, atomically commit the complete confirmed "
-        "cardRealityConnection. Swift then derives silent guidance; do not request it or ask again. "
-        "cardInterpretiveTension is optional and must not trigger another question. For a candidate "
-        "reading, keep cardMapping negotiation internal. Place the person's image-to-life relation "
-        "beside one still-open real-world tension; do not complete a causal chain, moral lesson, or "
-        "action plan for them. Ask one concrete retrospective experience question that lets the "
-        "person develop or redirect the connection, never an approval question. After a reality "
-        "mapping exists, an optional contextualLoadCue may be placed beside it once as a tentative, "
-        "descriptive background. It never creates the mapping and never implies cause. A later final "
-        "narrative may use it only with a related/partlyRelated contextRelationship and the "
-        "person's interpretation; silence leaves it offered. If Swift supplies "
-        "referenceGuidance, optionally select one relationIndex under the global closed-reference "
-        "contract; otherwise leave cardReferenceSelection null."
-    ),
+    "cardReflection": CARD_STAGE_CONTRACT,
     "directReflection": (
-        "Tender has already addressed whole-person self-criticism; do not repeat that distinction or "
-        "keep proving the person good, responsible, or overly harsh. Choose each turn whether to deepen "
-        "Tender understanding, Fierce ownership/change, their relationship, or move to the narrative. "
-        "Use one retrospective, event-bounded candid question per turn to distinguish what experience "
-        "or constraint merits understanding from what supported action, omission, impact, boundary, or "
-        "choice needs ownership or change. Tender and Fierce may alternate naturally. "
-        "If the latest answer identifies a mishandled part, commit and examine that concrete part instead "
-        "of redirecting to a benign purpose. Do not ask for a future solution, action plan, counterfactual "
-        "outcome, or another global-self comparison. Do not advance merely to meet a turn count, and do "
-        "not repeat a resolved function. When a coherent compassionate-candor distinction exists and "
-        "another question would add little, move to the final narrative."
+        "Goal: choose one grounded reflectionFrame. Tender may stand alone. Fierce is optional "
+        "and uses behavior/impact plus a caring repair/protect/change focus; never solicit "
+        "evidence. For whole-person judgment, distinguish fact/inference from identity and keep worry/"
+        "uncertainty separate. Recap or Common Humanity alone is not a delta. v5 synthesis proposes one "
+        "grounded action/noAction before final narrative."
     ),
     "narrativeConfirmation": (
-        "Interpret the narrative response. On accepted/revised, preserve that resolution and emit "
-        "one complete practiceTransition with requestedStage=optionalAction, suggestPractice, a "
-        "grounded pending proposal, and practice confirmation. transactionID, proposal.id, and "
-        "the practice confirmation referenceID must be identical. Never stay here or "
-        "use nextPrompt none/openQuestion."
+        "Goal: resolve the visible narrative. If a pre-narrative action is already resolved, accepted/"
+        "revised narrative completes. Otherwise preserve the narrative resolution and atomically create "
+        "one optionalAction practiceTransition: grounded proposal, matching transaction/proposal/prompt "
+        "IDs, and practice confirmation; never stay here or create none/openQuestion."
     ),
     "optionalAction": (
-        "Handle the one pending practice proposal. Direct acceptance confirms the exact proposal. "
-        "A complete user revision or narrowing confirms the same proposal id with revised content, "
-        "a still-grounded basis, and source=userRevised. Rejection clears the proposal through "
-        "noActionReason=userDeclined. These paths complete with nextPrompt=none; only an unclear "
-        "request for a different offer may use revisePractice and another pending proposal."
+        "Goal: resolve one pending proposal. Acceptance confirms it unchanged; a complete user revision "
+        "keeps its id, grounded basis, and source=userRevised; rejection clears it with userDeclined. If "
+        "narrativeReferenceID is null, present final narrative next; an already-confirmed narrative "
+        "completes. Only an unclear request for another offer may revisePractice."
     ),
-    "complete": "Return only a brief completion acknowledgement.",
-    "safetySupport": "Stay with immediate safety support and do not resume ordinary reflection.",
+    "complete": "Return one brief completion acknowledgement.",
+    "safetySupport": "Stay with immediate safety support; do not resume ordinary reflection.",
 }
 
 
 def _planning_stage_contract(request: dict[str, Any]) -> str:
-    return _PLANNING_STAGE_CONTRACTS.get(
+    contract = _PLANNING_STAGE_CONTRACTS.get(
         str(request.get("protocolStage", "")),
         "Remain in the supplied stage and use only current permissions.",
     )
+    if _is_card_guidance_reflection_entry(request):
+        return (
+            contract
+            + " First visible turn after canonical Card Reality Connection: combine one brief Card "
+            "Guidance bridge with this reflectionFrame. The connection is not pending, so do not use "
+            "presentCardReading, cardNegotiatedMeaning, cardMapping confirmation, resolvedConfirmation, "
+            "or a fit check. Guidance must add a grounded distinction rather than restate the connection."
+        )
+    return contract
 
 
-CURRENT_SEMANTIC_CONTRACT = """
-Use one domain-neutral evidence structure throughout the reflection:
-{"concreteFacts":[],"behaviorEvidenceStatus":"unresolved|present|absent|mixed|uncertain",
-"behaviorEvidence":[],"eventProcessStatus":"unresolved|present|absent|mixed|uncertain",
-"possibleContributors":[],"contextualConstraints":[],
-"controllableParts":[],"impactStatus":"unresolved|present|absent|mixed|uncertain",
-"impacts":[],"keyUncertainty":null}.
+def _semantic_contract(request: dict[str, Any]) -> str:
+    stage = request.get("protocolStage")
+    if stage == "contextualDisclosure":
+        return DISCLOSURE_MEMORY_CONTRACT
+    if stage == "directReflection":
+        return DIRECT_REFLECTION_MEMORY_CONTRACT
+    return "Use semanticMemory as a patch; update only evidence supported by the latest answer."
 
-Populate only from the person's words: facts are reported reality; behaviorEvidence records what
-the person explicitly did, kept doing, did not do, stopped, or did not stop; contributors are
-possibilities; constraints are limits; controllableParts are user-identified agency; impacts are
-consequences; keyUncertainty is one material unknown. behaviorEvidenceStatus=present requires
-non-empty behaviorEvidence, and non-empty behaviorEvidence cannot remain unresolved. This is not a questionnaire:
-one answer may fill several relations. Do not require a fixed number of turns. Commit supported
-relations before choosing a question. Never omit a supplied relation to keep an evidence gate open.
 
-Use selfCriticismStatus=present only for the person's self-evaluation. selfCriticismLink preserves
-their own event-to-self inference, anticipated external judgment, scope, or uncertainty; invent no
-belief or cause. An observed reaction proves no one's judgment or feeling. This link is not an Event
-Disclosure gate. eventProcessStatus records development, not proven cause; preserve unavailable
-development as uncertain plus keyUncertainty rather than reopening it.
+def _planner_shared_contract(request: dict[str, Any]) -> str:
+    # RECOVERY_DISCIPLINE already states the same current-operation/Swift-authority boundary.
+    # Do not repeat GLOBAL_PROTOCOL_INVARIANTS in a correction request; the grounded evidence,
+    # confirmation, card, and reflection contracts remain identical to a normal turn.
+    parts = [GROUNDING_RULES]
+    if request.get("trigger") != "protocolCorrection":
+        parts.insert(0, GLOBAL_PROTOCOL_INVARIANTS)
+    if _pending_confirmation(request) or request.get("protocolStage") in {
+        "cardConsent",
+        "narrativeConfirmation",
+        "optionalAction",
+    }:
+        parts.append(CONFIRMATION_RULES)
+    if request.get("protocolStage") == "cardReflection":
+        parts.append(CARD_EVIDENCE_RULES)
+    if request.get("protocolStage") == "directReflection":
+        parts.append(SELF_COMPASSION_RULES)
+    return "\n\n".join(parts)
 
-In current contextualDisclosure always set eventDisclosureOutcome. readyForTenderOrCard requires
-only a supported focal episode, user behavior/omission, and event development. impactStatus,
-selfCriticismStatus, selfCriticalStatement, emotion, importance, motive,
-responsibility, agency, constraints, and solutions may be saved when volunteered but are not gates.
-Once these three episode relations are present, do not ask another disclosure question: use the
-permitted forward operation in the same turn.
 
-Preserve volunteered whole-self judgments, specific self-criticism, event tension, and anticipated
-external judgment only in the supported optional memory fields. Do not turn one into another, and
-never ask for any of them merely to complete Event Disclosure.
+def _planner_substate_contract(request: dict[str, Any]) -> str:
+    if request.get("protocolStage") != "cardReflection":
+        return ""
+    substate = _card_substate(request)
+    if substate == "guidance" and int(request.get("protocolVersion") or 0) < 5:
+        return LEGACY_CARD_GUIDANCE_CONTRACT
+    return CARD_SUBSTATE_CONTRACTS[substate]
 
-Every disclosure question uses one advertised typed purpose and canonical target:
-identifyConcreteEpisode→focalEvent, clarifyBehavior→behavior, or
-clarifyEventProcess→eventProcess. No other disclosure purpose exists in the current schema.
-Free-text purpose is non-authoritative. Do not repeat a
-received-and-complete purpose without a newest-answer-supported typed reopen reason: only
-userCorrectedPreviousFact, userWithdrewPreviousAnswer, or newContradictionDetected.
 
-A ready card turn uses inviteCardConsent in the same visible reply. The Writer may distinguish a
-specific act from the whole self only when the person's own words explicitly contain that broad
-whole-self judgment; otherwise it uses one supported factual bridge or directly invites the card.
-Tender wording is optional and never creates another stage, confirmation, or memory credential.
-
-Question functions are typed, not lexical. Treat assent, refusal, correction, uncertainty, or
-inability as an answer; commit it and change function or advance. Never demand hidden motives.
-
-Intentional choice, practical capacity, constraint, and contributor are different. Do not combine
-them or request an abstract inventory; ask only about a recalled event or action when needed.
-
-Tender never denies supported conduct or impact. Later candid reflection distinguishes what merits
-understanding from what action, omission, impact, boundary, or choice needs ownership or change;
-understanding does not excuse. Preserve corrections about mishandling and never replace them with
-praise, virtue, or an invented protective purpose.
-
-contextualLoadCue is an optional hypothesis, never fact, diagnosis, emotion, cause, excuse, or
-responsibility. In the card condition it remains unavailable during disclosure, Tender, consent,
-image observation, and the person's first image-to-life connection. Only after a confirmed
-cardRealityConnection exists may one cue be tentatively juxtaposed with that user-authored
-connection. The cue cannot
-create or replace the connection. Set memoryUpdate.contextCueOffered=true exactly when the visible
-reply will actually include the supplied cue; otherwise leave it null. Store contextRelationship only when the person explicitly relates,
-partly relates, revises, rejects, or stays uncertain about it. Silence means offered only. Only a
-related/partlyRelated userInterpretation enters the final narrative. Preserve exact scope; missing
-context supports no inference; never convert a record into an unreported subjective state.
-
-Card work continues the same episode structure. Store image and reality relations only from the
-person's account; the image cannot prove a cause, motive, state, trait, responsibility, constraint,
-need, or outcome. A revision replaces the candidate and rejected material cannot return.
-cardInterpretiveTension is optional. A candidate places one supported relational tension beside the
-person's mapping but leaves the next link for the person to develop; it cannot finish a causal chain,
-lesson, or required change on the person's behalf. Follow the interpretive-confirmation rule below.
-
-referenceGuidance is closed and question-only, never card meaning. When supplied after mapping,
-choose null or one relationIndex only if the full user image relation plus accepted/revised reality
-connection jointly meet activationBoundary. Judge all evidence, never keywords or phrase matching.
-The choice is turn-local: no memory, user answer, or conclusion; obey prohibitedClaims. The Critic
-audits meaning while Swift checks only source and permission.
-
-Interpretive confirmations are internal, not visible approval checks. Natural substantive
-continuation is accepted; change is revised; contradiction is rejected; uncertainty or inability is
-unclear. Commit new evidence, preserve correction, and accept content-forward answers without
-approval words. Consent and practice choice may be direct.
-
-Relate the latest answer to the preceding question; do not repeat or combine functions. Respect
-refusal and uncertainty. resolvedConfirmation concerns the stored confirmation; nextPrompt is the
-new turn. Application events resolve nothing. Memory is a patch: null means unchanged; episode keys
-are only new/corrected; [] requires compatible replacement and never reopens present/mixed evidence.
-Apply your patch to stored memory before choosing nextPrompt. Add answered purposes/assessments;
-replace the one canonical practiceTransition only as one complete object. Stay within permissions.
-
-The final narrative is a concise delta, not a workflow recap or another defense against the original
-self-criticism. Where evidence supports both, pair one experience or constraint that merits
-understanding with one conduct, impact, boundary, or choice that needs ownership or change. Preserve
-the person's uncertainty instead of answering it for them. After confirmation, propose exactly one
-optional, small, specific, feasible, non-punitive care, repair, protect, or change practice from
-confirmed evidence. The system proposes it; the person may accept, shrink, revise, or reject it.
-Never provide a menu or generic wellness/performance advice.
+CARD_CONNECTION_COMMON_OUTPUT = """
+Swift derives raw connection projections and confirmation. Never write cardRealityConnection,
+cardConnectionOutcome, either clear-card field, or a cardRealityConnection confirmation.
+Retired cardImageRelation/cardRealityMapping/cardRealityMappingSource keys are forbidden.
 """.strip()
 
 
-PLANNER_OUTPUT_CONTRACT = """
-Return exactly one JSON object and nothing else:
-{"requestedStage":"","localAction":{"kind":"none","trackingCueIDs":[]},"memoryUpdate":
-{"situationUnderstanding":null,"answeredQuestionPurposes":null,
-"receivedDisclosureQuestionPurposes":null,"eventDisclosureOutcome":null,
-"selfCriticismStatus":null,
-"selfCriticalStatement":null,"selfCriticismLink":null,"episodeStructure":null,"contextRelationship":null,
-"contextCueOffered":null,
-"trackingAssessments":null,
-"cardRealityConnection":null,"pendingCardRealityConnection":null,
-"clearPendingCardRealityConnection":null,"clearCardRealityConnection":null,
-"cardConnectionOutcome":null,
-"cardInterpretiveTension":null,
-"cardNegotiatedMeaning":null,"candidUnderstanding":null,"fierceUnderstanding":null,
-"finalNarrative":null,"practiceTransition":null},
-"resolvedConfirmation":null,"nextPrompt":{"kind":"none","purpose":null,"focus":null,
-"disclosurePurpose":null,"disclosureTarget":null,"disclosureReopenReason":null,
-"target":null,"referenceID":null},"replyIntent":"",
-"replyGuidance":"","cardReferenceSelection":null}
-cardReferenceSelection may instead be {"relationIndex":0}; the index is zero-based under the closed
-reference contract. Never return relation text there.
-resolvedConfirmation is null or exactly
-{"target":"trackingRelationship|cardConsent|cardRealityConnection|cardMapping|finalNarrative|practice",
-"decision":"related|partlyRelated|unrelated|uncertain|accepted|revised|rejected|unclear|declined",
-"referenceID":null}; never use another shape. Copy any pending referenceID exactly. Use null for
-unchanged memory. replyGuidance is private and may be empty only for silent drawRandomCard or
-shareCardGuidance; visible operations require a specific direction.
-Canonical/pending connections are complete or null; pending is not evidence.
-cardImageRelation/cardRealityMapping/cardRealityMappingSource are forbidden even when null.
-Post-guidance, omit cardRealityConnection; confirmed value is immutable.
-practiceTransition is null or exactly
-{"transactionID":"","narrativeReferenceID":null,"proposal":{"id":"","kind":"care|repair|protect|change",
-"content":"","basis":"","status":"pendingConfirmation|confirmed",
-"source":"assistantProposed|userRevised"},"noActionReason":null}.
-Awaiting proposal uses both nullable members null; noAction uses proposal=null and one typed reason.
-suggestPractice/revisePractice requires optionalAction, a complete pending proposal, and practice
-confirmation; transactionID, proposal.id, and confirmation referenceID must be identical. Retired
-practice arrays/scalars are forbidden.
+CARD_CONNECTION_OUTPUT_CONTRACTS: dict[str, str] = {
+    "observation": "cardConnectionTurnOutcome is null for image observation.",
+    "development": (
+        'cardConnectionTurnOutcome is null for image-only development, or exactly '
+        '{"kind":"userAuthoredConnection","connection":{"imageRelation":"","realityMapping":"",'
+        '"source":"userAuthored","status":"confirmed"}} when the latest answer independently contains '
+        "that complete mapping."
+    ),
+    "openExploration": (
+        'cardConnectionTurnOutcome is exactly {"kind":"userAuthoredConnection","connection":'
+        '{"imageRelation":"","realityMapping":"","source":"userAuthored","status":"confirmed"}} '
+        'or {"kind":"connectionStillUnclear","connection":null}. Connections are complete or null.'
+    ),
+    "awaitingCandidateResolution": (
+        'cardConnectionTurnOutcome is exactly {"kind":"candidateAccepted","connection":null}, '
+        '{"kind":"candidateRevised","connection":{"imageRelation":"","realityMapping":"",'
+        '"source":"userRevised","status":"confirmed"}}, or '
+        '{"kind":"candidateRejected","connection":null}.'
+    ),
+    "guidance": "cardConnectionTurnOutcome is null after guidance; the confirmed connection is immutable.",
+}
+
+
+PLANNER_JSON_SHAPE = """{"semanticOperation":"","requestedStage":"","localAction":{"kind":"none","trackingCueIDs":[]},"memoryUpdate":{"situationUnderstanding":null,"answeredQuestionPurposes":null,"receivedDisclosureQuestionPurposes":null,"eventDisclosureOutcome":null,"selfCriticismStatus":null,"selfCriticalStatement":null,"selfCriticismLink":null,"episodeStructure":null,"contextRelationship":null,"contextCueOffered":null,"trackingAssessments":null,"cardRealityConnection":null,"pendingCardRealityConnection":null,"clearPendingCardRealityConnection":null,"clearCardRealityConnection":null,"cardConnectionOutcome":null,"cardInterpretiveTension":null,"cardNegotiatedMeaning":null,"cardObservationEvidence":null,"cardDevelopmentEvidence":null,"candidateBridgeResolvedAt":null,"reflectionFrame":null,"finalNarrative":null,"practiceTransition":null},"cardConnectionTurnOutcome":null,"resolvedConfirmation":null,"nextPrompt":{"kind":"none","purpose":null,"focus":null,"disclosurePurpose":null,"disclosureTarget":null,"disclosureReopenReason":null,"target":null,"referenceID":null},"replyIntent":"","replyGuidance":"","cardReferenceSelection":null}"""
+
+# The rebuilt v5 Planner cannot express workflow instructions. Swift derives stage, prompt,
+# confirmation, local capabilities, and user-visible intent from the one semantic operation.
+CURRENT_V5_PLANNER_JSON_SHAPE = (
+    '{"semanticOperation":null,"reflectionProgressionDecision":null,'
+    '"semanticEvidencePatch":{"memoryUpdate":{},'
+    '"cardConnectionEvidence":null,"contextualTrackingDecision":null},'
+    '"responseFocus":""}'
+)
+
+# Stage-scoped schema for the only Event aggregate accepted by the current v5 Planner. Keeping it
+# beside the compact top-level shape makes the sparse-patch contract explicit without restoring
+# the retired all-stage Planner tuple.
+CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE = (
+    '{"selfCriticalStatement":"exact grounded broad self-judgment when newly supplied",'
+    '"episodeStructure":{"concreteFacts":["grounded focal event"],'
+    '"eventProcess":["grounded development"],'
+    '"behaviorEvidence":["grounded action or omission"]}}'
+)
+
+CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE = (
+    '{"cardObservationEvidence":{"userDescribedElements":["visible user-described element"]},'
+    '"cardDevelopmentEvidence":{"actorsOrElements":["user-described element"],'
+    '"projectiveFocus":"user-selected salient element, uncertainty, tension, or choice",'
+    '"relationOrAction":"user-described relation or action",'
+    '"anticipatedChangeOrChoice":"user-described possible change or choice"}}'
+)
+
+CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE = (
+    'semanticEvidencePatch.contextualTrackingDecision={"metricEligibility":['
+    '{"profileID":"exact supplied profileID","metric":"exact supplied metric",'
+    '"status":"qualifies|doesNotQualify","preferred":false}]}; '
+    'classify every supplied metric exactly once; when any metric qualifies exactly one qualifying '
+    'metric has preferred=true, and when none qualifies every preferred value is false; '
+    'after a reveal, '
+    '{"contextRelationship":{"relevance":"related|partlyRelated|unrelated|uncertain",'
+    '"userInterpretation":"user-authored natural relationship or revision, otherwise null"}}'
+)
+
+
+def _planner_base_structural_contract(request: dict[str, Any]) -> str:
+    parts = [
+        "replyGuidance is operation-specific and may be empty only for silent drawRandomCard/shareCardGuidance."
+    ]
+    if request.get("protocolStage") == "cardReflection":
+        parts.append('cardReferenceSelection is null or {"relationIndex":0}; never return relation text.')
+    if _pending_confirmation(request) or request.get("protocolStage") in {
+        "cardConsent",
+        "narrativeConfirmation",
+        "optionalAction",
+    }:
+        parts.append(
+            'resolvedConfirmation is null or {"target":"trackingRelationship|cardConsent|cardMapping|'
+            'finalNarrative|practice","decision":"related|partlyRelated|unrelated|uncertain|accepted|'
+            'revised|rejected|unclear|declined","referenceID":null}; copy the pending referenceID.'
+        )
+    return "\n".join(parts)
+
+
+def _reflection_frame_contract(*, sparse_tender_lineage: bool) -> str:
+    if sparse_tender_lineage:
+        return """
+Reflection output carries meaning only. Exploration emits selfCriticismLink and no reflectionFrame.
+Tender/Synthesis meaning uses reflectionFrame.reflectionDelta except at committed Tender or active
+Fierce progression, where reflectionProgressionDecision is the sole meaning owner. Fierce completion
+colocates only reflectionDelta and fierceDirection in that decision. Swift recovers the active candidate,
+latest user answer, and committed evidence lineage. responseFocus is only a
+current-turn Writer presentation instruction: it is never persistent evidence and Swift never
+uses it as a reflectionDelta fallback. Never copy an Assistant question, earlier reply, or Writer
+instruction into reflectionDelta. Optional new user-grounded evidence is
+reflectionFrame.evidenceBasis=["exact user-grounded proposition"]. dimensions may contain
+selfKindness/commonHumanity/mindfulness. Never also emit a reflectionFrame for a Fierce progression
+decision. behavior/impact are retired at that boundary; support/provision maps to protect. Card,
+tracking, reference guidance, Assistant wording, and model inference are never Fierce evidence.
+Never emit mode, action, phase, source, or committed lineage; Swift supplies them and joins reality.
 """.strip()
+
+    opening_contract = (
+        "Unresolved Fierce inquiry uses responseFocus for one grounded "
+        "clarification and omits reflectionFrame/fierceEvidence."
+    )
+    fierce_completion_contract = (
+        "Completing Fierce may add fierceEvidence with behavior/impact and direction=repair|protect|change; "
+        "at least behavior or impact must come from the user."
+    )
+    return f"""
+Reflection output carries meaning only. Put the grounded Tender distinction or Synthesis in
+responseFocus and optionally repeat that same meaning in reflectionFrame.reflectionDelta. Never
+emit mode, action, phase, evidence source, or committed lineage; Swift owns them. Optional new
+user-grounded evidence is reflectionFrame.evidenceBasis=["exact user-grounded proposition"].
+dimensions may contain selfKindness/commonHumanity/mindfulness as semantic emphasis only.
+{opening_contract} {fierce_completion_contract}
+Card, tracking, reference guidance, and assistant inference are never Fierce evidence. Swift alone
+chooses internal mode/action and preserves provenance.
+""".strip()
+
+
+PLANNER_REFLECTION_FRAME_CONTRACT = _reflection_frame_contract(
+    sparse_tender_lineage=False
+)
+CURRENT_V5_PLANNER_REFLECTION_FRAME_CONTRACT = _reflection_frame_contract(
+    sparse_tender_lineage=True
+)
+
+
+PLANNER_PRACTICE_CONTRACT = """
+practiceTransition=null or {"transactionID":"","narrativeReferenceID":null,"proposal":{"id":"","kind":"care|repair|protect|change|noAction","content":"","basis":"","status":"pendingConfirmation|confirmed","source":"assistantProposed|userRevised"},"noActionReason":null}. noAction needs content+basis; proposal IDs match transaction and practice-confirmation IDs. Current directReflection uses narrativeReferenceID=null; legacy preserves it. Retired practice arrays/scalars are forbidden.
+""".strip()
+
+CURRENT_V5_PRACTICE_CONTRACT = """
+For proposePractice, practiceTransition is {"proposal":{"content":"one small action",
+"basis":"one exact groundedRealityCandidates.id"},"noActionReason":null}. For resolvePractice,
+include only a revised proposal's content/basis, or noActionReason when the person declines/is not
+ready; omission means acceptance of the active proposal. Do not emit memoryUpdate.finalNarrative on
+resolvePractice: Swift compiles the final narrative from the committed Synthesis and resolved Action.
+Never emit kind,
+transactionID, narrativeReferenceID, proposal.id, status, or source. Swift derives the internal
+category and owns all transaction/provenance metadata. Retired arrays, menus, and scalar practice
+fields are forbidden.
+""".strip()
+
+
+def planner_output_contract(request: dict[str, Any]) -> str:
+    stage = request.get("protocolStage")
+    contracts = [PLANNER_SEMANTIC_OPERATION_CONTRACT, _planner_base_structural_contract(request)]
+    if stage == "directReflection":
+        contracts.append(PLANNER_REFLECTION_FRAME_CONTRACT)
+    operations = request.get("permissions", {}).get("allowedOperations", [])
+    may_suggest_practice = any(
+        isinstance(operation, dict) and operation.get("replyIntent") == "suggestPractice"
+        for operation in operations
+    )
+    if stage in {"narrativeConfirmation", "optionalAction"} or (
+        stage == "directReflection" and may_suggest_practice
+    ):
+        contracts.append(PLANNER_PRACTICE_CONTRACT)
+    if stage == "cardReflection":
+        contracts.extend(
+            [
+                CARD_CONNECTION_COMMON_OUTPUT,
+                CARD_CONNECTION_OUTPUT_CONTRACTS[_card_substate(request)],
+                CARD_TYPED_EVIDENCE_CONTRACT,
+            ]
+        )
+    else:
+        contracts.append("cardConnectionTurnOutcome is null.")
+    return "Return exactly this JSON object shape:\n" + PLANNER_JSON_SHAPE + "\n" + "\n".join(contracts)
 
 
 def _effective_typed_memory_value(
@@ -337,107 +801,79 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
     stage = str(request.get("protocolStage", ""))
     intent = str(plan.get("replyIntent", ""))
     shared = f"Realize only replyIntent={intent}."
+    if intent == "presentFinalNarrative":
+        return (
+            f"{shared} Present one concise narrative from confirmed evidence, reflectionDelta, and "
+            "resolved action/noAction. Do not present while action is absent/pending, replay workflow, "
+            "invent a Tender/Fierce pair, resolve unknowns, or ask anything except the planned narrative question."
+        )
+    if intent == "suggestPractice":
+        return (
+            f"{shared} Offer exactly the pending care/repair/protect/change/noAction proposal as one "
+            "small, feasible, non-punitive option grounded in its basis. noAction explains why pause, "
+            "uncertainty, or waiting is preferable to an unsupported task. Ask only whether to accept, "
+            "shrink, revise, or decline it; no menu or second plan."
+        )
     if stage == "contextualDisclosure":
         if intent == "inviteCardConsent":
             return (
-                f"{shared} The event story is coherent. Use at most one confirmed fact as a brief, "
-                "restrained bridge, or invite directly when no bridge adds value. Only when the "
-                "person's own messages explicitly contain a broad whole-self verdict may the "
-                "reply distinguish that verdict from the specific act or result; preserve conduct "
-                "and impact. Then invite one optional 一张随机反思卡. The only "
-                "question is the optional card-consent question; do not ask the person to explain "
-                "the event, emotion, importance, guilt, concern, or grounding any further. "
-                "Do not retell the event, label an action as a deliberate choice without user "
-                "evidence, assign responsibility, force a comparison between concerns, praise a "
-                "trait, analyze motive, or preview card content."
+                f"{shared} Use at most one confirmed fact as a restrained bridge, then invite one "
+                "optional ‘一张随机反思卡’. A specific-act/whole-person distinction is allowed only for "
+                "an explicit broad self-judgment. Preserve conduct/impact. The only question is consent; "
+                "do not continue event analysis, label a deliberate choice, assign responsibility, praise, "
+                "infer motive, call it an exercise, or preview card title/image/symbol/theme/meaning."
             )
         return (
-            f"{shared} Ask the one planned event question directly, without first acknowledging, "
-            "summarizing, paraphrasing, or reporting back the person's latest words. Do not begin "
-            "with forms such as ‘你提到’, ‘听起来’, ‘我理解’, ‘我明白’, or an equivalent recap. "
-            "Realize only the validated typed disclosurePurpose and its canonical target. Current "
-            "Event Disclosure questions stay only with the concrete episode, behavior or omission, "
-            "or event development. Never ask for impact, emotion, importance, guilt, self-evaluation, "
-            "responsibility, motive, unresolved meaning, or what matters most. Use one "
-            "short, natural, situation-responsive question that can be answered "
-            "from recalled events."
+            f"{shared} Ask the one planned typed disclosure question directly, without acknowledgement "
+            "or paraphrase preface. Stay with focalEvent, eventProcess, or behavior/non-action. Do not ask "
+            "for impact, emotion, importance, guilt, self-evaluation, responsibility, motive, meaning, "
+            "solution, or low-value date/name/category detail. Do not presuppose choice or stop-awareness."
         )
     if stage == "cardConsent":
-        return f"{shared} Keep consent optional and do not interpret the image."
+        return f"{shared} Keep consent optional; do not interpret an unseen image."
     if stage == "cardReflection":
-        card = request.get("card") if isinstance(request.get("card"), dict) else {}
-        anchor_direction = (
-            " request.card.realityAnchor is the authoritative current-event boundary. Use only "
-            "its confirmed fact, process, or impact material for the reality side; never request "
-            "or introduce a different life episode."
-        )
-        if (
-            intent == "developCardImage"
-            and card.get("connectionAttemptCount", 0) >= 1
-            and card.get("connectionScaffoldUsed") is not True
-        ):
-            return (
-                f"{shared} The person has not yet found a life connection. Use exactly one "
-                "already established image action or relation and one already confirmed action, "
-                "sequence, omission, or result from this event. Ask one easy open question about "
-                "whether or how those two observable relations are similar, different, opposed, "
-                "or missing. Do not ask for an unrelated life example, recap the event, repeat the "
-                "full image, collect more visual detail, console at length, imply meaning, or treat "
-                f"inability as refusal.{anchor_direction}"
-            )
-        if intent == "inviteCardConnection" and card.get("connectionScaffoldUsed") is True:
-            return (
-                f"{shared} The smaller scaffold did not yet produce a connection. Offer exactly "
-                "one tentative candidate that pairs an established image action/relation with a "
-                "confirmed event action/sequence/result and states only a possible similarity, "
-                "difference, contrast, or missing counterpart. Clearly leave it optional and ask "
-                "one concrete open question that lets the person develop, redirect, or decline it. "
-                "Do not convert an image role or action into the person's need, feeling, motive, "
-                "fear, protection, trait, cause, responsibility, or compassionate interpretation. "
-                "reflectionApproaches is unavailable here. Do not save or speak as if the candidate "
-                f"were the person's interpretation, and do not recap either story.{anchor_direction}"
-            )
-        context_direction = (
-            " The validated plan sets contextCueOffered=true: include the supplied contextualLoadCue "
-            "once as a tentative descriptive background beside—not as the cause of—the person's "
-            "mapping. Do not ask for a separate relevance verdict. Silence never confirms it."
-            if plan.get("memoryUpdate", {}).get("contextCueOffered") is True
-            else " The plan does not offer context: do not mention contextualLoadCue in the visible reply."
-        )
-        return (
-            f"{shared} Stay inside user-grounded image and reality relations. A developCardImage "
-            "or inviteCardConnection turn must contain its one planned open question and cannot "
-            "be replaced by an acknowledgement. If presenting a "
-            "reading, place one substantive tentative tension beside the person's own mapping, "
-            "without completing its cause, lesson, or required change. Ask one concrete retrospective "
-            "question that lets the person develop or redirect the connection. It must advance reflection while "
-            "leaving natural room for continuation, redirection, rejection, or no change; it must "
-            "not ask the person to judge the reading's fit, accuracy, or correctness. If no explicit interpretive "
-            "tension exists, stay close to the person's own mapping and established Tender "
-            "baseline; do not invent a deeper symbolic meaning merely to make the reading sound "
-            f"insightful.{anchor_direction}{context_direction}"
-        )
+        return f"{shared} Realize only the current typed card substate and planned question count."
     if stage == "directReflection":
+        entry = (
+            " Briefly fold the supplied card bridge into this reflection; do not confirm it."
+            if _is_card_guidance_reflection_entry(request)
+            else ""
+        )
+        frame = plan.get("memoryUpdate", {}).get("reflectionFrame")
+        frame = frame if isinstance(frame, dict) else {}
+        mode = frame.get("mode")
+        mode_rule = (
+            " Fierce wording must first limit whole-person attack, then address only the validated "
+            "behavior/impact/caring focus in the same reply."
+            if mode == "fierce"
+            else " Tender wording must realize a concrete grounded distinction, not reassurance or generic Common Humanity alone."
+        )
+        context_rule = (
+            " Mention contextualLoadCue once as tentative background, never cause; silence does not confirm it."
+            if plan.get("memoryUpdate", {}).get("contextCueOffered") is True
+            else ""
+        )
+        reference_rule = (
+            " If selected, use the current-card reference only as a silent question lens, never stated meaning."
+            if plan.get("cardReferenceSelection") is not None
+            else ""
+        )
         return (
-            f"{shared} Tender is already established, so do not repeat the global-verdict distinction "
-            "or defend the person through praise or a benign motive. For directCandidReflection, ask "
-            "one retrospective, event-specific question that locates what merits understanding and/or "
-            "what supported conduct, impact, boundary, or choice needs ownership or change. Follow a "
-            "latest correction about mishandling instead of softening it. Do not request future action "
-            "design, a counterfactual outcome, or another global-self rating. For presentFinalNarrative, "
-            "write only the concise two-sided delta and preserve unresolved uncertainty. "
-            f"{_condition_contract(request)}"
+            f"{shared} Realize only reflectionFrame and its grounded evidence. Match the planned question "
+            "count; otherwise express reflectionDelta or transition without recap. Do not name theory or "
+            "turn card/outcome/unknown cause into responsibility. If an explicit self-judgment is in the "
+            "grounding, visibly distinguish the specific event/result from a whole-person conclusion."
+            + entry
+            + mode_rule
+            + context_rule
+            + reference_rule
         )
     if stage == "narrativeConfirmation":
-        return (
-            f"{shared} Present or revise only the concise integrated narrative, or present the "
-            f"permitted structured practice. {_condition_contract(request)}"
-        )
+        return f"{shared} Realize only the narrative resolution or permitted structured action successor."
     if stage == "optionalAction":
         return (
-            f"{shared} Resolve the one pending practice atomically. Accept its exact content; "
-            "confirm a user's explicit revision with source=userRevised; or clear it with typed "
-            "userDeclined. Keep only the canonical transition and do not ask why they reject."
+            f"{shared} Resolve the one proposal atomically; preserve exact content on acceptance, use "
+            "source=userRevised for a user revision, or clear with userDeclined. Do not ask why it was rejected."
         )
     if stage == "complete":
         return f"{shared} Keep the acknowledgement brief."
@@ -446,129 +882,61 @@ def _writing_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> st
     return f"{shared} Follow the validated plan exactly."
 
 
-def _planner(payload: dict[str, Any]) -> PromptMessages:
-    request = _required_object(payload, "request")
-    system = f"""
-You are the private semantic TurnPlanner for a Chinese self-compassion reflection study. A separate
-Writer produces visible language. Swift exclusively owns workflow transitions, local actions,
-persistence, card selection, and protocol validation. Interpret the latest user answer, update only
-supported semantic memory, and choose exactly one permitted reply intent.
+def _writing_substate_contract(request: dict[str, Any], plan: dict[str, Any]) -> str:
+    if request.get("protocolStage") != "cardReflection":
+        return ""
+    substate = _card_substate(request)
+    card = request.get("card") if isinstance(request.get("card"), dict) else {}
+    intent = str(plan.get("replyIntent", ""))
+    if substate == "observation":
+        return "Ask one easy observable-image question using only elements already named; add no symbol or meaning."
+    if substate == "development":
+        return "Ask only what may happen/change next; do not prescribe it or collect more static detail."
+    if substate == "openExploration":
+        if intent == "developCardImage" and card.get("connectionScaffoldUsed") is not True:
+            return (
+                "Ask one easy similarity/difference/contrast/absence comparison between an established "
+                "image relation and one realityAnchor action/process/result. No recap or inferred meaning."
+            )
+        if intent == "inviteCardConnection" and card.get("connectionScaffoldUsed") is True:
+            return (
+                "Offer one optional observable image/event candidate, then one question allowing development, "
+                "redirection, or rejection; do not present it as the person's view or infer inner meaning."
+            )
+        return "Invite one same-episode image/reality connection using only realityAnchor; do not search another episode."
+    if substate == "awaitingCandidateResolution":
+        return "Realize only acceptance, user revision, rejection, or genuine uncertainty about the persisted candidate; no new candidate or fit check."
+    if int(request.get("protocolVersion") or 0) >= 5:
+        return (
+            "The canonical connection is complete. Do not create or word a card meaning/mapping "
+            "confirmation; move into the permitted Direct Reflection, where its first visible reply "
+            "will combine a brief card bridge with the validated reflection delta."
+        )
+    context = (
+        " Mention contextualLoadCue once as tentative background, never cause; silence does not confirm it."
+        if plan.get("memoryUpdate", {}).get("contextCueOffered") is True
+        else " Do not mention contextualLoadCue."
+    )
+    reference = (
+        " If selected, use the current-card reference only as a silent question lens, never stated meaning."
+        if plan.get("cardReferenceSelection") is not None
+        else ""
+    )
+    return (
+        "Use the confirmed mapping for one tentative relational distinction or planned retrospective "
+        "question; no fit check, completed cause/lesson/change, psychology, or responsibility."
+        + context
+        + reference
+    )
 
-CURRENT SEMANTIC CONTRACT:
-{CURRENT_SEMANTIC_CONTRACT}
 
-CURRENT CONDITION:
-{_condition_contract(request)}
-
-CURRENT STAGE:
-{_planning_stage_contract(request)}
-
-CURRENT PERMISSIONS:
-{_permissions_text(request)}
-
-REPAIR CONTRACT:
-protocolCorrection is a compact Swift repair JSON, not dialogue or a raw log. Repair its errorCode
-and missingConditions by choosing one whole CURRENT ALLOWED OPERATION; never mix enum catalogues,
-repeat the rejected transition, or use forbiddenOperations. Preserve supported evidence. If narrowed
-to exploreContext, ask one natural question for the named missing relation, use its required
-disclosureTarget and any singleton allowedEnumValues, and do not introduce a resolved target, card,
-exercise, or later-stage activity.
-
-{PLANNER_OUTPUT_CONTRACT}
-""".strip()
-    return PromptMessages(system=system, user=f"TURN REQUEST JSON:\n{_encoded(request)}")
-
-
-def _plan_critic(payload: dict[str, Any]) -> PromptMessages:
-    request = _required_object(payload, "request")
-    plan = _required_object(payload, "plan")
-    system = f"""
-You are the private plan Critic. Do not write dialogue or select a replacement stage, action, or
-intent. Swift defines capabilities; the Planner chooses the best permitted operation. Never impose
-a fixed disclosure order. In current Event Disclosure, the supported focal event, event process,
-and behavior evidence are the explicit completion boundary; no optional psychological field may
-delay the permitted forward transition.
-The selected requestedStage, replyIntent, and localAction must equal one whole object in CURRENT
-ALLOWED OPERATIONS; separately permitted enum values cannot be recombined.
-Return pass unless the candidate has one material semantic defect: unsupported memory; a summary
-without enough user-grounded reality for its distinction; a condition bridge before one concrete
-scene plus the person's participation form a coherent story; repeated or multi-part questioning; ignored correction,
-boundary, or uncertainty; supported conduct erased; contextual data detached, broadened, or made
-causal; card meaning imposed or advanced without user-grounded relations; rejected material reused;
-unsupported Fierce content; premature practice; narrative without one condition-valid distinction;
-in current contextualDisclosure, eventDisclosureOutcome is missing, inconsistent with its patch, or
-claims readiness without a supported focal episode, user behavior/omission, and development; explicit user conduct is omitted from
-behaviorEvidence (`episode_structure_misclassified`) or behaviorEvidence introduces unsupported
-conduct (`unsupported_memory_inference`); a disclosure question lacks typed disclosurePurpose, uses a
-noncanonical target, reuses a received-and-complete purpose without a supported typed reopen reason,
-or is functionally duplicated under different free text; impact, emotion, self-evaluation,
-importance, guilt, motive, responsibility, controllability, constraints, or a solution is pursued as
-a required disclosure relation, or any detail is pursued after the three-part story is sufficient
-(`unnecessary_event_detail`); the latest answer is ignored; a question presupposes a deliberate
-decision to continue without evidence (`unsupported_decision_premise`), presupposes awareness that it
-was time to stop or an attempted stop without evidence (`unsupported_stop_awareness_premise`), or
-reuses a premise the person explicitly denied (`negated_premise_reused`); the plan manufactures a
-global self-judgment absent from the person's own words (`manufactured_global_self_judgment`); or a
-current card condition uses a separate Tender operation instead of inviteCardConsent in the same
-visible turn; the proposed bridge minimizes conduct/consequence or adds a trait, feeling, motive,
-diagnosis, or unsupported favorable reframe; or
-the plan requests Tender confirmation (`unsupported_tender_reframe`, `consequence_minimized`,
-`global_judgment_not_distinguished`, `unnecessary_tender_confirmation`);
-or bridge converts another person's observable reaction into an unreported evaluation, embarrassment,
-or other internal state; a question demands an abstract causal or psychological explanation the
-person has not offered; or a transition
-outside current permissions; the latest answer supplies a material episode relation but the memory
-patch omits it and asks for another attribution category; a question conflates intentional choice
-with practical capacity, or asks for an abstract inventory of controllability or constraints; or an
-accepted pending cardConsent does not use the silent Swift-owned draw authorization contract; or,
-in cardReflection, an interpretable person/object-plus-action relationship already exists but the
-plan asks for another static visual detail instead of at most one temporal development or the
-image-to-life connection; the first inability to connect is treated as refusal, answered by an
-event recap or generic life-example search, or advanced without the one permitted scaffold pairing
-an image relation with a relation from request.card.realityAnchor; any initial connection,
-scaffold, or candidate searches for or switches to another life episode; after that scaffold, a second inability is not
-answered by the one permitted tentative observable candidate mapping, or that candidate converts
-an image action/role into an inferred personal need, feeling, motive, fear, protection, trait, cause,
-responsibility, or Tender/Fierce meaning before guidance is available; a
-developCardImage or inviteCardConnection operation has no open question; or the latest answer already supplies a user-authored image-to-life
-mapping but the plan repeats, acknowledges, or deepens the connection instead of committing it and
-letting Swift derive the candidate reading; a user-grounded connection is not committed as one
-complete cardRealityConnection (`user_connection_not_committed`); a connection patch omits either
-non-empty relation, non-empty mapping, source, or confirmed status (`incomplete_connection_patch`);
-the latest answer maps the user's image relation to the focal event but the plan ignores that
-mapping (`card_mapping_not_used`); a legacy mapping source is emitted without both matching contents
-(`connection_source_without_content`); any retired cardImageRelation, cardRealityMapping, or
-cardRealityMappingSource key appears in a current memory patch, even as null
-(`legacy_card_connection_patch_not_allowed`); or a candidate reading completes a cause, lesson, or change
-before the person develops that link; or cardReferenceSelection is used when referenceGuidance is
-absent, selects anything other than one current-card index for a permitted content-forward question, is chosen
-through lexical overlap rather than the full user evidence, lacks joint support from the user's image
-relation and confirmed reality connection, violates its activationBoundary or prohibitedClaims, or
-is copied into semantic memory or treated as the person's interpretation or answer; or post-card candid reflection repeats the Tender/global-self
-distinction, redirects a correction about mishandling into praise or benign purpose, asks for future
-action design, or bypasses the event-internal boundary between what merits understanding and what
-needs ownership or change; or a final narrative replays the workflow or resolves stated uncertainty. Do not
-require a fixed number of turns or fields.
-
-For suggestPractice/revisePractice require one atomic transition: optionalAction; one complete
-pending proposal with non-empty id/content/user-evidence basis and a legal kind; noActionReason
-null; plus practice confirmation. transactionID, proposal.id, and confirmation referenceID must
-be identical. Reject retired fields, generic/missing basis,
-multiple proposals, another stage, nextPrompt none/openQuestion, or target mismatch. Preserve an
-accepted/revised finalNarrative resolution. noAction requires proposal=null and a supported reason.
-When resolving a pending practice: accepted confirms the unchanged proposal; revised confirms the
-same id with source=userRevised and the user's bounded content; declined/rejected clears proposal
-with userDeclined. All three complete with nextPrompt none. Do not require a reason for rejection.
-
-Allowed reasonCodes:
-duplicate_question_function, overfilled_focus, latest_answer_ignored,
+PLAN_CRITIC_REASON_CODES = """duplicate_question_function, overfilled_focus, latest_answer_ignored,
 episode_structure_incomplete, behavioral_fact_erased, premature_tender_bridge,
-question_cognitive_load, low_information_loop,
-latest_answer_not_committed, abstract_attribution_inventory,
-generic_disclosure_sequence, disclosure_target_mismatch, resolved_relation_reopened,
-self_criticism_link_missing, disclosure_scope_violation, episode_confirmation_missing, card_visual_overcollection,
-tender_grounding_repetition, tender_transition_incomplete,
-episode_structure_misclassified, unsupported_memory_inference,
+question_cognitive_load, low_information_loop, latest_answer_not_committed,
+abstract_attribution_inventory, generic_disclosure_sequence, disclosure_target_mismatch,
+resolved_relation_reopened, self_criticism_link_missing, disclosure_scope_violation,
+episode_confirmation_missing, card_visual_overcollection, tender_grounding_repetition,
+tender_transition_incomplete, episode_structure_misclassified, unsupported_memory_inference,
 unsupported_decision_premise, unsupported_stop_awareness_premise, negated_premise_reused,
 unnecessary_event_detail, manufactured_global_self_judgment, unsupported_tender_reframe,
 consequence_minimized, global_judgment_not_distinguished, unnecessary_tender_confirmation,
@@ -576,26 +944,331 @@ user_correction_not_committed, rejected_card_reused, tracking_boundary_ignored,
 tracking_context_detached, card_mapping_progress_ignored, card_connection_underdeveloped,
 card_reality_mapping_missing, unsupported_card_claim, fierce_reflection_unsupported,
 generic_life_example_search, connection_left_current_episode, reality_anchor_not_used,
-image_relation_not_compared_with_focal_episode,
-unsupported_card_reference_selection, card_reference_permission_invalid,
-premature_card_conclusion, candid_delta_repetition, accountability_correction_ignored,
-premature_action_design, narrative_delta_mismatch, uncertainty_overridden, practice_offer_required,
-incomplete_practice_transition, practice_evidence_mismatch, unsupported_no_action,
-completion_contract_invalid.
-The additional connection reasonCodes are exactly: user_connection_not_committed,
+image_relation_not_compared_with_focal_episode, unsupported_card_reference_selection,
+card_reference_permission_invalid, premature_card_conclusion, candid_delta_repetition,
+accountability_correction_ignored, premature_action_design, narrative_delta_mismatch,
+uncertainty_overridden, practice_offer_required, reflection_mode_not_grounded,
+forced_fierce_material, rejected_premise_reused, future_worry_treated_as_self_criticism,
+uncertainty_treated_as_failure_evidence, self_compassion_dimension_forced,
+reflection_without_progress, incomplete_practice_transition, practice_evidence_mismatch,
+unsupported_no_action, completion_contract_invalid, user_connection_not_committed,
 incomplete_connection_patch, card_mapping_not_used, connection_source_without_content,
-legacy_card_connection_patch_not_allowed.
+legacy_card_connection_patch_not_allowed"""
 
-CURRENT CONDITION:
+
+WRITER_CRITIC_REASON_CODES = """field_stitching, unnatural_chinese, unsupported_claim, relation_lost,
+behavioral_fact_erased, user_correction_not_committed, rejected_card_reused, question_mismatch,
+multiple_questions, tracking_context_detached, card_claim_imposed, mechanical_fit_check,
+baseline_repetition, repetitive_acknowledgement, distinction_meta_question,
+question_cognitive_load, disclosure_reporting_preface, disclosure_scope_violation,
+disclosure_target_mismatch, resolved_relation_reopened, unsupported_decision_premise,
+unsupported_stop_awareness_premise, negated_premise_reused, manufactured_global_self_judgment,
+unsupported_tender_reframe, consequence_minimized, global_judgment_not_distinguished,
+unnecessary_tender_confirmation, episode_confirmation_missing, premature_transition_invitation,
+card_visual_overcollection, premature_practice, premature_card_conclusion,
+candid_delta_repetition, accountability_correction_ignored, premature_action_design,
+uncertainty_overridden, narrative_delta_mismatch, practice_evidence_mismatch,
+unsupported_positive_trait_reframe, unsupported_contextual_inference, premature_card_identity,
+unsupported_card_reference_selection, card_reference_answer_imposed, generic_life_example_search,
+connection_left_current_episode, reality_anchor_not_used,
+image_relation_not_compared_with_focal_episode, reflection_without_progress,
+future_worry_treated_as_self_criticism, uncertainty_treated_as_failure_evidence,
+forced_fierce_material, rejected_premise_reused"""
+
+
+_PLAN_REASON_CODES_BY_STAGE = {
+    "contextualDisclosure": "duplicate_question_function, overfilled_focus, latest_answer_ignored, episode_structure_incomplete, behavioral_fact_erased, latest_answer_not_committed, disclosure_target_mismatch, resolved_relation_reopened, disclosure_scope_violation, episode_structure_misclassified, unsupported_memory_inference, unsupported_decision_premise, unsupported_stop_awareness_premise, negated_premise_reused, unnecessary_event_detail, manufactured_global_self_judgment, unsupported_tender_reframe, consequence_minimized, unnecessary_tender_confirmation",
+    "cardConsent": "latest_answer_ignored, completion_contract_invalid, premature_card_conclusion",
+    "cardReflection": "latest_answer_ignored, rejected_card_reused, tracking_boundary_ignored, card_mapping_progress_ignored, card_connection_underdeveloped, card_reality_mapping_missing, unsupported_card_claim, generic_life_example_search, connection_left_current_episode, reality_anchor_not_used, image_relation_not_compared_with_focal_episode, unsupported_card_reference_selection, card_reference_permission_invalid, premature_card_conclusion, user_connection_not_committed, incomplete_connection_patch, card_mapping_not_used, connection_source_without_content, legacy_card_connection_patch_not_allowed",
+    "directReflection": "latest_answer_ignored, fierce_reflection_unsupported, candid_delta_repetition, accountability_correction_ignored, premature_action_design, uncertainty_overridden, reflection_mode_not_grounded, forced_fierce_material, rejected_premise_reused, future_worry_treated_as_self_criticism, uncertainty_treated_as_failure_evidence, self_compassion_dimension_forced, reflection_without_progress, global_judgment_not_distinguished, practice_evidence_mismatch, unsupported_no_action",
+    "narrativeConfirmation": "latest_answer_ignored, narrative_delta_mismatch, incomplete_practice_transition, practice_evidence_mismatch, unsupported_no_action, completion_contract_invalid",
+    "optionalAction": "latest_answer_ignored, incomplete_practice_transition, practice_evidence_mismatch, unsupported_no_action, completion_contract_invalid",
+}
+
+
+_WRITER_REASON_CODES_BY_STAGE = {
+    "contextualDisclosure": "field_stitching, unnatural_chinese, unsupported_claim, relation_lost, question_mismatch, multiple_questions, repetitive_acknowledgement, question_cognitive_load, disclosure_reporting_preface, disclosure_scope_violation, disclosure_target_mismatch, resolved_relation_reopened, unsupported_decision_premise, unsupported_stop_awareness_premise, negated_premise_reused, manufactured_global_self_judgment, unsupported_tender_reframe, consequence_minimized, unnecessary_tender_confirmation, premature_transition_invitation",
+    "cardConsent": "unnatural_chinese, unsupported_claim, question_mismatch, multiple_questions, premature_card_identity, premature_card_conclusion",
+    "cardReflection": "field_stitching, unnatural_chinese, unsupported_claim, relation_lost, rejected_card_reused, question_mismatch, multiple_questions, card_claim_imposed, mechanical_fit_check, tracking_context_detached, premature_card_conclusion, unsupported_contextual_inference, unsupported_card_reference_selection, card_reference_answer_imposed, generic_life_example_search, connection_left_current_episode, reality_anchor_not_used, image_relation_not_compared_with_focal_episode",
+    "directReflection": "field_stitching, unnatural_chinese, unsupported_claim, relation_lost, behavioral_fact_erased, user_correction_not_committed, question_mismatch, multiple_questions, mechanical_fit_check, candid_delta_repetition, accountability_correction_ignored, premature_action_design, uncertainty_overridden, reflection_without_progress, global_judgment_not_distinguished, future_worry_treated_as_self_criticism, uncertainty_treated_as_failure_evidence, forced_fierce_material, rejected_premise_reused",
+    "narrativeConfirmation": "field_stitching, unnatural_chinese, unsupported_claim, narrative_delta_mismatch, practice_evidence_mismatch, mechanical_fit_check",
+    "optionalAction": "unnatural_chinese, unsupported_claim, premature_action_design, practice_evidence_mismatch",
+}
+
+
+def _plan_reason_codes(request: dict[str, Any]) -> str:
+    return _PLAN_REASON_CODES_BY_STAGE.get(
+        str(request.get("protocolStage", "")),
+        "latest_answer_ignored, unsupported_memory_inference, completion_contract_invalid",
+    )
+
+
+def _writer_reason_codes(request: dict[str, Any]) -> str:
+    return _WRITER_REASON_CODES_BY_STAGE.get(
+        str(request.get("protocolStage", "")),
+        "unnatural_chinese, unsupported_claim, question_mismatch, multiple_questions",
+    )
+
+
+def _plan_critic_stage_contract(request: dict[str, Any]) -> str:
+    stage = str(request.get("protocolStage", ""))
+    if stage == "contextualDisclosure":
+        if int(request.get("protocolVersion") or 0) >= 5:
+            return (
+                "Audit semanticOperation and the cumulative focal-event/process/behavior payload. "
+                "clarifyEvent is invalid once that candidate snapshot is complete; "
+                "advanceToCardConsent requires it complete. Optional psychological fields and legacy "
+                "eventDisclosureOutcome/requestedStage/replyIntent/nextPrompt cannot decide progression."
+            )
+        return (
+            "Audit focal event, process, and relevant action/non-action. eventDisclosureOutcome must "
+            "match the cumulative patch. Optional psychological fields cannot delay readiness. One "
+            "explore question uses an advertised purpose/target, does not reopen a completed relation "
+            "without typed correction/withdrawal/contradiction, presume blame or choice, or seek low-value "
+            "detail. Once ready, require the same-turn brief bridge and card invitation."
+        )
+    if stage == "cardConsent":
+        return (
+            "Accepted pending cardConsent must use the silent Swift draw operation and cannot describe "
+            "or interpret an unseen card."
+        )
+    if stage == "cardReflection":
+        return "Audit only the current typed card substate, same-episode grounding, legal question count, and forward progress."
+    if stage == "directReflection":
+        return (
+            "Require one complete grounded reflectionFrame with a currently allowed action and one/two "
+            "dimensions. Tender needs a concrete fact/inference, event/identity, pain/self-attack, or similar "
+            "distinction and cannot search for responsibility; Common Humanity alone is not progress. Fierce "
+            "must remain Tender-grounded and requires existing behavior, impact, readiness, and a caring "
+            "direction. Reject card-based responsibility, future worry as global judgment, uncertainty as "
+            "failure, rejected premise reuse, forced dimensions, or recap/normalization without progress. "
+            "On the first post-guidance turn, require one brief canonical card bridge inside the same "
+            "reflection and forbid card meaning confirmation. In v5 synthesizeUnderstanding creates one "
+            "grounded action/noAction first."
+        )
+    if stage in {"narrativeConfirmation", "optionalAction"}:
+        return (
+            "Audit one atomic proposal transaction. An active care/repair/protect/change/noAction has "
+            "non-empty id/content/user-evidence basis, pending/confirmed status, legal source, and matching "
+            "transaction/proposal/practice-reference IDs. Proactive noAction has rationale+basis; rejection "
+            "uses proposal=null plus supported typed reason. Preserve narrativeReferenceID ordering. "
+            "Acceptance keeps exact content; revision keeps id and source=userRevised; decline needs no reason."
+        )
+    return "Audit only the supplied stage permissions, grounding, confirmation, progress, and output contract."
+
+
+def _plan_critic_substate_contract(request: dict[str, Any]) -> str:
+    if request.get("protocolStage") != "cardReflection":
+        return ""
+    substate = _card_substate(request)
+    contracts = {
+        "observation": (
+            "Require user-led observable description and stop once an action/relation exists; reject "
+            "symbols, fixed meaning, psychology, responsibility, or extra static-detail collection."
+        ),
+        "development": (
+            "Require at most one possible-next-change question; reject a prescribed development, more "
+            "static inventory, or assistant-authored reality meaning. Preserve a complete spontaneous "
+            "user-authored mapping without a confirmation step."
+        ),
+        "openExploration": (
+            "Require same-episode observable comparison. A direct mapping is one complete userAuthored "
+            "outcome; inability is connectionStillUnclear. Enforce only the advertised scaffold/candidate "
+            "capability and reject another life example or candidate-as-user-evidence."
+        ),
+        "awaitingCandidateResolution": (
+            "Only the persisted candidate may be accepted, revised, or rejected. Revision saves the "
+            "user mapping; rejection withdraws it. Reject open exploration, approval-word requirements, "
+            "raw projections, or connection confirmation."
+        ),
+        "guidance": (
+            "Use the canonical mapping and current closed reference boundary only. In v5 require direct "
+            "Reflection with no new meaning/mapping confirmation; legacy ordering follows its supplied "
+            "capability. Reject completed cause/lesson/change, card-based psychology/responsibility/Fierce "
+            "evidence, renewed exploration, mechanical approval, or unsupported contextual/reference use."
+        ),
+    }
+    return contracts[substate]
+
+
+def _writer_critic_stage_contract(request: dict[str, Any], plan: dict[str, Any]) -> str:
+    stage = str(request.get("protocolStage", ""))
+    intent = str(plan.get("replyIntent", ""))
+    if stage == "contextualDisclosure" and intent == "exploreContext":
+        return (
+            "Require one direct question for the typed purpose/target with no acknowledgement, summary, "
+            "paraphrase, card invitation, or different topic. Reject impact/emotion/importance/guilt/self-"
+            "evaluation/responsibility/motive/meaning questions, finer detail after readiness, unsupported "
+            "choice/stop-awareness, denied premise, or abstract controllability inventories."
+        )
+    if intent == "inviteCardConsent":
+        return (
+            "Require an optional ‘一张随机反思卡’ invitation and at most one brief factual bridge. Reject "
+            "extra introspection, full recap, unsupported responsibility/choice/motive/trait, minimized "
+            "impact, or previewed card identity/content/meaning. A whole-person distinction requires the "
+            "person's explicit broad judgment."
+        )
+    if stage == "cardReflection":
+        return "Audit only the visible function selected by the current typed card substate."
+    if stage == "directReflection":
+        return (
+            "Require the typed reflectionFrame action without internal labels. Tender realizes a grounded "
+            "distinction and cannot elicit responsibility; generic acknowledgement or Common Humanity alone "
+            "fails. Fierce first limits whole-person attack, then stays inside the validated behavior, impact, "
+            "and care-motivated focus. Reject card-based responsibility, punishment, character verdict, "
+            "future worry as self-judgment, uncertainty as failure, or restatement without a distinction, "
+            "valid question, understanding, or transition. If this is the first post-guidance turn, the card "
+            "bridge and reflection must be one reply with no approval check. Match question count to nextPrompt."
+        )
+    if intent == "presentFinalNarrative":
+        return (
+            "Require one concise integrated distinction using resolved action/noAction. Reject episode/"
+            "workflow replay, repeated Tender defense, new advice, answered uncertainty, global-self question, "
+            "or asking whether the assistant narrative is fitting/accurate/correct/approved/editable."
+        )
+    if intent in {"suggestPractice", "revisePractice"} or stage == "optionalAction":
+        return (
+            "Require the single grounded proposal/resolution from the plan; reject menus, punishment, generic "
+            "or mismatched basis, invented action, or demanding a reason for decline."
+        )
+    return "Audit natural realization of the typed plan, evidence, question count, and forward progress."
+
+
+def _writer_critic_card_substate_contract(request: dict[str, Any]) -> str:
+    contracts = {
+        "observation": "Require one user-led observable image question; reject symbols, fixed meaning, psychology, or static overcollection.",
+        "development": "Require one possible-next-change question; reject a prescribed development or reality interpretation.",
+        "openExploration": (
+            "Require same-episode observable comparison and the planned question. Reject another life "
+            "episode, recap instead of progress, inferred inner meaning, or inability treated as refusal."
+        ),
+        "awaitingCandidateResolution": (
+            "Realize only the pending candidate resolution. Reject approval-word demands, a new candidate, "
+            "reopened exploration, or rejected content returned as evidence."
+        ),
+        "guidance": (
+            "For v5 expose no separate guidance reply or confirmation; the next Direct Reflection combines "
+            "the bridge and delta. Legacy follows its validated operation. Reject fit checks, completed "
+            "lessons, or card-based psychology/responsibility."
+        ),
+    }
+    return contracts[_card_substate(request)]
+
+
+def _planner(payload: dict[str, Any]) -> PromptMessages:
+    request = _required_object(payload, "request")
+    recovery = _recovery_contract(request) or "No recovery diagnostic."
+    shared_contract = _planner_shared_contract(request)
+    semantic_contract = _semantic_contract(request)
+    condition_contract = _condition_contract(request)
+    stage_contract = _planning_stage_contract(request)
+    substate_contract = _planner_substate_contract(request)
+    permissions_contract = _permissions_text(request)
+    output_contract = f"{OUTPUT_DISCIPLINE}\n{planner_output_contract(request)}"
+    system = f"""
+ROLE
+You are the private semantic TurnPlanner. A separate Writer produces visible Chinese. Interpret the
+latest answer, update typed memory, and select exactly one permitted operation.
+
+SHARED INVARIANTS
+{shared_contract}
+
+STATE MEMORY
+{semantic_contract}
+
+CONDITION
+{condition_contract}
+
+STAGE GOAL / DELTA
+{stage_contract}
+
+CURRENT SUBSTATE
+{substate_contract or "No specialized substate delta."}
+
+ALLOWED
+{permissions_contract}
+
+RECOVERY
+{recovery}
+
+OUTPUT CONTRACT
+{output_contract}
+""".strip()
+    return _prompt_messages(
+        component="planner",
+        request=request,
+        system=system,
+        user=f"TURN REQUEST JSON:\n{_encoded(request)}",
+        stage_contract=stage_contract + "\n" + semantic_contract,
+        substate_contract=substate_contract,
+        schema_contract=output_contract,
+        recovery_contract=_recovery_contract(request),
+    )
+
+
+def _plan_critic(payload: dict[str, Any]) -> PromptMessages:
+    request = _required_object(payload, "request")
+    plan = _required_object(payload, "plan")
+    stage_rules = [_plan_critic_stage_contract(request)]
+    substate_contract = _plan_critic_substate_contract(request)
+    if request.get("protocolStage") == "cardReflection":
+        stage_rules.insert(0, CARD_EVIDENCE_RULES)
+    if request.get("protocolStage") == "directReflection":
+        stage_rules.insert(0, SELF_COMPASSION_RULES)
+    confirmation_contract = CONFIRMATION_RULES if _pending_confirmation(request) else ""
+    stage_contract = " ".join(stage_rules)
+    output_contract = (
+        'Return exactly {"verdict":"pass|revisePlanner","reasonCodes":[],"revisionGuidance":null}.\n'
+        "revisionGuidance is one short, content-free, executable planning correction; never generate "
+        "the next question or user-visible wording."
+    )
+    current_authority = (
+        "For protocol v5, review the explicit semanticOperation and its semantic payload. Ignore "
+        "conflicting legacy requestedStage, replyIntent, localAction, nextPrompt, confirmation, and "
+        "derived outcome fields; Swift Projector owns them and they are never a revision reason. "
+        "permissions.allowedSemanticOperations is authoritative."
+        if int(request.get("protocolVersion") or 0) >= 5
+        else "For legacy protocol, allowedOperations structural tuples remain authoritative."
+    )
+    system = f"""
+ROLE
+You are the private plan Critic. Do not write dialogue or choose a replacement operation. Return
+revisePlanner only for one material defect in: state legality; grounding; repeated/rejected premise;
+confirmation legality; reflection mode/action consistency; progress; or output contract. Swift's
+typed capability list is authoritative. Do not impose a fixed turn count, disclosure order, optional
+field, or preferred topic.
+
+EXECUTION AUTHORITY
+{current_authority}
+
+SHARED AUDIT
+{GROUNDING_RULES}
+{confirmation_contract}
+
+STAGE AUDIT
+{stage_contract}
+
+CURRENT SUBSTATE AUDIT
+{substate_contract or "No specialized substate audit."}
+
+ALLOWED REASON CODES
+{_plan_reason_codes(request)}
+
+CONDITION
 {_condition_contract(request)}
 
-Return exactly one JSON object:
-{{"verdict":"pass|revisePlanner","reasonCodes":[],"revisionGuidance":null}}
-revisionGuidance must be one short content-free planning instruction.
+OUTPUT
+{output_contract}
 """.strip()
-    return PromptMessages(
+    user = f"TURN REQUEST JSON:\n{_encoded(request)}\n\nCANDIDATE PLAN JSON:\n{_encoded(plan)}"
+    return _prompt_messages(
+        component="plan_critic",
+        request=request,
         system=system,
-        user=f"TURN REQUEST JSON:\n{_encoded(request)}\n\nCANDIDATE PLAN JSON:\n{_encoded(plan)}",
+        user=user,
+        stage_contract=stage_contract,
+        substate_contract=substate_contract,
+        schema_contract=output_contract,
     )
 
 
@@ -603,53 +1276,31 @@ def _writer(payload: dict[str, Any], *, revision: bool = False) -> PromptMessage
     request = _required_object(payload, "request")
     plan = _required_object(payload, "plan")
     intent = str(plan.get("replyIntent", ""))
-    role = "revising Writer" if revision else "Writer"
+    role = "Writer revision" if revision else "Writer"
+    stage_contract = _writing_stage_contract(request, plan)
+    substate_contract = _writing_substate_contract(request, plan)
+    output_contract = (
+        "Return exactly one JSON object. reply contains only user-visible Chinese, without analysis, "
+        "labels, protocol fields, or alternatives:\n"
+        f'{{"realizedIntent":"{intent}","reply":"complete user-visible Chinese reply"}}'
+    )
     system = f"""
-You are the private Chinese dialogue {role}. You perform surface realization only; the request and
-validated plan are immutable. Never change its stage, intent, target, action, prompt, memory patch,
-question presence/count, or progression. Ask exactly one easy question when required and none
-otherwise. Write one natural Chinese reply to “你”. Expose no internal labels, stitched fields,
-replayed material, added purpose, generic acknowledgement, or repeated opening. Continue from the
-newest concrete meaning without announcing or paraphrasing it back to the person.
+ROLE
+You are the private Chinese dialogue {role}. Surface realization only: request and validated plan are
+immutable, including stage, intent, action, memory, prompt, progression, and question presence/count.
 
-Only inviteCardConsent may offer a card or next-stage activity. It uses one evidence-grounded bridge,
-calls it only “一张随机反思卡”, and stays optional. The first invitation from contextualDisclosure
-may briefly say it has no fixed answer; do not mechanically repeat that explanation in later consent
-clarification. Before local selection, invent or preview no title, image, symbol, theme, or meaning.
-Do not call the card an exercise.
+GROUNDING / STYLE
+{GROUNDING_RULES}
+{WRITER_STYLE}
 
-Preserve evidence and uncertainty; add no fact, feeling, cause, motive, trait, capacity,
-responsibility, constraint, relation, practice, or status. When the validated task calls for a
-supported Tender distinction or later reflection, embody fair self-compassion without naming its
-theory. Distinguish a specific act or result from a whole-person judgment only when the person
-actually authored that broader judgment. In every stage, avoid reassurance,
-praise, normalization, minimization, excuse, or unsupported negation, and use only supported reality.
+CURRENT WRITING TASK
+{stage_contract}
 
-A protective purpose requires user evidence, tentative language, and must never erase, justify, or
-excuse impact. Invent no state, motive, diagnosis, or mechanism. During current disclosure, realize
-only the validated typed disclosurePurpose and canonical target; do not add emotion, responsibility,
-motive, meaning, or change work.
-Context uses only user-grounded contextRelationship. Card language
-uses only user-grounded image/reality relations and establishes no personal fact. A candidate is
-tentative and ends with one content-forward experience question. An episode recap only organizes
-existing content. Never ask the
-person to rate, approve, verify, or edit an assistant understanding, summary, reading, or narrative;
-ordinary answers may continue, redirect, reject, or stay uncertain. Consent/practice choice may be
-direct. Final synthesis adds one distinction; practice stays supported and optional. Questions must
-not demand hidden motives, complex mechanisms, or repeated explanations.
+CURRENT SUBSTATE
+{substate_contract or "No specialized substate wording rule."}
 
-If VALIDATED PLAN cardReferenceSelection is non-null, use only the indexed relation supplied in
-request.card.referenceGuidance as a silent lens for the planned content-forward question. Ground the wording in
-the person's concrete evidence; do not quote the reference as a conclusion, name Major Arcana or an
-internal catalogue, or turn it into the person's answer. If the selection is null, do not introduce
-any reference relation. Never use lexical matching to manufacture support.
-
-CURRENT WRITING TASK:
-{_writing_stage_contract(request, plan)}
-
-Return exactly one JSON object. The reply value must contain only the final user-visible response,
-with no protocol fields, analysis, theory labels, or alternative versions inside it:
-{{"realizedIntent":"{intent}","reply":"complete user-visible Chinese reply"}}
+OUTPUT
+{output_contract}
 """.strip()
     user_parts = [
         f"RECENT DIALOGUE JSON:\n{_encoded(request.get('recentMessages', []))}",
@@ -662,155 +1313,1018 @@ with no protocol fields, analysis, theory labels, or alternative versions inside
                 f"CRITIQUE JSON:\n{_encoded(_required_object(payload, 'critique'))}",
             ]
         )
-    return PromptMessages(system=system, user="\n\n".join(user_parts))
+    return _prompt_messages(
+        component="writer_revision" if revision else "writer",
+        request=request,
+        system=system,
+        user="\n\n".join(user_parts),
+        stage_contract=stage_contract,
+        substate_contract=substate_contract,
+        schema_contract=output_contract,
+    )
 
 
 def _writer_critic(payload: dict[str, Any]) -> PromptMessages:
     request = _required_object(payload, "request")
     plan = _required_object(payload, "plan")
     draft = _required_object(payload, "draft")
+    stage_contract = _writer_critic_stage_contract(request, plan)
+    substate_contract = (
+        _writer_critic_card_substate_contract(request)
+        if request.get("protocolStage") == "cardReflection"
+        else ""
+    )
+    output_contract = (
+        'Return exactly {"verdict":"pass|reviseWriter","reasonCodes":[],"revisionGuidance":null}.\n'
+        "revisionGuidance is short, executable, and contains no new fact."
+    )
     system = f"""
-You are the private Writer Critic. The request and plan are immutable. Return reviseWriter only for
-a material user-facing defect: workflow-field drift or a changed question presence/count; unnatural
-or field-stitched Chinese; unsupported or lost evidence; erased conduct or impact; generic
-reassurance, praise, normalization, minimization, or excuse; a concrete issue inflated into a
-whole-person verdict; named self-compassion, Tender, Fierce, or theory instruction; a protective
-purpose asserted without user evidence or tentative language, or used to excuse impact; ignored
-correction; rejected material reused; changed purpose or question function;
-detached context or conversion of a contextual cue into an unreported subjective state, feeling,
-motive, or relief response; imposed card meaning; binary approval language; any assistant-authored
-understanding, summary, reading, or narrative that asks the person to evaluate the assistant's
-output instead of answering a content-forward question about their experience; a card reading that
-merely paraphrases the person's mapping; premature advice; repetitive
-synthesis; repeated generic acknowledgement openings; an abstract, leading, or unnecessarily hard
-self-analysis question; a negative event/action label expanded into a whole-person judgment, or an
-observed external reaction converted into an unreported feeling or judgment; or a generic,
-incomplete, or basis-mismatched practice. Do not propose new
-psychological content or a different next topic.
+ROLE
+You are the private Writer Critic. The request and plan are immutable. Do not write the replacement
+reply or select another topic. Return reviseWriter only for a material visible defect: plan/function
+drift; changed question presence/count; unnatural or field-stitched Chinese; unsupported/lost
+evidence; erased conduct/impact; ignored correction or reused rejection; reassurance, praise,
+normalization, minimization, excuse, or whole-person inflation; internal theory labels; unsupported
+context/card claim; mechanical approval check; repeated recap/opening; premature advice/action;
+generic or basis-mismatched practice; or no distinction, valid question, understanding, or transition.
+Judge propositions and conversational functions semantically, including paraphrases and novel wording,
+not tokens, prefixes, regexes, or phrase lists. revisionGuidance cannot add facts, psychology, or a new topic.
 
-Evaluate propositions and conversational functions against the supplied evidence, not tokens,
-prefixes, or a closed phrase list. A paraphrase, synonym, indirect implication, or novel wording has
-the same status when it performs the same unsupported function. In particular, reject any favorable
-character attribution that is not authored or supported by the person when it turns a difficult
-action into a virtue, strength, or flattering personality explanation. Also reject any contextual
-statement that changes a measured or user-authored observation into an unsupported schedule,
-bodily, emotional, motivational, diagnostic, or causal claim. Use the same semantic standard for
-mechanical approval checks and for claims that a not-yet-selected card already has an identity,
-content, possession, or meaning.
+STAGE AUDIT
+{stage_contract}
 
-In contextualDisclosure with replyIntent=exploreContext, require one direct question that realizes
-only nextPrompt.disclosurePurpose and its canonical disclosureTarget. Reject any preface that
-acknowledges, summarizes, paraphrases, or reports the latest answer before asking, regardless of its
-wording. Only identifyConcreteEpisode, clarifyBehavior, and clarifyEventProcess belong to the current
-path. Reject questions about impact, emotion, importance, guilt, self-evaluation, responsibility,
-motive, unresolved meaning, or what matters most. Reject finer event detail after the typed core is
-ready. Reject wording that presupposes a
-deliberate decision, awareness that the person should stop, or an attempted stop unless the dialogue
-supports that premise, and reject a premise the person denied. Preserve the validated typed function
-in a targeted rewrite; do not substitute a different topic.
+CURRENT SUBSTATE AUDIT
+{substate_contract or "No specialized substate audit."}
 
-When replyIntent is exploreContext, treat any invitation to a card, exercise, tool, technique, or
-next-stage activity as a changed question function and require a targeted rewrite that stays with
-the validated disclosure function. When replyIntent is inviteCardConsent, require the generic phrase
-“一张随机反思卡”, a brief evidence-grounded bridge, and an optional choice. Reject any invented or
-previewed card title, image, symbol, theme, or meaning because Swift has not selected the card yet.
-When that invitation comes directly from contextualDisclosure, keep its grounding light. Permit one
-event-versus-whole-person distinction only when the person's own words explicitly contain the
-whole-person judgment being distinguished. Otherwise organize only supported conduct and result,
-or use one brief factual bridge when that is all the evidence supports. Reject an unsupported decision
-or responsibility label, a forced comparison,
-an additional introspection question, an invented distinction or motive, a positive trait, a
-minimized consequence, or a recap of the full event chain.
+ALLOWED REASON CODES
+{_writer_reason_codes(request)}
 
-In cardReflection, once the person's account contains a person/object plus an action or relationship,
-reject further static-detail questions about exact position, expression, gaze, posture, background,
-lighting, or additional objects. The only remaining image-development question may concern what is
-likely to happen or change next; after that, require the permitted image-to-life invitation.
-Every inviteCardConnection must keep its reality side inside request.card.realityAnchor. Reject a
-request for another memory, relationship, or life episode even on the first connection attempt.
-For developCardImage and inviteCardConnection, reject a recap or inventory of the person's visual
-description before the one forward-moving question; use the established relation without replaying it.
-After the first unsuccessful life-connection invitation, developCardImage is a smaller connection
-scaffold, not more image inspection: it pairs at most one established image action/relation with one
-confirmed action/sequence/result from request.card.realityAnchor and asks only about their similarity, difference, contrast,
-or missing counterpart. Reject a generic search for another life example. It must not console at
-length or restate the event.
-If the scaffold still yields no connection, the final inviteCardConnection may state one tentative
-candidate using the same two observable sides, mark it as optional, and ask one concrete question
-through which the person can develop, redirect, or decline it. Before reflectionApproaches is available,
-reject any conversion from an image role/action into the person's need, feeling, motive, fear,
-protection, trait, cause, responsibility, or compassionate meaning. A user-authored image description
-of care, conflict, support, distance, or another relation does not authorize claiming that the person
-needs, fears, seeks, or embodies it. Never silently treat the candidate as theirs.
-For presentCardReading, require one supported tentative relational distinction followed by one
-concrete retrospective question that lets the person develop or redirect the connection. Reject a
-fit, accuracy, correctness, approval, or editing check, and reject wording that completes a causal
-chain, lesson, responsibility judgment, or required change on the person's behalf.
-When cardReferenceSelection is non-null, verify semantically that the draft uses at most the indexed
-current-card relation only as a tentative question lens, remains grounded in the user's image and
-confirmed reality connection, and obeys the associated activationBoundary and prohibitedClaims.
-Reject stating the relation as a fact, answer, card meaning, diagnosis, responsibility assignment,
-or required action. When the selection is null, reject importing any private reference relation.
-
-For directCandidReflection, the lightweight Tender grounding is already established; a global-self
-distinction may or may not exist. Reject another defense of the person's character,
-praise-based reinterpretation, or return to whether
-the person judged themselves too harshly. If the latest answer names a specific mishandled action,
-omission, impact, boundary, or choice, require the reply to preserve and explore that correction rather
-than dissolve it into a benign motive. The one question must be retrospective and event-specific,
-helping locate what merits understanding and/or what needs ownership or change. Reject future action
-planning, advice, counterfactual outcome questions, and another global-self rating.
-
-For presentFinalNarrative, require one concise integrated distinction followed by one
-content-forward experience question. It may briefly pair an understandable experience or constraint
-with supported conduct or impact that needs ownership or change, but must not replay the episode,
-repeat the Tender defense, prescribe action, or answer a stated uncertainty. Reject wording that
-asks whether the narrative or the assistant's understanding is fitting, accurate, correct, approved,
-or in need of editing, and reject another question about the person's global self-evaluation. Do not
-reject a genuine card-consent or practice-choice decision merely because it is asked directly.
-
-Treat a question as field-stitched and unnecessarily hard when it asks the person to enumerate
-abstract controllable, decidable, or limiting parts, or merges deliberate choice with practical
-capacity. Request a targeted wording revision that preserves one concrete plan purpose; never add a
-new attribution category.
-
-Allowed reasonCodes:
-field_stitching, unnatural_chinese, unsupported_claim, relation_lost,
-behavioral_fact_erased, user_correction_not_committed, rejected_card_reused,
-question_mismatch, multiple_questions, tracking_context_detached, card_claim_imposed,
-mechanical_fit_check, baseline_repetition, repetitive_acknowledgement,
-distinction_meta_question,
-question_cognitive_load, disclosure_reporting_preface, disclosure_scope_violation,
-disclosure_target_mismatch, resolved_relation_reopened,
-unsupported_decision_premise, unsupported_stop_awareness_premise, negated_premise_reused,
-manufactured_global_self_judgment, unsupported_tender_reframe, consequence_minimized,
-global_judgment_not_distinguished, unnecessary_tender_confirmation,
-episode_confirmation_missing, premature_transition_invitation, card_visual_overcollection, premature_practice,
-premature_card_conclusion, candid_delta_repetition, accountability_correction_ignored,
-premature_action_design, uncertainty_overridden, narrative_delta_mismatch, practice_evidence_mismatch,
-unsupported_positive_trait_reframe, unsupported_contextual_inference, premature_card_identity.
-Also allowed: unsupported_card_reference_selection, card_reference_answer_imposed,
-generic_life_example_search, connection_left_current_episode, reality_anchor_not_used,
-image_relation_not_compared_with_focal_episode.
-
-CURRENT CONDITION:
+CONDITION
 {_condition_contract(request)}
 
-Return exactly one JSON object:
-{{"verdict":"pass|reviseWriter","reasonCodes":[],"revisionGuidance":null}}
-revisionGuidance must be short and contain no new facts.
+OUTPUT
+{output_contract}
 """.strip()
-    return PromptMessages(
+    user = (
+        f"TURN REQUEST JSON:\n{_encoded(request)}\n\n"
+        f"VALIDATED PLAN JSON:\n{_encoded(plan)}\n\n"
+        f"WRITER DRAFT JSON:\n{_encoded(draft)}"
+    )
+    return _prompt_messages(
+        component="writer_critic",
+        request=request,
         system=system,
-        user=(
-            f"TURN REQUEST JSON:\n{_encoded(request)}\n\n"
-            f"VALIDATED PLAN JSON:\n{_encoded(plan)}\n\n"
-            f"WRITER DRAFT JSON:\n{_encoded(draft)}"
-        ),
+        user=user,
+        stage_contract=stage_contract,
+        substate_contract=substate_contract,
+        schema_contract=output_contract,
     )
 
 
+def _current_v5_stage_contract(request: dict[str, Any]) -> str:
+    stage = str(request.get("protocolStage") or "")
+    if stage == "contextualDisclosure":
+        return (
+            "Event Disclosure decides whether the current reality is sufficiently concrete to reflect on. The semantic "
+            "operation names the act performed under the committed pre-turn state, not the phase that will begin after "
+            "this evidence is merged. While the committed Event core is incomplete, choose clarifyEvent even when the "
+            "latest answer completes it; save every grounded function and let Swift project the post-turn Card Consent "
+            "state. Choose advanceToCardConsent only when the committed pre-turn Event core was already complete. "
+            "Merge committed memory with every grounded function in the latest answer. A usable episode "
+            "contains: the focal experience, one basic process relation beyond its endpoint, and the "
+            "person's relevant action, response, or omission. These are semantic functions, not a fixed "
+            "question checklist, and one answer may provide several. A reported outcome plus an emotion or "
+            "broad self-judgment is not enough: never copy the endpoint into eventProcess. If either "
+            "function is missing, choose clarifyEvent and ask one natural, easy question for the single missing "
+            "function most likely to make this episode reflectable. Prioritize the person's concrete action/response "
+            "over error codes, other people's reactions, or extra outcome detail; never combine interview questions. "
+            "When the focal experience, one genuine development relation, and relevant action/response/omission become "
+            "usable in the current clarifyEvent act, stop adding Event questions; responseFocus should support a brief "
+            "transition rather than supply another missing-field question. Do not continue into implementation, troubleshooting, hypothetical alternatives, "
+            "or what the person should have done differently. Impact, importance, motive, responsibility, and "
+            "self-judgment are optional context and never disclosure gates. In episodeStructure emit only new "
+            "grounded items from the latest user message; Swift accumulates them with committed memory. A "
+            "non-empty eventProcess or behaviorEvidence is enough; omit an unchanged relation and never "
+            "emit status metadata or an empty list for it. The typed "
+            "self-criticism statement is separate from episode impacts: when the person states a broad "
+            "self-judgment, copy its exact grounded wording only to memoryUpdate.selfCriticalStatement, "
+            "as a sibling of episodeStructure rather than a member inside it. Swift derives the persisted "
+            "presence summary. Never store an emotion, worry, self-evaluation, "
+            "repair response, or intended action as an episode impact; impacts are concrete consequences "
+            "of the focal event only. "
+            "memoryUpdate fragment is: "
+            + CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE
+        )
+    if stage == "cardConsent":
+        return (
+            "Resolve only the pending card consent. Clear acceptance selects "
+            "acknowledgeCardConsent; clear refusal selects declineCardConsent; otherwise use "
+            "inviteCardConsent. An unqualified affirmative response to the active consent question "
+            "resolves consent even when it is brief; brevity is not ambiguity and must never trigger "
+            "another invitation. Use inviteCardConsent only for a genuinely unresolved answer, question, "
+            "or hesitation. The model never selects a card."
+        )
+    if stage == "cardReflection":
+        return (
+            "GOAL: obtain a perceptually understandable but interpretively open scene, then connect it with the current "
+            "episode. Choose the act under committed pre-turn Card state; Swift derives the next act after merging. Evidence: "
+            + CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE
+            + ". OBSERVATION: choose continueCardObservation for the first account and save user-described visible content. "
+            "Once the scene is roughly understandable, do not ask what else is visible; Swift opens Development. DEVELOPMENT "
+            "is one broad, concrete image-only question about what may happen next. Do not ask what is still open, unresolved, "
+            "or hanging, locate an uncertainty, or combine elements into a new interpretation. When latestAnswerContext.purpose="
+            "cardDevelopment, choose continueCardDevelopment and extract any supplied evidence; Swift then opens Reality "
+            "Connection after this one answer, including a simple possibility or inability to tell. Never seek another ambiguity "
+            "or enrich the image. REALITY CONNECTION: first ask one unpresupposed bridge placing the whole user-authored scene "
+            "beside the focal episode; do not state an analogy or preselect a similarity, difference, tension, element, or target. "
+            "While that invitation is active, judge only whether the answer gives a grounded relation, continuation, difference, "
+            "or tension inside the focal reality. The invitation supplies the conversational link: no Card mention, image "
+            "restatement, explicit comparison, or fit is required. Never judge Card fit. If the reality relation exists, keep the "
+            "current Reality act and emit its realityMapping. cardDevelopmentEvidence is optional enrichment, never a prerequisite; "
+            "Swift supplies the committed Card anchor. Emit imageRelation only when the latest user answer revises/adds the image "
+            "side. An object/property correspondence alone is not a reality relation; continue once in lived-reality language. "
+            "A first no-connection answer permits one scaffold using only user-authored image-side openness and no proposed reality "
+            "meaning. Establish and exit once the reality relation exists. Do not seek Card meaning, psychology, responsibility, "
+            "solution, or action, and never emit outcome/source/status/confirmation/phase metadata."
+        )
+    if stage == "directReflection":
+        contextual_profiles = request.get("contextualTrackingProfiles")
+        contextual_profiles = (
+            contextual_profiles if isinstance(contextual_profiles, list) else []
+        )
+        latest_answer_context = request.get("latestAnswerContext")
+        latest_answer_context = (
+            latest_answer_context if isinstance(latest_answer_context, dict) else {}
+        )
+        is_answering_contextual_cue = (
+            latest_answer_context.get("purpose") == "contextRelationship"
+        )
+        grounded_candidates = request.get("groundedRealityCandidates")
+        grounded_candidates = (
+            grounded_candidates if isinstance(grounded_candidates, list) else []
+        )
+        grounded_candidate_contract = (
+            " GROUNDED REALITY CANDIDATES are a read-only Swift projection of canonical user "
+            "evidence: "
+            + _encoded(grounded_candidates)
+            + ". Their field paths and provenance are facts; they are not preclassified as support, "
+            "responsibility, change, or importance. Use one exact candidate id only when its reality "
+            "content warrants inspectReality. A correction invalidates only the rejected relation at "
+            "its stated scope; it does not erase the candidate's underlying fact."
+            if grounded_candidates
+            else " No canonical grounded reality candidate is currently projected."
+        )
+        contextual_contract = (
+            " Compact temporal Tracking profiles contain cleaned daily aggregates, personal baselines, units, and coverage. When "
+            "eventAnchorDate is present, classify a metric from that exact recentDaily day, or an adjacent observed day only when the exact "
+            "day is unobserved; a different day elsewhere in the weekly window cannot make it qualify. When eventAnchorDate is absent, read "
+            "the supported recent pattern beside the episode's own recent-period wording. They may add "
+            "one concrete, non-redundant background condition around the focal episode; they never establish current state, cause, "
+            "diagnosis, capacity, responsibility, excuse, or self-criticism meaning. Lived evidence says what happened; Tracking does "
+            "not compete with it. Review the supplied profiles now on every unreviewed eligible exposure. Return exactly one "
+            "contextualTrackingDecision and classify every supplied (profileID, metric) pair exactly once in metricEligibility. "
+            "Use only status=qualifies|doesNotQualify and a boolean preferred; this is classification, not chain-of-thought. Review is mandatory "
+            "in the normal Planner response, while an accidental omission remains pending and must never delay Reflection progression. "
+            "Classify each metric independently. A metric qualifies when its timing overlaps or is adjacent to the episode, coverage supports a real pattern rather "
+            "than isolated noise, it adds one concrete contextual dimension even if partly overlapping lived description, and it can "
+            "be placed beside the episode without first inferring cause, psychology, ability, or responsibility. No direct link to the "
+            "event, Card connection, or self-criticism is required. Uncertainty about influence is a reason to let the person judge, "
+            "not a reason to mark the metric doesNotQualify. Use doesNotQualify only when timing does not match, coverage is insufficient, "
+            "the metric adds no contextual specificity, or showing it would require an unsupported inference. If one or more metrics qualify, "
+            "mark exactly one qualifying metric preferred=true; that is the Planner's sole reveal choice. If none qualify, every preferred is false. Omission means unreviewed, "
+            "keeps the window open through Tender, and never makes Exploration incomplete or blocks Tender. "
+            "Evaluate concrete event-window evidence first: use same-day or adjacent recentDaily values for a dated episode, and the "
+            "supported recentDaily pattern across the described period for an episode such as 'recently' or 'these days'. Use "
+            "recentMedian as a compact summary and baselineMedian only as secondary context; neither baseline difference nor lack of a "
+            "large baseline difference decides relevance by itself. A profile is eligible when one of its metrics supplies a clear "
+            "event-window condition; stable sibling metrics in the same grouped profile do not cancel it. "
+            "All metrics marked doesNotQualify means reviewed/not used; missing observations stay unknown. A preferred qualifying metric may accompany "
+            "the warranted Reflection act. Prefer the clearest ordinary-life pattern when profiles overlap; HRV is eligible but not "
+            "a diagnosis or numerical explanation. Writer reveals the selected pattern once in ordinary language and asks only whether "
+            "the person sees it as related, partly related, unrelated, or uncertain, without source, coverage, raw series, or analysis. "
+            "Only the person's resulting interpretation may enter later Reflection. Context never gates progress or delays Tender."
+            if contextual_profiles
+            else " No new contextual tracking profile is available; omit contextualTrackingDecision."
+        )
+        return (
+            "Use Swift's read-only reflectionMode. Canonical lineage is cardRealityConnection -> selfCriticismLink -> "
+            "reflectionFrame -> optional fierceEvidence -> synthesis -> practice; never rebuild or reorder it. "
+            "selfCriticismLink carries relationship meaning, not Swift's stored protocol string. Prefer "
+            "{\"groundedDifficulty\":\"user-grounded difficulty or pattern\"}; a legacy plain relation is accepted. "
+            "Swift joins the grounded meaning to the current judgment and owns metadata. Card material, emotion, impact, or blockage "
+            "cannot replace this relationship. "
+            "EXPLORATORY. A user-grounded difficulty-to-judgment relation is enough; no cause or trigger precision is required. "
+            "Cumulative, gradual, situational, outcome-based, comparative, explicit-standard, and loose user-described relations "
+            "qualify. Greater specificity is not greater reflective value. Keep continueExploratoryReflection under the pre-turn "
+            "phase even when this answer completes the link. On completion, memoryUpdate contains the aligned link and no Tender "
+            "reflectionFrame; Swift commits the link and projects post-turn Tender, whose next Planner act forms the first bounded "
+            "Tender understanding. Continue Exploration only when the relation is absent, "
+            "rejected/revised, or merely assistant-inferred, using one easy clarification. Do not seek causes, Card meaning, advice, "
+            "action, or one precise onset. Tracking review should accompany the first eligible act but cannot delay a sufficient link. "
+            "referenceGuidance may only select an adjacent grounded question; it is never evidence. "
+            "CONTEXT AND EPISODE. Tracking is an optional, once-only event-context cue, never causation. Save a contextRelationship "
+            "only from the person's explicit relation, revision, rejection, or uncertainty. "
+            + (
+                "The latest answer responds to the displayed contextual cue: save contextRelationship and keep the current "
+                "reflectionMode. If reflectionMode=tender and no committed Tender reflectionFrame exists, atomically provide the "
+                "first grounded Tender reflectionDelta in the same continueTenderReflection turn; the contextual relationship may "
+                "be included only when the person marked it related/partlyRelated and never as the sole cause. If Tender is already "
+                "committed, do not revise it merely because the cue was answered. Never choose progression solely from the cue answer. "
+                if is_answering_contextual_cue
+                else ""
+            )
+            + "In direct Reflection, append to "
+            "episodeStructure only a newly user-grounded behavior, process, condition, consequence, constraint, or controllable part; "
+            "exclude Card, Tracking, reference guidance, model inference, emotion, self-evaluation, solutions, and the whole link. "
+            "TENDER. Form one bounded compassionate understanding that keeps the concrete difficulty, impact, limits, and responsibility "
+            "visible while limiting only the unsupported reach of the broader judgment. Invent no positive function, alternative cause, "
+            "or ability claim. Never replace the person's explanation with an exclusive formulation such as ‘不是 X，而是 Y’, or enlarge "
+            "workload, responsibility, motive, or circumstance beyond their own account. Context is at most one possible condition. Its "
+            "reflectionDelta is declarative, never a request for new material. The first proposal is not completion. "
+            "Tender completes when the person authors a bounded account, accepts or qualifies it, or declines; emotional improvement is "
+            "not required. Continue only to repair explicit rejection, misunderstanding, or material revision. Do not ask where the judgment "
+            "is weakest, what the distinction means, whether it feels less true, or confirm it again. Extra detail, distress, uncertainty, "
+            "'不知道/想不到', or an answer to a dangling question is not a revision. "
+            "At committed Tender and active Fierce boundaries, reflectionProgressionDecision is the sole semantic decision and semanticOperation is null. "
+            "Use one atomic shape: {\"meaning\":\"reviseTender\",\"candidateRef\":null,\"reflectionDelta\":\"revision\"}, "
+            "{\"meaning\":\"inspectReality\",\"candidateRef\":\"exact candidate id\",\"reflectionDelta\":null}, or "
+            "{\"meaning\":\"synthesize\",\"candidateRef\":null,\"reflectionDelta\":\"explicit synthesis\"}. "
+            "Delta is nonempty for revise/synthesize and null for inspect; never use memoryUpdate.reflectionFrame here. "
+            "Swift compiles these meanings into the existing operations. Natural or qualified acceptance of Tender does not by itself "
+            "complete reflection. Prefer inspectReality when any committed user evidence contains "
+            "a meaningful behavior, impact, responsibility, boundary, support, repair, protection, or change direction still worth examining. "
+            "One grounded fact suffices; two facts, causality, or a user-proposed action are not required. responseFocus asks only for "
+            "confirmation, revision, rejection, or qualification of that concrete candidate. Use synthesize only when no such part remains. "
+            "FIERCE. Use only reflectionProgressionDecision; omit semanticOperation and reflectionFrame. Keep the exact "
+            "latestAnswerContext.referenceID only as read-only context. If one clarification remains, return "
+            "{\"meaning\":\"clarifyFierce\"} plus one concrete responseFocus. A grounded/qualified direction returns "
+            "{\"meaning\":\"completeFierce\",\"reflectionDelta\":\"bounded understanding\","
+            "\"fierceDirection\":\"repair|protect|change\"} and empty "
+            "responseFocus. Decline/no meaningful direction returns synthesize with an explicit delta. Grounded repair/protect/change "
+            "ends Fierce; ask no more. Swift opens Synthesis. Protection is user-authored; non-user material cannot ground Fierce or Action. "
+            "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed context in one revisable delta; add no "
+            "interpretation or action. First Synthesis requires an explicit nonempty Planner synthesisDelta. It may preserve the accepted "
+            "Tender/Fierce meaning but must express the integrated understanding rather than copy the committed reflectionDelta exactly; "
+            "Swift never fills it. A committed Synthesis changes only for explicit correction/qualification. Natural acceptance, "
+            "acknowledgment, or readiness chooses proposePractice immediately; require no action wording or second confirmation. "
+            "PRACTICE. Propose one small executable reality experiment grounded by one exact groundedRealityCandidates.id as basis; "
+            "the person need not invent it. noAction requires refusal or no responsible concrete step. resolvePractice supplies only "
+            "acceptance/revision/decline; Swift compiles Final Narrative from committed Synthesis and resolved Action and owns protocol metadata. "
+            + grounded_candidate_contract
+            + " "
+            "context patch is: "
+            + CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE
+            + contextual_contract
+        )
+    if stage == "optionalAction":
+        return (
+            "Resolve only the active small action. Preserve the user's accept, revision, or refusal without "
+            "adding a second plan. Do not provide memoryUpdate.finalNarrative. Swift atomically compiles Final Narrative "
+            "from the already committed Synthesis and the resolved action/noAction. This is one Action→Final Narrative boundary."
+        )
+    if stage == "narrativeConfirmation":
+        return (
+            "Resolve or revise only the final narrative using confirmed evidence. Do not add a new "
+            "motive, card meaning, contextual cause, or action."
+        )
+    if stage == "safetySupport":
+        return "Use only the allowed safety/completion operation and do not carry unrelated patches."
+    return "Use exactly one currently allowed semantic operation."
+
+
+def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
+    request = _required_object(payload, "request")
+    stage = str(request.get("protocolStage") or "")
+    allowed = request.get("allowedSemanticOperations")
+    allowed = allowed if isinstance(allowed, list) else []
+    correction = request.get("correction")
+    correction_contract = ""
+    if isinstance(correction, dict):
+        rejected_operation = str(correction.get("rejectedOperation") or "unknown")
+        payload_failure = str(correction.get("payloadFailure") or "none")
+        projection_failure = str(correction.get("projectionFailure") or "none")
+        issue = correction.get("issue")
+        issue = issue if isinstance(issue, dict) else {}
+        field_path = str(issue.get("fieldPath") or "semanticEvidencePatch")
+        violation = str(issue.get("violation") or "invalidValue")
+        required_conditions = issue.get("requiredConditions")
+        required_conditions = required_conditions if isinstance(required_conditions, list) else []
+        recovery_policy = str(correction.get("recoveryPolicy") or "repairSameOperation")
+        rejected_draft = correction.get("rejectedDraft")
+        rejected_draft = rejected_draft if isinstance(rejected_draft, dict) else {}
+        rejected_progression = rejected_draft.get("reflectionProgressionDecision")
+        rejected_progression = (
+            rejected_progression if isinstance(rejected_progression, dict) else {}
+        )
+        rejected_progression_meaning = str(rejected_progression.get("meaning") or "")
+        semantic_memory = request.get("semanticMemory")
+        semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+        committed_reflection = semantic_memory.get("reflectionFrame")
+        committed_reflection = (
+            committed_reflection if isinstance(committed_reflection, dict) else {}
+        )
+        has_committed_synthesis = (
+            str(request.get("reflectionMode") or "") == "synthesis"
+            and str(committed_reflection.get("action") or "") == "synthesizeUnderstanding"
+        )
+        exact_issue_repair = ""
+        if (
+            str(request.get("reflectionMode") or "") == "tender"
+            and rejected_progression_meaning in {"reviseTender", "synthesize"}
+            and projection_failure
+            in {"tenderFrameMissing", "tenderDeltaMissing", "synthesisFrameMissing", "synthesisDeltaMissing"}
+        ):
+            exact_issue_repair = (
+                " REQUIRED ATOMIC PROGRESSION REPAIR: keep reflectionProgressionDecision.meaning="
+                + rejected_progression_meaning
+                + ", candidateRef=null, and put the complete revised Tender or explicit Synthesis meaning in that same "
+                "object's nonempty reflectionDelta. Omit semanticOperation and memoryUpdate.reflectionFrame. Do not change "
+                "the decision or reuse responseFocus as meaning. A first Synthesis may preserve the same bounded semantic "
+                "meaning as the committed Tender, but it must express the integration in different wording rather than copy "
+                "the committed reflectionDelta, and the Planner must still submit it explicitly in reflectionDelta."
+            )
+        elif "provideTenderFrame" in required_conditions:
+            exact_issue_repair = (
+            " REQUIRED TENDER REPAIR: keep the compiled current act and put the actual grounded distinction "
+                "in semanticEvidencePatch.memoryUpdate.reflectionFrame.reflectionDelta. responseFocus may only tell the Writer how to present that committed meaning; Swift never uses it as semantic fallback. Swift constructs the Tender frame shape and "
+            "restores committed provenance; do not reconstruct it. The distinction may limit what the facts "
+            "support but cannot assert an opposite positive "
+            "conclusion, praise, unaffected ability, or a ruled-out unknown cause. It must preserve the exact "
+            "domain, target, time range, degree, certainty, and judgment level of the user's grounded "
+            "selfCriticalStatement; never substitute a nearby self-critical proposition."
+            )
+        elif projection_failure == "reflectionProgressionInvalid":
+            if str(request.get("reflectionMode") or "") == "fierce":
+                exact_issue_repair = (
+                    " REQUIRED FIERCE PROGRESSION REPAIR: return exactly one reflectionProgressionDecision and omit "
+                    "semanticOperation and memoryUpdate.reflectionFrame. clarifyFierce keeps the exact "
+                    "active Swift-owned candidate, uses null delta/direction, and provides one concrete "
+                    "responseFocus. completeFierce colocates nonempty reflectionDelta and "
+                    "fierceDirection=repair|protect|change; responseFocus is empty. Swift recovers candidate identity "
+                    "and evidence from the active candidate, latest answer, and committed lineage. "
+                    "Use synthesize with candidateRef=null and an explicit delta only when the direction is declined "
+                    "or no meaningful Fierce direction remains."
+                )
+            else:
+                exact_issue_repair = (
+                    " REQUIRED TENDER PROGRESSION REPAIR: return exactly one reflectionProgressionDecision. "
+                    "reviseTender and synthesize have candidateRef=null plus a nonempty colocated reflectionDelta. "
+                    "inspectReality uses one exact supplied groundedRealityCandidates.id and reflectionDelta=null. "
+                    "Omit semanticOperation and memoryUpdate.reflectionFrame because Swift compiles the decision."
+                )
+        elif projection_failure == "fierceFrameIncomplete":
+            exact_issue_repair = (
+                " REQUIRED FIERCE REPAIR: replace the partial frame with one atomic reflectionProgressionDecision. "
+                "Use completeFierce with nonempty reflectionDelta and fierceDirection when the latest answer grounds "
+                "a direction; otherwise use clarifyFierce with one responseFocus. Do not repeat candidateRef or "
+                "groundedEvidence; Swift recovers both from canonical state. Omit semanticOperation and "
+                "memoryUpdate.reflectionFrame; Swift constructs the existing Fierce frame and post-turn phase."
+            )
+        elif "provideContextualTrackingDecision" in required_conditions:
+            exact_issue_repair = (
+            " REQUIRED CONTEXT REVIEW REPAIR: contextual tracking profiles are supplied and this one-shot review "
+            "is still pending. Return semanticEvidencePatch.contextualTrackingDecision.metricEligibility and classify "
+            "every supplied (profileID, metric) pair exactly once. Use qualifies or doesNotQualify; when any qualifies, "
+            "exactly one qualifying metric is preferred=true, otherwise every preferred is false. "
+            "Do not invent an ID or postpone the decision. A preferred metric may accompany "
+            "continueExploratoryReflection or continueTenderReflection and must preserve the otherwise appropriate operation."
+            )
+        synthesis_repair_failures = {
+            "synthesisFrameMissing",
+            "synthesisActionInvalid",
+            "synthesisDeltaMissing",
+            "synthesisModeInvalid",
+            "synthesisEvidenceInvalid",
+            "unexpectedFierceEvidence",
+        }
+        if (
+            not exact_issue_repair
+            and rejected_operation == "synthesizeDirectReflection"
+            and projection_failure == "synthesisDeltaMissing"
+            and has_committed_synthesis
+        ):
+            exact_issue_repair = (
+                " REQUIRED SYNTHESIS DISPOSITION REPAIR: re-evaluate only the latest answer against the already committed "
+                "Synthesis. If it naturally accepts, affirms, acknowledges, or is ready to continue, choose proposePractice now "
+                "and provide one complete semanticEvidencePatch.memoryUpdate.practiceTransition with proposal.content and "
+                "proposal.basis. If it explicitly doubts, corrects, rejects, or qualifies the "
+                "Synthesis, choose synthesizeDirectReflection and provide a materially different reflectionDelta grounded in "
+                "that latest answer. Do not paraphrase or replay the committed Synthesis, and do not require another confirmation."
+            )
+        if (
+            not exact_issue_repair
+            and field_path == "semanticEvidencePatch.memoryUpdate.selfCriticismLink"
+        ):
+            exact_issue_repair = (
+                " REQUIRED LINEAGE REPAIR: preserve the warranted current operation and replace only "
+                "memoryUpdate.selfCriticismLink with one user-grounded relationship meaning, preferably as "
+                "{\"groundedDifficulty\":\"difficulty or pattern in the person's account\"}. Do not reproduce the "
+                "canonical endpoint; Swift attaches the current exact selfCriticalStatement. Card mapping, emotion, "
+                "blockage, outcome, and paraphrased judgment are not substitutes. If the user evidence does not yet "
+                "ground that relation, omit the link and remain in the "
+                "current Reflection phase; do not manufacture it."
+            )
+        if (
+            not exact_issue_repair
+            and rejected_operation == "synthesizeDirectReflection"
+            and projection_failure in synthesis_repair_failures
+        ):
+            exact_issue_repair = (
+                " REQUIRED SYNTHESIS REPAIR: keep semanticOperation=synthesizeDirectReflection and repair only "
+                + field_path
+                + " according to its violation. Put the actual compact synthesis in semanticEvidencePatch.memoryUpdate.reflectionFrame.reflectionDelta; responseFocus is presentation guidance only. "
+                "Swift constructs mode, action, committed lineage, dimensions, and Fierce inheritance. The synthesis "
+                "must be explicitly supplied by the Planner and use only the committed "
+                "selfCriticismLink and Tender understanding; do not introduce a new interpretation, "
+                "responsibility, positive opposite, or action. For a first Synthesis it may preserve the same bounded "
+                "Tender/Fierce meaning and need not manufacture a different conclusion. Do not reconstruct or paraphrase committed "
+                "evidence merely to fill JSON. Do not choose another operation."
+            )
+        if (
+            not exact_issue_repair
+            and "followCardEvidenceProgression" in required_conditions
+            and payload_failure == "cardObservationEvidenceMissing"
+        ):
+            exact_issue_repair = (
+            " REQUIRED CARD OBSERVATION REPAIR: the latest user message already answers the initial "
+            "visible-image invitation. Save its user-described visible people, objects, setting, or action "
+            "as a nonempty semanticEvidencePatch.memoryUpdate.cardObservationEvidence.userDescribedElements "
+            "array. Keep semanticOperation=continueCardObservation; this correction repairs the current act, and "
+            "Swift projects Development afterward. Do not request more inventory or open a new visual dimension."
+            )
+        correction_contract = (
+            "\nONE EXACT STRUCTURAL CORRECTION\nThe preceding draft was not executable. reason="
+            + str(correction.get("reason") or "payloadInvalid")
+            + "; rejectedOperation="
+            + rejected_operation
+            + "; payloadFailure="
+            + payload_failure
+            + "; projectionFailure="
+            + projection_failure
+            + "; recoveryPolicy="
+            + recovery_policy
+            + "; issue.fieldPath="
+            + field_path
+            + "; issue.violation="
+            + violation
+            + "; issue.requiredConditions="
+            + _encoded(required_conditions)
+            + ". Repair exactly one semantic act within the narrowed authoritative ALLOWED list above. At a Tender "
+            "progression boundary, reflectionProgressionDecision remains the sole semantic authority and Swift compiles "
+            "the operation. Otherwise, first determine whether "
+            "the executable operation remains rejectedOperation. If it remains the same operation, repair only issue.fieldPath "
+            "and the structural dependencies explicitly named by requiredConditions; preserve every other valid "
+            "operation-owned field from request.correction.rejectedDraft and do not invent evidence. If the selected "
+            "semanticOperation differs from rejectedOperation, this is operation substitution and therefore re-planning, not "
+            "field repair: every semantic field owned by the rejected operation is non-authoritative. Discard that old "
+            "operation payload and generate the complete sparse semantic payload required by the replacement operation, using "
+            "only the latest user answer and committed evidence. Do not preserve an incompatible responseFocus, reflection "
+            "contribution, practice contribution, Card contribution, or question merely because it appeared in rejectedDraft. "
+            "Repair only the rejected operation when the narrowed "
+            "ALLOWED list contains that single operation. When recoveryPolicy=remainInCurrentPhase, "
+            "do not recreate the rejected operation or emit a reflectionFrame. Rebuild responseFocus solely "
+            "for the corrected operation and discard every question or task from the rejected operation."
+            + exact_issue_repair
+        )
+    reflection_contract = (
+        "\nREFLECTION STRUCTURE\n" + CURRENT_V5_PLANNER_REFLECTION_FRAME_CONTRACT
+        if stage == "directReflection"
+        else ""
+    )
+    practice_contract = (
+        "\nOPTIONAL ACTION STRUCTURE\n" + CURRENT_V5_PRACTICE_CONTRACT
+        if stage in {"optionalAction", "narrativeConfirmation"}
+        or stage == "directReflection"
+        and any(operation in {"proposePractice", "resolvePractice"} for operation in allowed)
+        else ""
+    )
+    card_connection_contract = ""
+    if stage == "cardReflection":
+        card_connection_contract = """
+CARD CONNECTION SHAPE
+cardConnectionEvidence is null unless this turn contributes an image-side or reality-side relation. When present it
+contains only imageRelation and/or realityMapping. Never emit outcome kind, source, status, confirmation,
+phase, or transaction metadata. Swift merges this semantic evidence with committed user evidence and
+derives whether the current Card act completes, remains open, accepts, revises, or rejects a candidate.
+During an active Reality Connection invitation, a grounded reality-side relation, continuation, difference,
+or tension is enough for realityMapping even when the answer never mentions the Card. Do not judge Card fit.
+Development evidence is optional enrichment; do not withhold realityMapping because it is absent.
+"""
+    semantic_memory = request.get("semanticMemory")
+    semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+    reflection_mode = request.get("reflectionMode")
+    uses_tender_progression = (
+        stage == "directReflection"
+        and reflection_mode == "tender"
+        and isinstance(semantic_memory.get("reflectionFrame"), dict)
+    )
+    uses_fierce_progression = (
+        stage == "directReflection"
+        and reflection_mode == "fierce"
+        and isinstance(semantic_memory.get("reflectionFrame"), dict)
+    )
+    uses_synthesis_progression = (
+        stage == "directReflection"
+        and reflection_mode == "synthesis"
+        and "synthesizeDirectReflection" in allowed
+    )
+    uses_reflection_progression = uses_tender_progression or uses_fierce_progression
+    authority_contract = (
+        "At this committed Tender boundary, choose exactly one reflectionProgressionDecision from "
+        "reviseTender, inspectReality, or synthesize and omit semanticOperation. Swift compiles that decision into one allowed operation."
+        if uses_tender_progression
+        else (
+            "At this active Fierce boundary, choose exactly one reflectionProgressionDecision from "
+            "clarifyFierce, completeFierce, or synthesize and omit semanticOperation. Swift compiles that decision into the existing operation."
+            if uses_fierce_progression
+            else (
+                "At committed Synthesis, an explicit correction or qualification uses "
+                "reflectionProgressionDecision={\"meaning\":\"synthesize\",\"reflectionDelta\":\"materially revised synthesis\"} "
+                "and omits semanticOperation. Natural acceptance/readiness uses semanticOperation=proposePractice and no progression decision."
+                if uses_synthesis_progression
+                else "Choose one allowed current act in semanticOperation."
+            )
+        )
+    )
+    output_operation_contract = (
+        "reflectionProgressionDecision is required and semanticOperation is null at this Reflection "
+        "boundary."
+        if uses_reflection_progression
+        else (
+            "For a Synthesis correction, reflectionProgressionDecision is required and semanticOperation is null; "
+            "for accepted Synthesis, semanticOperation=proposePractice and reflectionProgressionDecision is null."
+            if uses_synthesis_progression
+            else "semanticOperation is required and reflectionProgressionDecision is null."
+        )
+    )
+    output_reflection_delta_contract = (
+        "At committed Tender or active Fierce progression, all progression meaning belongs only to "
+        "reflectionProgressionDecision; do not also emit semanticEvidencePatch.memoryUpdate.reflectionFrame. "
+        "responseFocus is Writer guidance only for reviseTender or clarifyFierce, and must be empty for completeFierce."
+        if uses_reflection_progression or uses_synthesis_progression
+        else ""
+    )
+    system = f"""
+CURRENT_V5_CORE_PLANNER
+
+ROLE
+Understand the latest user turn and choose the single most useful next conversational operation.
+Return semantic evidence, not workflow instructions and not user-facing prose.
+
+AUTHORITY
+Allowed semantic operations are exactly: {_encoded(allowed)}.
+{authority_contract} Swift alone derives and persists workflow effects.
+Emit only the positive JSON shape below.
+
+EVIDENCE
+Use user messages and confirmed typed memory only. The latest answer may add several typed relations.
+Preserve uncertainty; infer no emotion, motive, personality, diagnosis, responsibility, causality, or
+an actual Tracking relationship. The Planner may select one supplied, temporally plausible Tracking
+profile as a contextual cue for the person to evaluate, but must not assert that it is related or
+causal. memoryUpdate is sparse: omit unchanged fields and never overwrite evidence with
+empty/default values. selfCriticalStatement is the sole writable self-criticism evidence: copy the
+exact nonempty new broad self-judgment, never an inferred trait; Swift derives presence.
+invalidatedInterpretations contains only assistant interpretations explicitly rejected by the person;
+append that correction and never reuse it as evidence.
+
+STAGE
+{_current_v5_stage_contract(request)}
+{reflection_contract}{practice_contract}{card_connection_contract}
+
+OUTPUT
+Return exactly one JSON object shaped as:
+{CURRENT_V5_PLANNER_JSON_SHAPE}
+{output_operation_contract} semanticEvidencePatch.memoryUpdate is an object and may be empty.
+Never emit kind, source, status, mode, action, phase, transactionID, confirmation state, or other
+protocol metadata; Swift compiles them from the act, committed state, and evidence provenance.
+responseFocus is a concise instruction for the Writer; it may contain the one useful question goal
+but never a second operation, a task from a rejected or previous operation, an ungrounded
+interpretation, or a protocol field. It is current-turn-only Writer guidance, not persistent
+semantic state. {output_reflection_delta_contract}{correction_contract}
+""".strip()
+    user = "CURRENT V5 TURN REQUEST JSON:\n" + _encoded(request)
+    return PromptMessages(system=system, user=user)
+
+
+def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
+    request = _required_object(payload, "request")
+    directive = _required_object(payload, "directive")
+    next_prompt = directive.get("nextPrompt")
+    next_prompt = next_prompt if isinstance(next_prompt, dict) else {}
+    prompt_kind = str(next_prompt.get("kind") or "none")
+    reflection_realization = str(directive.get("reflectionRealization") or "standard")
+    may_ask_question = directive.get("mayAskQuestion")
+    if not isinstance(may_ask_question, bool):
+        may_ask_question = prompt_kind in {"openQuestion", "confirmationRequest"}
+    question_contract = (
+        "End with exactly one natural, easy-to-answer question serving the supplied focus."
+        if may_ask_question
+        else "Do not add a question."
+    )
+    rewrite_reason = directive.get("rewriteReason")
+    rewrite_contract = (
+        "This is a wording-only retry. Keep the same operation, evidence, focus, and question count."
+        if isinstance(rewrite_reason, str) and rewrite_reason
+        else ""
+    )
+    operation = str(directive.get("semanticOperation") or "")
+    reflection_mode = str(request.get("reflectionMode") or "")
+    destination_stage = str(directive.get("destinationStage") or "")
+    directive_memory = directive.get("memoryUpdate")
+    directive_memory = directive_memory if isinstance(directive_memory, dict) else {}
+    projected_reflection_phase = str(directive_memory.get("reflectionPhase") or "")
+    next_purpose = str(next_prompt.get("purpose") or "")
+    selected_contextual_metric_ref = directive.get("contextualTrackingMetricRef")
+    selected_contextual_metric_ref = (
+        selected_contextual_metric_ref
+        if isinstance(selected_contextual_metric_ref, dict)
+        else None
+    )
+    selected_contextual_metric = directive.get("contextualTrackingMetricEvidence")
+    selected_contextual_metric = (
+        selected_contextual_metric
+        if isinstance(selected_contextual_metric, dict)
+        else None
+    )
+    contextual_tracking_language_contract = ""
+    if selected_contextual_metric_ref and selected_contextual_metric:
+        contextual_tracking_language_contract = (
+            "Write one brief contextual cue in warm, observant, everyday Chinese. It should sound like a thoughtful "
+            "companion noticing part of the person's lived context, not like a dashboard reporting a result. Compose it "
+            "freshly for this turn in three moves: translate the selected metric into one personal-relative life pattern; "
+            "place that pattern beside one concrete, already-grounded part of the focal episode; then ask one simple open "
+            "question about what effect the person themselves noticed. The question completes the reply. "
+            "Use the metric's actual direction and these everyday semantic targets: sleepDuration becomes sleeping a little "
+            "less or more than usual; sleepTiming becomes going to sleep later or earlier than usual; sleepWakeTime becomes "
+            "the daily rhythm shifting later or earlier; sleepContinuity becomes sleep being less or more continuous; steps "
+            "becomes everyday activity being lower or higher; calendarLoad and calendarEventCount become days feeling fuller, "
+            "lighter, or more fragmented; calendarLongestFreeBlock becomes having less or more uninterrupted time; "
+            "calendarBackToBackPairs becomes commitments following one another more tightly; calendarEveningScheduled becomes "
+            "scheduled demands extending further into the evening. For heartRateVariability, describe only that the recent body "
+            "state has differed from the person's usual pattern, and invite them to notice whether pressure or tension felt "
+            "different during the grounded episode. "
+            "Make the episode clause specific to this conversation by using the person's own concrete activity, object, or "
+            "situation from the grounded episode rather than substituting a generic work problem. Vary the opening, rhythm, "
+            "and sentence structure so the observation feels "
+            "situated rather than templated. Use approximate personal-relative wording such as ‘最近’, ‘那阵子’, and ‘比自己平时……一些’ "
+            "only where it sounds natural. "
+            "Keep the measurement work backstage. The visible reply contains no technical source or analysis, exact date or "
+            "number, calculation, causal claim, diagnosis, or asserted stress conclusion. Never name HRV, heart-rate variability, "
+            "autonomic activity, or a physiological score. Present exactly the selected metric, ask only the person's appraisal, "
+            "and finish without an answer menu, disclaimer, second reflection question, or later replay of the cue."
+        )
+    unsupported_positive_function_contract = (
+        " Never assign a difficulty, painful experience, self-critical thought, recurring concern, mistake, "
+        "limitation, or consequence a beneficial function, positive intention, virtue, lesson, strength, "
+        "protection, reminder, motivation, or hidden benefit unless the person explicitly authored that exact function."
+    )
+    tender_language_contract = (
+        "Realize the one committed bounded compassionate understanding without making the person argue against themselves. The visible Tender "
+        "content is declarative, never a request for new material. Briefly acknowledge "
+        "one concrete difficulty, show its connection to the broader judgment, and limit only unsupported scope; never retell chronology. "
+        "Separate difficulty from verdict using only grounded context; acknowledge strain without praise. On explicit doubt, correction, "
+        "or qualification, revise only that mismatch. Otherwise do not replay the "
+        "understanding or ask for its weakness, meaning, emotional effect, truth level, or another confirmation. If a responseFocus is "
+        "question-shaped, ignore its inquiry and render the grounded bounded proposition instead. Invalid Tender functions include asking "
+        "‘这个标准具体是什么？’, ‘还让你想到什么？’, ‘还有什么压力或感受？’, or ‘你会怎么安顿自己？’. The only optional question "
+        "lets the person accept, correct, reject, or qualify the understanding already offered; collect no new evidence. Do not say the response is natural, arose only in this episode, is not "
+        "a real measure, or cannot represent ability unless the person authored that claim. Use a neutral reference instead of repeating "
+        "self-critical wording."
+    )
+    tender_language_contract += unsupported_positive_function_contract
+    tender_language_contract += (
+        " Insufficient evidence only bounds what facts establish; it cannot supply an alternative explanation or unaffected ability. "
+        "Never use an exclusive alternative such as ‘不是 X，而是 Y’, or enlarge workload, responsibility, motive, or context beyond "
+        "the person's account. Card, referenceGuidance, and tracking cannot supply the Tender understanding."
+    )
+    if contextual_tracking_language_contract:
+        tender_language_contract += (
+            " The Planner selected exactly this contextual metric reference "
+            + _encoded(selected_contextual_metric_ref)
+            + " with this supplied factual metric "
+            + _encoded(selected_contextual_metric)
+            + ". "
+            + contextual_tracking_language_contract
+            + " This turn realizes the independent contextual cue only; leave the committed Tender understanding for its own turn."
+        )
+    operation_contracts = {
+        "clarifyEvent": (
+            "Ask directly for the one missing focal event, development, or concrete action named by "
+            "the directive. When action/response is missing, ask what the person did or did not do; do not substitute an error code, "
+            "another person's reaction, emotion detail, or a combined either-or question. Do not ask a meta-conversation question."
+        ),
+        "advanceToCardConsent": (
+            "Use the completed episode for one short grounded bridge, then invite one random reflection card. "
+            "If an explicit broad self-critical statement exists in committed memory or this directive's "
+            "memoryUpdate, the bridge must acknowledge the specific difficulty or result and distinguish what "
+            "it establishes from that broader verdict. Preserve uncertainty: do not deny the verdict as a fact, "
+            "supply a positive opposite, praise, reassure, excuse, or infer an unreported emotion. If no broad "
+            "self-judgment exists, use only a brief factual bridge. Do not add an Event-analysis question before "
+            "or after the invitation, even if responseFocus contains one. The consent question is the only "
+            "question in the reply. The card has not been drawn: never describe or predict its image, text, "
+            "message, meaning, advice, or likely connection to the episode."
+        ),
+        "inviteCardConsent": (
+            "Clarify only a genuine ambiguity, question, or hesitation about the pending invitation. "
+            "Never repeat the invitation after the person has already given an unqualified affirmative "
+            "answer, and never turn a brief answer into a request for stronger confirmation."
+        ),
+        "continueCardObservation": (
+            "Invite one free account of what is visibly happening. Do not ask for more inventory after the person has "
+            "already described an understandable scene, and do not select posture, gesture, orientation, expression, "
+            "emotion, motive, responsibility, importance, symbolism, or another unmentioned dimension for them. Do not "
+            "preface the invitation with a summary, abstraction, or interpretation."
+        ),
+        "continueCardDevelopment": (
+            "Ask the sole direct, open image-only question about how the scene may continue or what may happen next. "
+            "Use no visible object, setting, or action that the person did not already supply; normally ask directly with no scene inventory. "
+            "Use ordinary concrete language. Do not ask what feels open, unresolved, hanging, or equivalent; do not ask "
+            "which part, where, or what step is unresolved; do not combine their elements into a new narrative relation; "
+            "and do not choose why, cause, "
+            "responsibility, feeling, intention, choice, or final outcome as the ambiguity. "
+            "Do not preface it with a summary, abstraction, or interpretation. Do not request more objects, action "
+            "mechanics, posture, gesture, orientation, body detail, expression, emotion, motive, importance, meaning, or "
+            "symbolism; do not introduce examples, dimensions, candidate answers, or a preferred outcome. The person's "
+            "answer need not resolve anything. This operation must not be repeated after that answer."
+        ),
+        "inviteRealityConnection": (
+            "Ask one unpresupposed bridge question that places the just-discussed scene back in the focal lived situation "
+            "and asks what comes first to the person's mind. In natural Chinese, use the functional shape of ‘把刚才这段画面放回当时的情境里，"
+            "你最先想到什么？’, adapting only the factual episode anchor rather than copying it mechanically. "
+            "Refer to the scene as a whole; do not restate an individual image property, describe an abstract inner feeling, "
+            "or ask whether the image made them feel a particular way. Do not state an analogy before the question, interpret "
+            "or summarize the scene, choose an image element, name its real counterpart, preselect a similarity/difference/tension, or "
+            "target a particular episode element. Do not ask another "
+            "image-only question, introduce another life episode, or offer an example, lesson, solution, or candidate "
+            "frame. The person authors the first connection."
+        ),
+        "continueOpenCardConnection": (
+            "Handle the current Reality task. If the person has now offered a plausible reality-internal relation, "
+            "preserve it without evaluating it, let the Card recede, and ask one neutral lived-reality Exploration "
+            "question about whether and how the grounded difficulty became connected to the exact self-critical "
+            "statement. Do not ask for insight, fit, confirmation, lesson, or action. If their latest material remains "
+            "only an object or "
+            "property correspondence, ask one concrete question entirely in lived-reality language about the focal "
+            "episode; do not mention Card elements, similarity, correspondence, or metaphor. If they report no meaningful "
+            "connection, keep the existing difficulty handling bounded and do not manufacture one."
+        ),
+        "offerCardConnectionScaffold": (
+            "Do not supply a connection. If the person offered only an object/property correspondence or a generic "
+            "shared-property claim, leave image language completely: ask one concrete, easy question about how the "
+            "grounded facts, actions, results, constraints, or handling relate inside the focal lived episode. Do not "
+            "mention Card elements, ask what is most similar, or improve the analogy. After a first no-connection answer, "
+            "offer one open scaffold using only an uncertainty, unresolved relation, or possible development the person "
+            "already authored inside the scene. Preserve their modality; add no object, condition, action, channel, or "
+            "scene fact. Name only the image-side openness, then ask whether that open structure brings anything to mind "
+            "in the focal episode. Do not assign it a reality meaning or suggest an object correspondence, symbolic role, "
+            "external help, emotion, lesson, cause, solution, action, or candidate frame."
+        ),
+        "bypassCardConnectionToDirectReflection": (
+            "Accept that no connection came naturally and let the Card recede without interpreting it. Add no scene "
+            "element, hypothetical detail, symbol, analogy, candidate mapping, or explanation. Ask the authorized one "
+            "neutral, easy question about the focal lived episode so Reflection can continue without the Card."
+        ),
+        "establishUserAuthoredCardConnection": (
+            "Preserve the stated relation as the person's own without evaluating or deepening it, then let the Card "
+            "recede. The Reality Connection is complete as soon as a plausible reality-internal relation exists; it "
+            "does not need a self-criticism insight. Ask one neutral lived-reality Exploration question about whether "
+            "and how the grounded difficulty became connected to the self-critical statement; do not assume a cause or "
+            "default to a specific trigger moment. Do not name Card elements, reopen comparison, explain what the "
+            "connection means, ask whether it fits, or add an insight, action, Tender interpretation, motive, trait, "
+            "or card meaning. Do not recap it as a breakthrough."
+        ),
+        "acceptCardConnectionCandidate": (
+            "Use the accepted frame only to ask neutrally whether and how the grounded difficulty became connected to "
+            "the current self-critical statement, without assuming a cause or specific trigger. Do not deepen Card content, solve the real-world task, or add "
+            "Tender, personality, motive, advice, or card meaning."
+        ),
+        "reviseCardConnectionCandidate": (
+            "Use the revised frame only to ask neutrally whether and how the grounded difficulty became connected to "
+            "the current self-critical statement, without assuming a cause or specific trigger. Do not deepen Card content, solve the real-world task, or "
+            "interpret it as Tender, personality, motive, advice, or card meaning."
+        ),
+        "authorizeCardGuidance": (
+            "Use the confirmed frame only to ask neutrally whether and how the grounded difficulty became connected to "
+            "the current self-critical statement, without assuming a cause or specific trigger. Do not deepen Card content, solve the real-world task, or add "
+            "Tender, personality, motive, advice, or card meaning."
+        ),
+        "continueExploratoryReflection": (
+            "Use the person's projective frame only to help them discover whether and how the exact self-critical "
+            "statement became connected to the grounded difficulty. Do not fill a missing relation. Sufficiency, not "
+            "maximal specificity, is the stopping criterion. Cumulative, gradual, situational, outcome-based, comparative, "
+            "explicit-standard, and user-described loose relations are sufficient when they explain the connection in the "
+            "person's own terms. Never convert a cumulative pattern into a demand for one moment, attempt, bug, step, or "
+            "exact threshold. When the operation is legitimately still exploratory, ask one easy neutral question only for "
+            "the relationship that remains unclear; do not default to onset precision. Never use a "
+            "causal-presupposing question that asks how or why a candidate fact made, caused, or led to the judgment, "
+            "or whether the judgment happened because of that fact. "
+            "Keep attempts separate from their effectiveness, accumulated blockage, and later judgment. Never word "
+            "an isolated action as causing self-criticism unless the person explicitly made that link; ignore any "
+            "responseFocus that does so and ask from the grounded overall result or pattern instead. "
+            "Do not reopen Card meaning, collect a new topic, seek complete causes, soften the judgment, troubleshoot, "
+            "or ask about action. If the person says there was no specific trigger and describes accumulated lack of "
+            "progress instead, preserve that correction as the relationship and do not rephrase the onset question. If a "
+            "dispensable link is unknown, do not rephrase it. referenceGuidance is silent "
+            "question-selection support, never reply content or evidence. Honor corrections at their exact scope. "
+            + (
+                "The Planner selected exactly this contextual metric reference "
+                + _encoded(selected_contextual_metric_ref)
+                + " with this supplied factual metric "
+                + _encoded(selected_contextual_metric)
+                + ". "
+                + contextual_tracking_language_contract
+                + " This contextual question is the whole visible reply; continue Reflection after the person's appraisal. "
+                if selected_contextual_metric_ref and selected_contextual_metric
+                else (
+                    "Exploration has completed and the projected phase is Tender. Briefly carry forward only the grounded "
+                    "difficulty-to-judgment relationship and invite the person to continue; do not state a Tender distinction yet. "
+                    if projected_reflection_phase == "tender"
+                    else "No contextual profile was selected; do not mention tracking or its review. "
+                )
+            )
+            + "Keep Exploration centered on the one unresolved difficulty-to-judgment relationship and do not repeat a recorded relationship."
+        ),
+        "continueTenderReflection": tender_language_contract,
+        "continueTenderGroundedFierceReflection": (
+            "Keep the committed Tender understanding present without explaining it again. For an opening or unresolved Fierce act, carry it into one "
+            "user-grounded Protect, Provide, Repair, or Motivate inquiry. "
+            "When this directive opens Fierce from Tender, responseFocus is the exact Swift-validated groundedRealityCandidate content. "
+            "When request.reflectionMode is fierce and this directive contains no new reflectionFrame, the inquiry is legally continuing: "
+            "latestAnswerContext.referenceID preserves that same candidate and responseFocus identifies the one remaining clarification. "
+            "Use the latest answer and only that candidate to ask about one narrow reality-facing part; do not imply that a direction has "
+            "already formed, switch candidates, recap Tender, or expose the reference. This may be one behavior, impact, boundary, support condition, repair, protection, or possible "
+            "change; a tentative relation between two facts is optional, never required. Make the question answerable by confirming, "
+            "revising, rejecting, or qualifying that concrete part. Keep it compact, without a ‘you said/mentioned’ preface or chronology recap. Name the actual "
+            "action, condition, person, or result; do not ask the person to identify an abstract issue, "
+            "responsibility, boundary, need, behavior pattern, or change from scratch. Do not use protocol or therapy language such as "
+            "whole-person judgment, reality tension, something worth facing, or a handling approach worth revisiting. When a complete "
+            "Fierce frame is present, reflect only the direction the person has now grounded. That direction completes Fierce: do not ask "
+            "another Fierce question, request more detail, or open a second repair/protect/change direction. Use one short natural bridge that "
+            "lets the next turn put the existing reflection together, while leaving room for a spontaneous correction. Do not quote, emphasize, paraphrase, or otherwise "
+            "replay the person's self-critical judgment, replay the Tender distinction, or repackage either through the Card "
+            "metaphor. Protection names only a direction the person has explicitly grounded; never assign it as a beneficial "
+            "function or positive intention of the difficulty or painful experience. Use ordinary reality language and preserve care "
+            "and agency together. Do not state the answer or assign responsibility. Do not produce a plan, step, menu, or "
+            "solution; Action comes later and owns what to do next. Card material, "
+            "referenceGuidance, and tracking remain background; model inference cannot become need, responsibility, or action evidence."
+        ),
+        "synthesizeDirectReflection": (
+            "Realize the committed reflectionDelta as one compact, negotiable synthesis of the committed reality–self-criticism relation and canonical "
+            "Tender distinction. Add Fierce only when its Protect/Provide/Repair/Motivate material was already committed. "
+            "Use contextual material only in the person's confirmed wording. Keep every Card object, scene, relation, and "
+            "metaphor out of the visible reply; the Card is provenance only. Never quote or paraphrase the self-critical "
+            "statement. Add no new fact, motive, trait, diagnosis, "
+            "responsibility, positive opposite, advice, or action; referenceGuidance is not synthesis material. "
+            "A statement that the evidence does not establish a global judgment must remain that limited statement: never "
+            "turn it into a claim that the real explanation is complexity, circumstances, normal difficulty, or unaffected "
+            "ability unless that exact alternative was already grounded by the person. "
+            "Preserve uncertainty. Use at most three short sentences and do not replay the chronology or list every earlier "
+            "answer. An initial Synthesis may preserve the already accepted Tender/Fierce meaning; it does not need a novel conclusion, "
+            "but it must realize the explicit nonempty synthesisDelta supplied by the Planner and must not reproduce the committed "
+            "Tender/Fierce reflectionDelta verbatim. An in-place "
+            "revision states only the changed qualification supported by the latest answer; it must not restate the full prior "
+            "Synthesis or the same Tender conclusion. Do not ask what the distinction means or ask the person to judge again whether "
+            "their self-criticism is true, weak, or less convincing. Ask only for acceptance, correction, or qualification of this synthesis; "
+            "do not invite an Action in the same reply. When revising an already committed Synthesis, never repeat or paraphrase the committed "
+            "reflectionDelta or the previous reply as if that were a revision."
+        ),
+        "proposePractice": (
+            "Start directly with exactly the one authorized small action and one short grounded reason for it. Do not "
+            "repeat or paraphrase Tender, Synthesis, or the self-critical statement; do not offer a menu, add steps, or "
+            "introduce another action. proposal.basis is an exact groundedRealityCandidates.id; resolve it against the request's candidate list and use only "
+            "that candidate's reality content as the reason. Never display the internal id. Its reason must "
+            "continue the same accepted synthesis relationship and target a confirmed difficulty, goal, behavior, impact, support need, "
+            "or constraint. The method may be a new assistant proposal, but it must remain a tentative small experiment rather than a "
+            "known solution, and cannot invent a fresh problem or psychological explanation. Never use Card objects or metaphors in the "
+            "proposal or basis. Prefer the episode's unresolved reality problem over rehearsing the reflection. The action must be an "
+            "observable response in a concrete situation, not writing, repeating, or rehearsing a kinder sentence unless the person "
+            "already chose that method. Use noAction only when the person declined action or no responsible concrete step is available; "
+            "missing a user-authored method is not a reason for noAction. Keep it easy to "
+            "negotiate: ask one natural question that lets the person accept it, make it smaller or revise it, "
+            "or decline it without pressure. Ask one open invitation; do not phrase acceptance as an A-or-B choice. "
+            "Do not claim that the action will solve the underlying problem."
+        ),
+        "resolvePractice": (
+            "Swift has compiled directive.memoryUpdate.finalNarrative from the already committed Synthesis and resolved Action. Realize those "
+            "two components once as a compact final account; do not decide or reconstruct them from transcript, and do not negotiate the action again. "
+            "Use no Card material, self-critical wording, new interpretation, or new action, "
+            "and invite only correction or confirmation of the narrative. On acceptance, never repeat the proposal or its earlier "
+            "confirmation question; move directly to the final narrative. The accepted action appears once as one component, never as "
+            "another proposal or negotiation."
+        ),
+        "completeConversation": (
+            "Give one short, warm closing acknowledgment for the completed reflection. Do not summarize the reflection, restate the final "
+            "narrative, mention the Card, replay the accepted practice, add advice, suggest a next step, or ask any question. The conversation "
+            "is already complete; this reply has no second task. Do not praise, congratulate, or evaluate the person's courage, effort, "
+            "progress, insight, or how difficult the reflection was."
+        ),
+    }
+    operation_contract = operation_contracts.get(
+        operation,
+        "Follow the authorized operation without adding a second conversational task.",
+    )
+    if operation == "clarifyEvent" and destination_stage == "cardConsent":
+        operation_contract = (
+            "The current Event act is complete and Swift has projected Card Consent for the next turn. Use at most one "
+            "short factual bridge, then invite one random reflection card. Do not ask another Event question, add a "
+            "Tender distinction, explain a cause, or preview Card content. The consent question is the only question."
+        )
+    elif operation == "continueCardObservation" and next_purpose == "cardDevelopment":
+        operation_contract = operation_contracts["continueCardDevelopment"]
+    elif operation in {"continueCardObservation", "continueCardDevelopment"} and next_purpose == "cardRealityConnection":
+        operation_contract = operation_contracts["inviteRealityConnection"]
+    elif operation == "continueTenderGroundedFierceReflection" and next_purpose == "synthesisReflection":
+        operation_contract = operation_contract + " " + (
+            "The person has now grounded one repair, protect, or change direction and Swift has closed Fierce. State only that committed "
+            "reality-facing direction in ordinary language, then use one short natural transition toward putting the existing understanding "
+            "together. Do not ask another Fierce question, request a reason, implication, detail, confirmation, or action, and do not create "
+            "the Synthesis yourself. Leave room only for a spontaneous correction; never expose route names."
+        )
+    if reflection_realization == "askFierceClarification":
+        operation_contract = operation_contract + " " + (
+            "This is the one authorized active-Fierce clarification. Ask only the concrete remaining "
+            "question in responseFocus; do not close Fierce or bridge ahead."
+        )
+    elif reflection_realization == "bridgeToSynthesis":
+        operation_contract = (
+            "The latest answer has completed Fierce and the post-turn phase is Synthesis. State the "
+            "committed repair, protection, or change direction once in ordinary language, then add one "
+            "short declarative bridge toward putting the existing understanding together. Ask no question, "
+            "seek no reason or confirmation, do not reconnect the direction to earlier material, and do not "
+            "create Synthesis or Action content. Ignore any stale responseFocus or earlier Fierce task."
+        )
+    system = f"""
+CURRENT_V5_CORE_WRITER
+
+Write one concise, natural Chinese reply for the authorized operation. Do not change its state,
+evidence, question purpose, permission, or action. Return only the reply wrapper. responseFocus is a
+goal, not evidence; the operation contract outranks it. Ignore incompatible or second tasks and never
+infer facts, Card meaning, psychology, cause, or solutions from the focus.
+
+Write warm, idiomatic, unforced Chinese in one to three short sentences. Keep difficulty, limitation,
+mistake, and impact visible without reassurance, virtue reframing, excuse, diagnosis, or whole-person
+judgment. Hide internal state. Begin with the conversational content, not a fixed acknowledgment or
+"you mentioned/said" preface. Do not paraphrase the latest answer merely to demonstrate listening or
+narrate progress. Use at most one necessary factual anchor or one compact relation between two grounded facts. Avoid recap–progress–question templates,
+"new understanding" claims, meta imagery, and em-dash reveals. Once a relation is stated, use it rather
+than renaming it. After Reality Connection, Card material is silent provenance and never appears in
+later replies. Never quote or paraphrase stored self-criticism. Committed Tender/Synthesis is context,
+not wording to replay, decorate, or translate into a new metaphor.{unsupported_positive_function_contract}
+
+The reply must contain substantive content, never filler. Ask exactly the one required open, low-burden
+question without forced either-or choices, candidate answers, or examples; otherwise ask none. Do not repeat the
+preceding question or switch to bodily sensations unless introduced and necessary. In reflective turns,
+self-compassion acknowledges difficulty without turning it into an unsupported global verdict.
+
+OPERATION-SPECIFIC LANGUAGE
+{operation_contract}
+{question_contract}
+{rewrite_contract}
+
+Return exactly {{"reply":""}}.
+""".strip()
+    writer_request = request
+    if selected_contextual_metric_ref and selected_contextual_metric:
+        # Swift has already compiled the exact event-window evidence slice. Withhold the wider
+        # profile so Writer cannot drift to another day or sibling metric while verbalizing it.
+        writer_request = dict(request)
+        writer_request["contextualTrackingProfiles"] = []
+    if operation in {"resolvePractice", "completeConversation"}:
+        # These operations must not replay a prior proposal from dialogue history. Their complete
+        # authorized content is already in the directive (or, for completion, deliberately empty).
+        # Keep only the latest user response so the Writer can acknowledge its tone without seeing
+        # an earlier action wording as another task.
+        recent = writer_request.get("recentMessages")
+        recent = recent if isinstance(recent, list) else []
+        latest_user = next(
+            (
+                item
+                for item in reversed(recent)
+                if isinstance(item, dict) and item.get("role") == "user"
+            ),
+            None,
+        )
+        writer_request = dict(writer_request)
+        writer_request["recentMessages"] = [latest_user] if latest_user else []
+    user = (
+        "CURRENT V5 TURN REQUEST JSON:\n"
+        + _encoded(writer_request)
+        + "\n\nAUTHORIZED SWIFT DIRECTIVE JSON:\n"
+        + _encoded(directive)
+    )
+    return PromptMessages(system=system, user=user)
+
+
 def build_turn_messages(item: LLMTurnPromptIn) -> PromptMessages:
+    if item.promptVersion == CURRENT_V5_CORE_PROMPT_VERSION:
+        builders = {
+            "planner": _current_v5_planner,
+            "writer": _current_v5_writer,
+        }
+        builder = builders.get(item.promptTask)
+        if builder is None:
+            raise HTTPException(409, f"unsupported current v5 task: {item.promptTask}")
+        return builder(item.payload)
     if item.promptVersion != TURN_PROMPT_VERSION:
         raise HTTPException(409, f"unsupported turn prompt version: {item.promptVersion}")
     builders = {
@@ -825,6 +2339,8 @@ def build_turn_messages(item: LLMTurnPromptIn) -> PromptMessages:
 
 def turn_prompt_chat(item: LLMTurnPromptIn) -> LLMChatIn:
     prompt = build_turn_messages(item)
+    if prompt.metrics is not None:
+        log_prompt_length(prompt.metrics)
     return LLMChatIn(
         messages=[
             {"role": "system", "content": prompt.system},

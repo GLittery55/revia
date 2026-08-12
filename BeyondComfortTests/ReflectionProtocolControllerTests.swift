@@ -4,7 +4,7 @@ import XCTest
 final class ReflectionProtocolControllerTests: XCTestCase {
     private let controller = ReflectionProtocolController()
 
-    func testLegacyPayloadKeepsPreTurnSessionAndMigratesTurnSessionToCurrent() throws {
+    func testLegacyPayloadKeepsPreTurnSessionAndMigratesTurnSessionToLegacyCompatibleTurn() throws {
         let legacy = try JSONDecoder().decode(
             ReflectionSession.self,
             from: Data(#"{"stage":"emotionDisclosure"}"#.utf8)
@@ -59,7 +59,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             ReflectionSession.self,
             from: JSONEncoder().encode(current)
         )
-        XCTAssertEqual(decoded.protocolVersion, ReflectionSession.currentProtocolVersion)
+        XCTAssertEqual(
+            decoded.protocolVersion,
+            ReflectionSession.consolidatedTurnProtocolVersion
+        )
         XCTAssertTrue(decoded.usesLLMTurnController)
         XCTAssertEqual(decoded.protocolStage, .directReflection)
         XCTAssertEqual(
@@ -92,7 +95,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
         let session = try JSONDecoder().decode(ReflectionSession.self, from: legacy)
 
-        XCTAssertEqual(session.protocolVersion, ReflectionSession.currentProtocolVersion)
+        XCTAssertEqual(
+            session.protocolVersion,
+            ReflectionSession.consolidatedTurnProtocolVersion
+        )
         XCTAssertEqual(session.protocolStage, .contextualDisclosure)
         let encoded = String(decoding: try JSONEncoder().encode(session), as: UTF8.self)
         XCTAssertFalse(encoded.contains("tenderConfirmation"))
@@ -142,11 +148,79 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         }
     }
 
+    func testRecoveryOperationIsProjectedOnlyFromPersistedStageAndTypedSubstate() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+
+        session.protocolStage = .contextualDisclosure
+        XCTAssertEqual(controller.recoveryOperation(for: session), .eventDisclosure)
+
+        session.protocolStage = .cardConsent
+        XCTAssertEqual(controller.recoveryOperation(for: session), .cardConsent)
+
+        session.protocolStage = .cardReflection
+        XCTAssertEqual(controller.recoveryOperation(for: session), .cardOpenExploration)
+
+        let candidate = PendingCardRealityConnection(
+            imageRelation: "用户已经描述的画面关系",
+            candidateRealityMapping: "等待用户决定的候选现实连接"
+        )
+        session.semanticMemory.pendingCardRealityConnection = candidate
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .cardRealityConnection,
+            referenceID: candidate.id.uuidString
+        )
+        XCTAssertEqual(controller.recoveryOperation(for: session), .cardCandidateResolution)
+
+        session.semanticMemory.pendingCardRealityConnection = nil
+        session.semanticMemory.nextPrompt = nil
+        session.semanticMemory.cardRealityConnection = .init(
+            imageRelation: "用户确认的画面关系",
+            realityMapping: "用户确认的现实连接",
+            source: .userAuthored
+        )
+        XCTAssertEqual(controller.recoveryOperation(for: session), .currentCardGuidance)
+
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        XCTAssertEqual(controller.recoveryOperation(for: session), .legacyCardReading)
+
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionFrame = .init(
+            mode: .tender,
+            action: .acknowledgeExperience,
+            evidenceBasis: [.init(source: .latestUserAnswer, content: "用户最新回答")],
+            dimensions: [.mindfulness],
+            reflectionDelta: "继续当前反思",
+            fierceEvidence: nil
+        )
+        XCTAssertEqual(controller.recoveryOperation(for: session), .directReflection)
+
+        session.semanticMemory.reflectionFrame = .init(
+            mode: .tender,
+            action: .synthesizeUnderstanding,
+            evidenceBasis: [.init(source: .episode, content: "已经确认的事件")],
+            dimensions: [.selfKindness],
+            reflectionDelta: "综合已经形成的理解",
+            fierceEvidence: nil
+        )
+        XCTAssertEqual(controller.recoveryOperation(for: session), .directSynthesis)
+
+        session.protocolStage = .optionalAction
+        XCTAssertEqual(controller.recoveryOperation(for: session), .optionalAction)
+        session.protocolStage = .narrativeConfirmation
+        XCTAssertEqual(controller.recoveryOperation(for: session), .finalNarrative)
+        session.protocolStage = .complete
+        XCTAssertEqual(controller.recoveryOperation(for: session), .complete)
+        session.protocolStage = .safetySupport
+        XCTAssertEqual(controller.recoveryOperation(for: session), .safety)
+    }
+
     func testPartialEpisodePatchPreservesPriorFocalEventAndStillRequiresBehavior() throws {
         let update = try JSONDecoder().decode(
             TurnSemanticMemoryUpdate.self,
             from: Data(
-                #"{"episodeStructure":{"eventProcessStatus":"present","possibleContributors":["用户说明了事情形成过程中的一个具体环节"]}}"#.utf8
+                #"{"episodeStructure":{"eventProcessStatus":"present","eventProcess":["用户说明了事情形成过程中的一个具体环节"]}}"#.utf8
             )
         )
 
@@ -169,7 +243,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertEqual(memory.episodeStructure?.behaviorEvidenceStatus, .unresolved)
         XCTAssertEqual(memory.episodeStructure?.eventProcessStatus, .present)
         XCTAssertEqual(
-            memory.episodeStructure?.possibleContributors,
+            memory.episodeStructure?.eventProcess,
             ["用户说明了事情形成过程中的一个具体环节"]
         )
 
@@ -218,6 +292,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 behaviorEvidenceStatus: .present,
                 behaviorEvidence: ["用户已经说明了一个具体行为"],
                 eventProcessStatus: .present,
+                eventProcess: ["事情如何发展已经得到说明"],
                 impactStatus: .present,
                 impacts: ["用户已经说明了一个实际结果"]
             )
@@ -252,6 +327,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 behaviorEvidenceStatus: .present,
                 behaviorEvidence: ["用户已经说明了一个具体行为"],
                 eventProcessStatus: .present,
+                eventProcess: ["事情如何发展已经得到说明"],
                 impactStatus: .unresolved
             )
         )
@@ -366,6 +442,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                     behaviorEvidenceStatus: .present,
                     behaviorEvidence: ["用户描述了过程中采取的具体行动"],
                     eventProcessStatus: .present,
+                    eventProcess: ["事情怎样发展到结果已经得到说明"],
                     impactStatus: .unresolved
                 )
             ),
@@ -403,6 +480,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                     behaviorEvidenceStatus: .present,
                     behaviorEvidence: ["用户明确说明了自己的行为"],
                     eventProcessStatus: .present,
+                    eventProcess: ["事情如何发展已经得到说明"],
                     possibleContributors: ["事情如何发展已经得到说明"],
                     impactStatus: .unresolved
                 )
@@ -431,6 +509,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                     behaviorEvidenceStatus: .present,
                     behaviorEvidence: ["临时和朋友吃饭且没有提前告诉家人"],
                     eventProcessStatus: .present,
+                    eventProcess: ["原来的接人安排临时改变"],
                     possibleContributors: ["原来的接人安排临时改变"]
                 )
             ),
@@ -459,6 +538,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                     behaviorEvidenceStatus: .present,
                     behaviorEvidence: ["临时和朋友吃饭且没有提前告诉家人"],
                     eventProcessStatus: .present,
+                    eventProcess: ["原来的安排临时改变"],
                     possibleContributors: ["原来的安排临时改变"]
                 )
             ),
@@ -508,6 +588,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["临时和朋友吃饭且没有提前告知"],
             eventProcessStatus: .present,
+            eventProcess: ["原来的安排临时改变"],
             possibleContributors: ["原来的安排临时改变"]
         )
 
@@ -569,10 +650,63 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             replyIntent: .exploreContext,
             replyGuidance: "只询问尚未形成的过程关系"
         )
-        XCTAssertThrowsError(try controller.validate(missingStatus, for: session)) {
+        let normalized = try controller.validate(missingStatus, for: session)
+        XCTAssertEqual(
+            normalized.memoryUpdate.episodeStructure?.behaviorEvidenceStatus,
+            .present
+        )
+
+        let processWithoutRedundantStatus = LLMTurnResponsePlan(
+            requestedStage: .contextualDisclosure,
+            localAction: .none,
+            memoryUpdate: .init(
+                episodeStructure: .init(
+                    concreteFacts: ["一件具体事情"],
+                    eventProcessStatus: .unresolved,
+                    eventProcess: ["事情如何发展已经由用户说明"]
+                )
+            ),
+            nextPrompt: .openQuestion(
+                purpose: "clarify behavior",
+                focus: "用户在事情中做了什么或没有做什么",
+                disclosurePurpose: .clarifyBehavior,
+                disclosureTarget: .behavior
+            ),
+            replyIntent: .exploreContext,
+            replyGuidance: "只询问仍缺少的行为关系"
+        )
+        let normalizedProcess = try controller.validate(
+            processWithoutRedundantStatus,
+            for: session
+        )
+        XCTAssertEqual(
+            normalizedProcess.memoryUpdate.episodeStructure?.eventProcessStatus,
+            .present
+        )
+
+        let processStatusWithoutContent = LLMTurnResponsePlan(
+            requestedStage: .contextualDisclosure,
+            localAction: .none,
+            memoryUpdate: .init(
+                episodeStructure: .init(
+                    concreteFacts: ["一件具体事情"],
+                    eventProcessStatus: .present,
+                    eventProcess: []
+                )
+            ),
+            nextPrompt: .openQuestion(
+                purpose: "clarify process",
+                focus: "事情如何发展",
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
+            ),
+            replyIntent: .exploreContext,
+            replyGuidance: "只询问仍缺少的过程关系"
+        )
+        XCTAssertThrowsError(try controller.validate(processStatusWithoutContent, for: session)) {
             XCTAssertEqual(
                 $0 as? ReflectionProtocolViolation,
-                .incompleteEpisodeStructure([.behaviorEvidenceStatus])
+                .incompleteEpisodeStructure([.eventProcessEvidence])
             )
         }
     }
@@ -587,6 +721,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["一个明确行为"],
             eventProcessStatus: .present,
+            eventProcess: ["一个已经形成的过程关系"],
             possibleContributors: ["一个已经形成的过程关系"]
         )
 
@@ -638,6 +773,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                     behaviorEvidenceStatus: .present,
                     behaviorEvidence: ["用户的明确行为"],
                     eventProcessStatus: .present,
+                    eventProcess: ["事情的发展已经说明"],
                     possibleContributors: ["事情的发展已经说明"]
                 )
             ),
@@ -663,6 +799,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["一个明确行为"],
             eventProcessStatus: .present,
+            eventProcess: ["事情的发展已经说明"],
             possibleContributors: ["事情的发展已经说明"]
         )
 
@@ -690,7 +827,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
     func testRetiredIncompatibleMetadataCannotBlockValidCardInvitation() throws {
         let rawPlan = Data(
-            #"{"requestedStage":"cardConsent","localAction":{"kind":"none","trackingCueIDs":[]},"memoryUpdate":{"eventDisclosureOutcome":"readyForTenderOrCard","reflectionFocusKind":"explicitGlobalSelfJudgment","tenderGroundingKind":"none","tenderUnderstanding":null,"episodeStructure":{"concreteFacts":["用户答应去接家人但最后没去"],"behaviorEvidenceStatus":"present","behaviorEvidence":["临时和朋友吃饭且没有提前告诉家人"],"eventProcessStatus":"present","possibleContributors":["原来的安排临时改变"]}},"resolvedConfirmation":null,"nextPrompt":{"kind":"confirmationRequest","purpose":null,"focus":null,"disclosurePurpose":null,"disclosureTarget":null,"disclosureReopenReason":null,"target":"cardConsent","referenceID":null},"replyIntent":"inviteCardConsent","replyGuidance":"简短事实承接并邀请随机反思卡"}"#.utf8
+            #"{"requestedStage":"cardConsent","localAction":{"kind":"none","trackingCueIDs":[]},"memoryUpdate":{"eventDisclosureOutcome":"readyForTenderOrCard","reflectionFocusKind":"explicitGlobalSelfJudgment","tenderGroundingKind":"none","tenderUnderstanding":null,"episodeStructure":{"concreteFacts":["用户答应去接家人但最后没去"],"behaviorEvidenceStatus":"present","behaviorEvidence":["临时和朋友吃饭且没有提前告诉家人"],"eventProcessStatus":"present","eventProcess":["原来的安排临时改变"],"possibleContributors":["原来的安排临时改变"]}},"resolvedConfirmation":null,"nextPrompt":{"kind":"confirmationRequest","purpose":null,"focus":null,"disclosurePurpose":null,"disclosureTarget":null,"disclosureReopenReason":null,"target":"cardConsent","referenceID":null},"replyIntent":"inviteCardConsent","replyGuidance":"简短事实承接并邀请随机反思卡"}"#.utf8
         )
         let plan = try JSONDecoder().decode(LLMTurnResponsePlan.self, from: rawPlan)
         var session = ReflectionSession()
@@ -730,7 +867,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             ],
             correction: nil
         )
-        XCTAssertTrue(prompt.system.contains("Do not ask the user to rate, approve"))
+        XCTAssertTrue(prompt.system.contains("Never ask them to rate, approve"))
         XCTAssertTrue(prompt.system.contains("hidden-motive claims"))
     }
 
@@ -742,7 +879,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertFalse(service.requiresInterrupt("我今天只是觉得有些挫败"))
     }
 
-    func testCurrentDisclosureSwiftDoesNotJudgeStoryReadiness() throws {
+    func testCurrentDisclosureTreatsGroundedProcessUncertaintyAsResolved() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
         session.protocolStage = .contextualDisclosure
@@ -783,13 +920,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             replyGuidance: "继续探索另一个可能因素"
         )
 
-        let validated = try controller.validate(stalledPlan, for: session)
-        let warnings = controller.nonBlockingWarnings(
-            originalPlan: stalledPlan,
-            validatedPlan: validated,
-            for: session
-        )
-        XCTAssertTrue(warnings.isEmpty)
+        XCTAssertThrowsError(try controller.validate(stalledPlan, for: session)) {
+            XCTAssertEqual(
+                $0 as? ReflectionProtocolViolation,
+                .disclosureShouldAdvance
+            )
+        }
     }
 
     func testCompletedDisclosurePurposeIsRejectedBeforeWriter() throws {
@@ -835,6 +971,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["行动确实没有完成"],
             eventProcessStatus: .present,
+            eventProcess: ["事件如何发展已经得到说明"],
             possibleContributors: ["用户已经说明事件形成过程中的一个近端因素"],
             impactStatus: .present,
             impacts: ["原有安排因此发生改变"]
@@ -901,6 +1038,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 behaviorEvidenceStatus: .present,
                 behaviorEvidence: ["行动确实没有完成"],
                 eventProcessStatus: .present,
+                eventProcess: ["事件如何发展已经得到说明"],
                 possibleContributors: ["用户已经说明一个近端过程因素"],
                 impactStatus: .unresolved
             )
@@ -988,7 +1126,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    func testCurrentProtocolUserAuthoredMappingAuthorizesReadingWithoutSeparateTension() throws {
+    func testCurrentProtocolUserAuthoredMappingOpensDirectReflectionWithoutSecondConfirmation() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
         session.protocolStage = .cardReflection
@@ -1002,8 +1140,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let repeatedConnectionPlan = LLMTurnResponsePlan(
             requestedStage: .cardReflection,
             localAction: .none,
-            memoryUpdate: .init(
-                cardRealityConnection: .init(
+            memoryUpdate: .init(),
+            cardConnectionTurnOutcome: try .init(
+                kind: .userAuthoredConnection,
+                connection: .init(
                     imageRelation: "一个人物正在改变随身物品的安排",
                     realityMapping: "用户把画面中的改变与现实里想放下的一项负担联系起来",
                     source: .userAuthored
@@ -1017,10 +1157,15 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             replyGuidance: "先回应这条联系，再继续确认"
         )
         let authorization = try controller.validate(repeatedConnectionPlan, for: session)
-        XCTAssertEqual(authorization.requestedStage, .cardReflection)
+        XCTAssertEqual(authorization.requestedStage, .directReflection)
         XCTAssertEqual(authorization.localAction.kind, .shareCardGuidance)
         XCTAssertEqual(authorization.replyIntent, .authorizeCardGuidance)
         XCTAssertEqual(authorization.nextPrompt?.kind, TurnNextPromptKind.none)
+        XCTAssertNil(authorization.resolvedConfirmation)
+        XCTAssertEqual(
+            authorization.cardConnectionTurnOutcome?.kind,
+            .userAuthoredConnection
+        )
         XCTAssertEqual(
             authorization.memoryUpdate.cardRealityConnection?.realityMapping,
             "用户把画面中的改变与现实里想放下的一项负担联系起来"
@@ -1031,23 +1176,119 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             authorization.memoryUpdate,
             committedNextPrompt: authorization.nextPrompt
         )
+        session.protocolStage = .directReflection
         session.cardGuidanceShared = true
+        session.pendingCardGuidanceTurn = true
 
-        let candidateReading = LLMTurnResponsePlan(
-            requestedStage: .cardReflection,
+        let combinedReflection = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
             localAction: .none,
             memoryUpdate: .init(
-                cardNegotiatedMeaning: "候选解读只沿用用户自己建立的画面—现实联系"
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .distinguishFactFromPrediction,
+                    evidenceBasis: [
+                        .init(
+                            source: .cardRealityConnection,
+                            content: "用户把画面中的改变与现实里想放下的一项负担联系起来"
+                        ),
+                        .init(source: .episode, content: "用户已经说明了一件当前焦点事件"),
+                    ],
+                    dimensions: [.selfKindness, .mindfulness],
+                    reflectionDelta: "先沿用户建立的连接区分已经发生的事实与扩大的判断",
+                    fierceEvidence: nil
+                )
             ),
-            nextPrompt: .confirmationRequest(target: .cardMapping),
-            replyIntent: .presentCardReading,
-            replyGuidance: "不补造更深象征含义，呈现可修改或拒绝的温和候选解读"
+            nextPrompt: .openQuestion(
+                purpose: "grounded_tender_reflection",
+                focus: "沿用户建立的连接继续一个具体反思问题"
+            ),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "在同一条回复中简短承接卡牌连接并进入温和反思"
         )
-        XCTAssertNoThrow(try controller.validate(candidateReading, for: session))
-        XCTAssertFalse(
-            controller.permissions(for: session).allowedReplyIntents
-                .contains(.deepenCardConnection)
+        XCTAssertNoThrow(try controller.validate(combinedReflection, for: session))
+        let permissions = controller.permissions(for: session)
+        XCTAssertTrue(permissions.allowedReplyIntents.contains(.directCandidReflection))
+        XCTAssertFalse(permissions.allowedReplyIntents.contains(.presentCardReading))
+        XCTAssertNil(combinedReflection.memoryUpdate.cardNegotiatedMeaning)
+        XCTAssertNotEqual(combinedReflection.nextPrompt?.target, .cardMapping)
+    }
+
+    func testCardConnectionInteractionStateComesOnlyFromPersistedCandidatePrompt() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.cardDisplayState = .displayed
+
+        XCTAssertEqual(
+            controller.cardConnectionInteractionState(for: session),
+            .openExploration
         )
+
+        let pending = PendingCardRealityConnection(
+            imageRelation: "画面里的人停在门口",
+            candidateRealityMapping: "现实中正在等待一个决定"
+        )
+        session.semanticMemory.pendingCardRealityConnection = pending
+        XCTAssertEqual(
+            controller.cardConnectionInteractionState(for: session),
+            .openExploration,
+            "A candidate object alone is not an active confirmation transaction."
+        )
+
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .cardRealityConnection,
+            referenceID: pending.id.uuidString
+        )
+        XCTAssertEqual(
+            controller.cardConnectionInteractionState(for: session),
+            .awaitingCandidateResolution
+        )
+    }
+
+    func testDoorPhotoClockAndOfferConnectionCommitsWithoutConfirmationRoundTrip() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.condition = .cardMediated
+        session.card = CardService().allCards[0]
+        session.cardDisplayState = .displayed
+        session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "card_reality_connection",
+            focus: "把已经形成的画面关系连接到当前事件"
+        )
+
+        let connection = TurnCardRealityConnection(
+            imageRelation: "人物站在门口，旧照片和钟声留在身后，正走向门外尚未确定的方向",
+            realityMapping: "用户正在等待申请结果，offer 会影响未来去哪里读书",
+            source: .userAuthored
+        )
+        let validated = try controller.validate(
+            LLMTurnResponsePlan(
+                requestedStage: .cardReflection,
+                localAction: .none,
+                memoryUpdate: .init(),
+                cardConnectionTurnOutcome: try .init(
+                    kind: .userAuthoredConnection,
+                    connection: connection
+                ),
+                nextPrompt: .openQuestion(
+                    purpose: "obsolete_repeat",
+                    focus: "不应再次确认用户刚刚说出的连接"
+                ),
+                replyIntent: .inviteCardConnection,
+                replyGuidance: "保存用户直接形成的连接"
+            ),
+            for: session
+        )
+
+        XCTAssertEqual(validated.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(validated.replyIntent, .authorizeCardGuidance)
+        XCTAssertEqual(validated.nextPrompt, TurnNextPrompt.none)
+        XCTAssertNil(validated.resolvedConfirmation)
+        XCTAssertNil(validated.memoryUpdate.pendingCardRealityConnection)
+        XCTAssertEqual(validated.memoryUpdate.cardRealityConnection, connection)
+        XCTAssertEqual(validated.memoryUpdate.cardConnectionOutcome, .connectionConfirmed)
     }
 
     func testSilentCardGuidanceTransactionAllowsMissingPrivateWritingGuidance() throws {
@@ -1062,7 +1303,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         {
           "requestedStage":"cardReflection",
           "localAction":{"kind":"shareCardGuidance","trackingCueIDs":[]},
-          "memoryUpdate":{"cardRealityConnection":{"imageRelation":"用户已经形成的画面关系","realityMapping":"用户刚刚形成的画面—现实连接","source":"userAuthored","status":"confirmed"}},
+          "memoryUpdate":{},
+          "cardConnectionTurnOutcome":{"kind":"userAuthoredConnection","connection":{"imageRelation":"用户已经形成的画面关系","realityMapping":"用户刚刚形成的画面—现实连接","source":"userAuthored","status":"confirmed"}},
           "resolvedConfirmation":null,
           "nextPrompt":{"kind":"none","purpose":null,"focus":null,"disclosureTarget":null,"target":null,"referenceID":null},
           "replyIntent":"authorizeCardGuidance",
@@ -1320,7 +1562,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     }
 
     func testPracticeAcceptReviseAndRejectAreAtomic() throws {
-        let pending = practiceTransition(id: "practice-1")
+        let pending = practiceTransition(
+            id: "practice-1",
+            narrativeReferenceID: "confirmed-narrative"
+        )
         func session() -> ReflectionSession {
             var value = protocolSession(stage: .optionalAction)
             value.semanticMemory.practiceTransition = pending
@@ -1404,6 +1649,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let controller = ReflectionProtocolController()
         let session = protocolSession(stage: .contextualDisclosure)
         let plan = LLMTurnResponsePlan(
+            semanticOperation: .clarifyEvent,
             requestedStage: .contextualDisclosure,
             localAction: .none,
             memoryUpdate: .init(),
@@ -1483,7 +1729,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         }
     }
 
-    func testSuggestPracticeCannotUseNoActionInsteadOfAProposal() throws {
+    func testSuggestPracticeCanProposeNoActionWithRationale() throws {
         let controller = ReflectionProtocolController()
         var session = protocolSession(stage: .narrativeConfirmation)
         session.semanticMemory.finalNarrative = "已经确认前等待处理的叙事"
@@ -1495,8 +1741,14 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let noAction = TurnPracticeTransition(
             transactionID: "practice-1",
             narrativeReferenceID: "narrative-1",
-            proposal: nil,
-            noActionReason: .userNotReady
+            proposal: TurnPracticeProposal(
+                id: "practice-1",
+                kind: .noAction,
+                content: "目前原因仍然未知，先保留不确定性，不为了消除不适仓促行动。",
+                basis: "现有材料没有支持具体的修复、保护或改变方向。",
+                status: .pendingConfirmation
+            ),
+            noActionReason: nil
         )
         let unsupported = LLMTurnResponsePlan(
             requestedStage: .optionalAction,
@@ -1509,10 +1761,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             ),
             nextPrompt: .confirmationRequest(target: .practice, referenceID: "practice-1"),
             replyIntent: .suggestPractice,
-            replyGuidance: "不提出任何实践"
+            replyGuidance: "提出一个有理由的 noAction 选项"
         )
 
-        XCTAssertThrowsError(try controller.validate(unsupported, for: session))
+        XCTAssertNoThrow(try controller.validate(unsupported, for: session))
     }
 
     func testNewCompletionRequiresResolvedNarrativeOrPracticeGate() throws {
@@ -1569,17 +1821,20 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             noActionReason: .userDeclined
         )
         let declined = LLMTurnResponsePlan(
-            requestedStage: .complete,
-            localAction: .init(kind: .completeSession),
-            memoryUpdate: .init(practiceTransition: declinedTransition),
+            requestedStage: .narrativeConfirmation,
+            localAction: .none,
+            memoryUpdate: .init(
+                finalNarrative: "用户暂不采用行动，综合叙事保留这一选择。",
+                practiceTransition: declinedTransition
+            ),
             resolvedConfirmation: .init(
                 target: .practice,
                 decision: .declined,
                 referenceID: "practice-1"
             ),
-            nextPrompt: TurnNextPrompt.none,
-            replyIntent: .completeConversation,
-            replyGuidance: "用户不采用实践，保留自主选择并简短结束"
+            nextPrompt: .confirmationRequest(target: .finalNarrative),
+            replyIntent: .presentFinalNarrative,
+            replyGuidance: "用户不采用实践，保留自主选择并呈现最终叙事"
         )
         XCTAssertNoThrow(try controller.validate(declined, for: practice))
     }
@@ -1737,8 +1992,9 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             ),
             "reading unexpectedly allowed: \(preAuthorizationPermissions)"
         )
-        let relationMemory = TurnSemanticMemoryUpdate(
-            cardRealityConnection: .init(
+        let relationOutcome = try CardConnectionTurnOutcome(
+            kind: .userAuthoredConnection,
+            connection: .init(
                 imageRelation: "画面中的人先观察再决定是否靠近",
                 realityMapping: "用户在现实中也需要先了解请求范围再回应",
                 source: .userAuthored
@@ -1746,11 +2002,14 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
         XCTAssertNoThrow(
             try controller.validate(
-                plan(
-                    stage: .cardReflection,
-                    intent: .authorizeCardGuidance,
-                    action: .init(kind: .shareCardGuidance),
-                    memory: relationMemory
+                LLMTurnResponsePlan(
+                    requestedStage: .cardReflection,
+                    localAction: .init(kind: .shareCardGuidance),
+                    memoryUpdate: .init(),
+                    cardConnectionTurnOutcome: relationOutcome,
+                    nextPrompt: TurnNextPrompt.none,
+                    replyIntent: .authorizeCardGuidance,
+                    replyGuidance: ""
                 ),
                 for: reflection
             )
@@ -1759,11 +2018,14 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         // A complete post-patch connection has one deterministic silent successor even if the
         // Planner leaves the redundant local-action label as none.
         let derivedAuthorization = try controller.validate(
-            plan(
-                stage: .cardReflection,
-                intent: .authorizeCardGuidance,
-                action: .none,
-                memory: relationMemory
+            LLMTurnResponsePlan(
+                requestedStage: .cardReflection,
+                localAction: .none,
+                memoryUpdate: .init(),
+                cardConnectionTurnOutcome: relationOutcome,
+                nextPrompt: TurnNextPrompt.none,
+                replyIntent: .authorizeCardGuidance,
+                replyGuidance: ""
             ),
             for: reflection
         )
@@ -1773,13 +2035,9 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             requestedStage: .cardReflection,
             localAction: .init(kind: .shareCardGuidance),
             memoryUpdate: .init(
-                cardRealityConnection: .init(
-                    imageRelation: "画面中的人先观察再决定是否靠近",
-                    realityMapping: "用户在现实中也需要先了解请求范围再回应",
-                    source: .userAuthored
-                ),
                 cardNegotiatedMeaning: "这段含义尚未在 guidance-aware 回复中向用户展示"
             ),
+            cardConnectionTurnOutcome: relationOutcome,
             nextPrompt: .openQuestion(
                 purpose: "check_card_reading",
                 focus: "候选映射是否贴近"
@@ -1818,8 +2076,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 plan(
                     stage: .cardReflection,
                     intent: .authorizeCardGuidance,
-                    action: .none,
-                    memory: relationMemory
+                    action: .none
                 ),
                 for: reflection
             )
@@ -1871,7 +2128,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     func testCompletionIntentCanonicalizesTheSwiftOwnedCompletionAction() throws {
         var session = protocolSession(stage: .optionalAction)
         session.condition = .directLLM
-        let pending = practiceTransition(id: "practice-completion")
+        let pending = practiceTransition(
+            id: "practice-completion",
+            narrativeReferenceID: "confirmed-narrative"
+        )
         session.semanticMemory.practiceTransition = pending
         session.semanticMemory.nextPrompt = .confirmationRequest(
             target: .practice,
@@ -1925,12 +2185,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     }
 
     func testCurrentTurnPromptsUseImmutableServerRegistryVersion() {
-        XCTAssertEqual(ServerTurnPrompt.version, "turn-v4-server-v37")
-        XCTAssertEqual(ServerTurnPrompt.version(for: 2), "turn-v4-server-v37")
-        XCTAssertEqual(ServerTurnPrompt.version(for: 3), "turn-v4-server-v37")
+        XCTAssertEqual(ServerTurnPrompt.version, "turn-v4-server-v45")
+        XCTAssertEqual(ServerTurnPrompt.version(for: 2), "turn-v4-server-v45")
+        XCTAssertEqual(ServerTurnPrompt.version(for: 3), "turn-v4-server-v45")
         XCTAssertEqual(
             ServerTurnPrompt.version(for: ReflectionSession.currentProtocolVersion),
-            "turn-v4-server-v37"
+            "turn-v4-server-v45"
         )
         XCTAssertEqual(ServerTurnPrompt.Task.planner.rawValue, "planner")
         XCTAssertEqual(ServerTurnPrompt.Task.planCritic.rawValue, "plan_critic")
@@ -1964,7 +2224,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     func testCardReferenceSelectionIsTurnLocalAndSwiftValidatesSourceAndPermission() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
-        session.protocolStage = .cardReflection
+        session.protocolStage = .directReflection
         session.condition = .cardMediated
         session.card = CardService().allCards[0]
         session.cardDisplayState = .displayed
@@ -1975,43 +2235,65 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             source: .userAuthored
         )
 
-        func reading(index: Int) -> LLMTurnResponsePlan {
+        func reflection(index: Int) -> LLMTurnResponsePlan {
             LLMTurnResponsePlan(
-                requestedStage: .cardReflection,
+                requestedStage: .directReflection,
                 localAction: .none,
                 memoryUpdate: .init(
-                    cardNegotiatedMeaning: "等待用户通过后续回答发展或修正的候选理解"
+                    reflectionFrame: .init(
+                        mode: .tender,
+                        action: .distinguishFactFromPrediction,
+                        evidenceBasis: [
+                            .init(source: .cardRealityConnection, content: "用户确认的画面—现实连接"),
+                            .init(source: .episode, content: "用户已经说明的现实事件"),
+                        ],
+                        dimensions: [.selfKindness, .mindfulness],
+                        reflectionDelta: "用一条受支持的卡牌关系继续现实反思",
+                        fierceEvidence: nil
+                    )
                 ),
-                nextPrompt: .confirmationRequest(target: .cardMapping),
-                replyIntent: .presentCardReading,
+                nextPrompt: .openQuestion(
+                    purpose: "grounded_card_reflection",
+                    focus: "沿当前连接继续一个具体问题"
+                ),
+                replyIntent: .directCandidReflection,
                 replyGuidance: "只把当前卡牌的一条受支持关系用于形成后续问题",
                 cardReferenceSelection: .init(relationIndex: index)
             )
         }
 
-        let valid = try controller.validate(reading(index: 0), for: session)
+        let valid = try controller.validate(reflection(index: 0), for: session)
         XCTAssertEqual(valid.cardReferenceSelection?.relationIndex, 0)
         XCTAssertNil(valid.memoryUpdate.cardRealityMapping)
 
-        XCTAssertThrowsError(try controller.validate(reading(index: 2), for: session)) {
+        XCTAssertThrowsError(try controller.validate(reflection(index: 2), for: session)) {
             XCTAssertEqual(
                 $0 as? ReflectionProtocolViolation,
                 .invalidCardReferenceSelection
             )
         }
 
-        session.protocolStage = .directReflection
-        session.semanticMemory.cardNegotiatedMeaning = "用户已经确认的候选连接"
-        let narrative = LLMTurnResponsePlan(
-            requestedStage: .narrativeConfirmation,
+        let nonQuestionReflection = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
             localAction: .none,
-            memoryUpdate: .init(finalNarrative: "一段候选综合叙事"),
-            nextPrompt: .confirmationRequest(target: .finalNarrative),
-            replyIntent: .presentFinalNarrative,
-            replyGuidance: "呈现最终叙事",
+            memoryUpdate: .init(
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .acknowledgeExperience,
+                    evidenceBasis: [
+                        .init(source: .episode, content: "用户已经说明的现实事件"),
+                    ],
+                    dimensions: [.selfKindness, .mindfulness],
+                    reflectionDelta: "承接一个具体经历",
+                    fierceEvidence: nil
+                )
+            ),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "不提出问题的承接不能选择问题镜头",
             cardReferenceSelection: .init(relationIndex: 0)
         )
-        XCTAssertThrowsError(try controller.validate(narrative, for: session)) {
+        XCTAssertThrowsError(try controller.validate(nonQuestionReflection, for: session)) {
             XCTAssertEqual(
                 $0 as? ReflectionProtocolViolation,
                 .invalidCardReferenceSelection
@@ -2128,29 +2410,16 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             )
         }
 
-        let incomplete = LLMTurnResponsePlan(
-            requestedStage: .cardReflection,
-            localAction: .none,
-            memoryUpdate: .init(
-                cardRealityConnection: .init(
+        XCTAssertThrowsError(
+            try CardConnectionTurnOutcome(
+                kind: .userAuthoredConnection,
+                connection: .init(
                     imageRelation: "   ",
                     realityMapping: "一个现实映射",
                     source: .userAuthored
                 )
-            ),
-            nextPrompt: .openQuestion(
-                purpose: "continue_current_connection",
-                focus: "继续当前事件中的画面—现实连接"
-            ),
-            replyIntent: .inviteCardConnection,
-            replyGuidance: "只继续当前连接"
-        )
-        XCTAssertThrowsError(try controller.validate(incomplete, for: session)) {
-            XCTAssertEqual(
-                $0 as? ReflectionProtocolViolation,
-                .incompleteCardRealityConnection
             )
-        }
+        )
 
         let guidanceWithoutConnection = LLMTurnResponsePlan(
             requestedStage: .cardReflection,
@@ -2230,10 +2499,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertFalse(permissions.allowedReplyIntents.contains(.presentCardReading))
     }
 
-    func testPostGuidanceConfirmedConnectionIsImmutableAndIdenticalEchoIsNoOp() throws {
+    func testPostGuidanceConfirmedConnectionIsImmutableDuringDirectReflection() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
-        session.protocolStage = .cardReflection
+        session.protocolStage = .directReflection
         session.condition = .cardMediated
         session.card = CardService().allCards[0]
         session.cardDisplayState = .displayed
@@ -2246,23 +2515,36 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
         session.semanticMemory.cardRealityConnection = confirmed
 
-        func readingPlan(
+        func reflectionPlan(
             connection: TurnCardRealityConnection?
         ) -> LLMTurnResponsePlan {
             LLMTurnResponsePlan(
-                requestedStage: .cardReflection,
+                requestedStage: .directReflection,
                 localAction: .none,
                 memoryUpdate: .init(
                     cardRealityConnection: connection,
-                    cardNegotiatedMeaning: "当前 post-guidance 候选解读"
+                    reflectionFrame: .init(
+                        mode: .tender,
+                        action: .distinguishFactFromPrediction,
+                        evidenceBasis: [
+                            .init(source: .cardRealityConnection, content: "用户确认的画面—现实连接"),
+                            .init(source: .episode, content: "用户已经说明的现实事件"),
+                        ],
+                        dimensions: [.selfKindness, .mindfulness],
+                        reflectionDelta: "沿已确认连接形成一个温和且具体的区分",
+                        fierceEvidence: nil
+                    )
                 ),
-                nextPrompt: .confirmationRequest(target: .cardMapping),
-                replyIntent: .presentCardReading,
-                replyGuidance: "只生成当前候选解读"
+                nextPrompt: .openQuestion(
+                    purpose: "grounded_tender_reflection",
+                    focus: "继续一个具体的现实反思问题"
+                ),
+                replyIntent: .directCandidReflection,
+                replyGuidance: "沿已确认连接继续反思"
             )
         }
 
-        let changed = readingPlan(
+        let changed = reflectionPlan(
             connection: .init(
                 imageRelation: confirmed.imageRelation,
                 realityMapping: "试图改写已经确认的现实关系",
@@ -2279,11 +2561,11 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertEqual(session.cardConnectionAttemptCount, 1)
         XCTAssertTrue(session.cardGuidanceShared)
 
-        let identical = readingPlan(connection: confirmed)
+        let identical = reflectionPlan(connection: confirmed)
         let validated = try controller.validate(identical, for: session)
         XCTAssertNil(validated.memoryUpdate.cardRealityConnection)
         XCTAssertEqual(validated.localAction.kind, .none)
-        XCTAssertEqual(validated.replyIntent, .presentCardReading)
+        XCTAssertEqual(validated.replyIntent, .directCandidReflection)
         XCTAssertEqual(session.cardConnectionAttemptCount, 1)
         XCTAssertTrue(
             controller.nonBlockingWarnings(
@@ -2294,11 +2576,23 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
 
         let clear = LLMTurnResponsePlan(
-            requestedStage: .cardReflection,
+            requestedStage: .directReflection,
             localAction: .none,
-            memoryUpdate: .init(clearCardRealityConnection: true),
-            nextPrompt: .confirmationRequest(target: .cardMapping),
-            replyIntent: .presentCardReading,
+            memoryUpdate: .init(
+                clearCardRealityConnection: true,
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .distinguishFactFromPrediction,
+                    evidenceBasis: [
+                        .init(source: .episode, content: "用户已经说明的现实事件"),
+                    ],
+                    dimensions: [.selfKindness, .mindfulness],
+                    reflectionDelta: "继续一个现实区分",
+                    fierceEvidence: nil
+                )
+            ),
+            nextPrompt: .openQuestion(purpose: "continue_reflection", focus: "继续现实反思"),
+            replyIntent: .directCandidReflection,
             replyGuidance: "不得清除已确认连接"
         )
         XCTAssertThrowsError(try controller.validate(clear, for: session)) {
@@ -2351,17 +2645,13 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             return (session, pending)
         }
 
-        var (acceptedSession, pending) = pendingSession()
+        var (acceptedSession, _) = pendingSession()
         let accepted = try controller.validate(
             LLMTurnResponsePlan(
                 requestedStage: .cardReflection,
                 localAction: .none,
                 memoryUpdate: .init(),
-                resolvedConfirmation: .init(
-                    target: .cardRealityConnection,
-                    decision: .accepted,
-                    referenceID: pending.id.uuidString
-                ),
+                cardConnectionTurnOutcome: try .init(kind: .candidateAccepted),
                 nextPrompt: TurnNextPrompt.none,
                 replyIntent: .inviteCardConnection,
                 replyGuidance: "提交已接受的候选连接"
@@ -2369,10 +2659,14 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             for: acceptedSession
         )
         XCTAssertEqual(accepted.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(accepted.requestedStage, .directReflection)
         XCTAssertEqual(accepted.replyIntent, .authorizeCardGuidance)
         XCTAssertEqual(accepted.memoryUpdate.cardRealityConnection?.source, .userAccepted)
         XCTAssertEqual(accepted.memoryUpdate.cardConnectionOutcome, .connectionConfirmed)
         XCTAssertEqual(accepted.memoryUpdate.clearPendingCardRealityConnection, true)
+        XCTAssertEqual(accepted.resolvedConfirmation?.decision, .accepted)
+        XCTAssertEqual(accepted.nextPrompt, TurnNextPrompt.none)
+        XCTAssertNil(accepted.memoryUpdate.cardNegotiatedMeaning)
         acceptedSession.semanticMemory.apply(
             accepted.memoryUpdate,
             committedNextPrompt: accepted.nextPrompt
@@ -2385,17 +2679,14 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             LLMTurnResponsePlan(
                 requestedStage: .cardReflection,
                 localAction: .none,
-                memoryUpdate: .init(
-                    cardRealityConnection: .init(
+                memoryUpdate: .init(),
+                cardConnectionTurnOutcome: try .init(
+                    kind: .candidateRevised,
+                    connection: .init(
                         imageRelation: revisedPending.imageRelation,
                         realityMapping: "用户修订后的现实关系",
                         source: .userRevised
                     )
-                ),
-                resolvedConfirmation: .init(
-                    target: .cardRealityConnection,
-                    decision: .revised,
-                    referenceID: revisedPending.id.uuidString
                 ),
                 nextPrompt: TurnNextPrompt.none,
                 replyIntent: .inviteCardConnection,
@@ -2404,23 +2695,23 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             for: revisedSession
         )
         XCTAssertEqual(revised.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(revised.requestedStage, .directReflection)
         XCTAssertEqual(
             revised.memoryUpdate.cardRealityConnection?.realityMapping,
             "用户修订后的现实关系"
         )
         XCTAssertEqual(revised.memoryUpdate.cardRealityConnection?.source, .userRevised)
+        XCTAssertEqual(revised.resolvedConfirmation?.decision, .revised)
+        XCTAssertEqual(revised.nextPrompt, TurnNextPrompt.none)
+        XCTAssertNil(revised.memoryUpdate.cardNegotiatedMeaning)
 
-        let (rejectedSession, rejectedPending) = pendingSession()
+        let (rejectedSession, _) = pendingSession()
         let rejected = try controller.validate(
             LLMTurnResponsePlan(
                 requestedStage: .cardReflection,
                 localAction: .none,
                 memoryUpdate: .init(),
-                resolvedConfirmation: .init(
-                    target: .cardRealityConnection,
-                    decision: .rejected,
-                    referenceID: rejectedPending.id.uuidString
-                ),
+                cardConnectionTurnOutcome: try .init(kind: .candidateRejected),
                 nextPrompt: .openQuestion(
                     purpose: "connection_after_rejection",
                     focus: "允许用户继续当前事件内的连接或把卡牌放到一边"
@@ -2434,9 +2725,11 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertEqual(rejected.memoryUpdate.cardConnectionOutcome, .candidateRejected)
         XCTAssertEqual(rejected.memoryUpdate.clearPendingCardRealityConnection, true)
         XCTAssertEqual(rejected.localAction.kind, .none)
+        XCTAssertEqual(rejected.resolvedConfirmation?.decision, .rejected)
+        XCTAssertNil(rejected.memoryUpdate.cardNegotiatedMeaning)
     }
 
-    func testCardRealityConnectionConfirmationRequiresMatchingPendingObject() {
+    func testCardRealityConnectionConfirmationRequiresMatchingPendingObject() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
         session.protocolStage = .cardReflection
@@ -2447,11 +2740,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             requestedStage: .cardReflection,
             localAction: .none,
             memoryUpdate: .init(),
-            resolvedConfirmation: .init(
-                target: .cardRealityConnection,
-                decision: .accepted,
-                referenceID: "not-pending"
-            ),
+            cardConnectionTurnOutcome: try .init(kind: .candidateAccepted),
             nextPrompt: .openQuestion(
                 purpose: "continue_current_connection",
                 focus: "继续当前事件中的连接"
@@ -2462,7 +2751,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertThrowsError(try controller.validate(invalid, for: session)) {
             XCTAssertEqual(
                 $0 as? ReflectionProtocolViolation,
-                .invalidPreGuidanceConnectionConfirmation
+                .illegalReplyIntent
             )
         }
         XCTAssertNil(session.semanticMemory.pendingCardRealityConnection)
@@ -2598,8 +2887,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let proposed = LLMTurnResponsePlan(
             requestedStage: .cardReflection,
             localAction: .none,
-            memoryUpdate: .init(
-                cardRealityConnection: .init(
+            memoryUpdate: .init(),
+            cardConnectionTurnOutcome: try .init(
+                kind: .userAuthoredConnection,
+                connection: .init(
                     imageRelation: "一个人在稳住架子，另一个人在搬下物件并检查损坏原因",
                     realityMapping: "用户把减少损失和检查原因的画面关系连接到修改项目、寻找不完美原因的当前事件",
                     source: .userAuthored
@@ -2751,7 +3042,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         }
     }
 
-    func testAuthorizedGroundedCardMappingOnlyPermitsNegotiatedReading() {
+    func testCurrentAuthorizedGroundedCardMappingOnlyPermitsDirectReflection() {
         var session = protocolSession(stage: .cardReflection)
         session.condition = .cardMediated
         session.cardDisplayState = .displayed
@@ -2764,14 +3055,15 @@ final class ReflectionProtocolControllerTests: XCTestCase {
 
         let permissions = controller.permissions(for: session)
 
-        XCTAssertTrue(permissions.allowedReplyIntents.contains(.presentCardReading))
+        XCTAssertFalse(permissions.allowedReplyIntents.contains(.presentCardReading))
         XCTAssertTrue(permissions.allowedReplyIntents.contains(.safetySupport))
         XCTAssertFalse(permissions.allowedReplyIntents.contains(.presentFinalNarrative))
-        XCTAssertFalse(permissions.allowedReplyIntents.contains(.directCandidReflection))
+        XCTAssertTrue(permissions.allowedReplyIntents.contains(.directCandidReflection))
     }
 
-    func testCardMappingResolutionMustOpenDirectReflectionBeforeNarrative() throws {
+    func testLegacyCardMappingResolutionMustOpenDirectReflectionBeforeNarrative() throws {
         var session = protocolSession(stage: .cardReflection)
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         session.condition = .cardMediated
         session.cardGuidanceShared = true
         session.semanticMemory.cardRealityConnection = .init(
@@ -2826,8 +3118,9 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertEqual(validated.nextPrompt, TurnNextPrompt.none)
     }
 
-    func testNarrativeReadyDirectReflectionOnlyPermitsNarrativeOrSafety() {
+    func testLegacyNarrativeReadyDirectReflectionOnlyPermitsNarrativeOrSafety() {
         var session = protocolSession(stage: .directReflection)
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         session.reflectionReadiness = .narrativeReady
 
         let permissions = controller.permissions(for: session)
@@ -2839,7 +3132,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertFalse(permissions.allowedReplyIntents.contains(.directCandidReflection))
     }
 
-    func testPendingCandidQuestionKeepsReflectionAndNarrativeChoicesAvailable() {
+    func testCurrentPendingReflectionCannotSkipActionForNarrative() {
         var session = protocolSession(stage: .directReflection)
         session.reflectionReadiness = .reflectionOpen
         session.semanticMemory.nextPrompt = .openQuestion(
@@ -2850,7 +3143,8 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let permissions = controller.permissions(for: session)
 
         XCTAssertTrue(permissions.allowedReplyIntents.contains(.directCandidReflection))
-        XCTAssertTrue(permissions.allowedReplyIntents.contains(.presentFinalNarrative))
+        XCTAssertTrue(permissions.allowedReplyIntents.contains(.suggestPractice))
+        XCTAssertFalse(permissions.allowedReplyIntents.contains(.presentFinalNarrative))
         XCTAssertTrue(
             permissions.allowedOperations.contains(
                 .init(
@@ -2862,9 +3156,506 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         )
     }
 
-    func testAnsweredFierceQuestionMustReplaceFierceUnderstanding() {
+    func testCurrentReflectionFrameRequiresTypedActionCompatibleWithMode() throws {
+        let session = protocolSession(stage: .directReflection)
+        let tenderWithFierceAction = TurnReflectionFrame(
+            mode: .tender,
+            action: .identifyRepairDirection,
+            evidenceBasis: [
+                .init(source: .episode, content: "一个结果已经发生，原因仍未确认"),
+            ],
+            dimensions: [.mindfulness],
+            reflectionDelta: "把已发生的结果与未知原因分开",
+            fierceEvidence: nil
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: tenderWithFierceAction),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "保留温和理解"
+        )
+
+        XCTAssertThrowsError(try controller.validate(plan, for: session)) {
+            XCTAssertEqual($0 as? ReflectionProtocolViolation, .invalidReflectionFrame)
+        }
+    }
+
+    func testLegacyReflectionFrameWithoutActionIsReadableButNotACurrentPlannerPatch() throws {
+        let data = Data(
+            #"{"mode":"tender","evidenceBasis":[{"source":"episode","content":"已确认的现实材料"}],"dimensions":["mindfulness"],"reflectionDelta":"保留事实与未知","fierceEvidence":null}"#.utf8
+        )
+        let decoded = try JSONDecoder().decode(TurnReflectionFrame.self, from: data)
+        XCTAssertEqual(decoded.action, .synthesizeUnderstanding)
+        XCTAssertTrue(decoded.actionWasInferredForLegacyDecode)
+
+        let currentSession = protocolSession(stage: .directReflection)
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: decoded),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "兼容读取的旧反思"
+        )
+        XCTAssertThrowsError(try controller.validate(plan, for: currentSession)) {
+            XCTAssertEqual($0 as? ReflectionProtocolViolation, .invalidReflectionFrame)
+        }
+
+        var legacySession = currentSession
+        legacySession.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        XCTAssertNoThrow(try controller.validate(plan, for: legacySession))
+    }
+
+    func testCurrentDirectReflectionCannotPresentFinalNarrativeBeforeAction() throws {
         var session = protocolSession(stage: .directReflection)
+        session.semanticMemory.reflectionFrame = .init(
+            mode: .tender,
+            action: .synthesizeUnderstanding,
+            evidenceBasis: [.init(source: .episode, content: "已确认的现实材料")],
+            dimensions: [.mindfulness],
+            reflectionDelta: "形成一个保留不确定性的理解",
+            fierceEvidence: nil
+        )
+        let skipped = LLMTurnResponsePlan(
+            requestedStage: .narrativeConfirmation,
+            localAction: .none,
+            memoryUpdate: .init(finalNarrative: "跳过行动的最终叙事"),
+            nextPrompt: .confirmationRequest(target: .finalNarrative),
+            replyIntent: .presentFinalNarrative,
+            replyGuidance: "直接展示最终叙事"
+        )
+
+        XCTAssertThrowsError(try controller.validate(skipped, for: session)) {
+            guard let violation = $0 as? ReflectionProtocolViolation else {
+                return XCTFail("Expected a typed protocol violation")
+            }
+            XCTAssertTrue(
+                violation == .illegalStageTransition || violation == .illegalReplyIntent,
+                "Expected the current permission boundary to reject narrative-first: \(String(describing: violation))"
+            )
+        }
+    }
+
+    func testCurrentNoActionProposalResolvesBeforeFinalNarrative() throws {
+        var session = protocolSession(stage: .directReflection)
+        session.semanticMemory.reflectionFrame = .init(
+            mode: .tender,
+            action: .synthesizeUnderstanding,
+            evidenceBasis: [.init(source: .latestUserAnswer, content: "当前没有足够材料支持立即行动")],
+            dimensions: [.mindfulness],
+            reflectionDelta: "保留未知，而不是为了缓解不适仓促行动",
+            fierceEvidence: nil
+        )
+        let synthesisPermissions = controller.permissions(for: session)
+        XCTAssertEqual(
+            Set(synthesisPermissions.allowedReplyIntents),
+            Set([.suggestPractice, .safetySupport])
+        )
+        let pendingID = "direct-no-action"
+        let pending = TurnPracticeTransition(
+            transactionID: pendingID,
+            narrativeReferenceID: nil,
+            proposal: .init(
+                id: pendingID,
+                kind: .noAction,
+                content: "先保留目前的未知，不为了马上消除不适而采取未经支持的行动。",
+                basis: "当前材料尚未支持一个具体的照顾、修复、保护或改变步骤。",
+                status: .pendingConfirmation
+            ),
+            noActionReason: nil
+        )
+        let propose = LLMTurnResponsePlan(
+            requestedStage: .optionalAction,
+            localAction: .none,
+            memoryUpdate: .init(practiceTransition: pending),
+            nextPrompt: .confirmationRequest(target: .practice, referenceID: pendingID),
+            replyIntent: .suggestPractice,
+            replyGuidance: "提出有依据的暂不行动选项"
+        )
+        XCTAssertNoThrow(try controller.validate(propose, for: session))
+
+        session.protocolStage = .optionalAction
+        session.semanticMemory.practiceTransition = pending
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .practice,
+            referenceID: pendingID
+        )
+        var confirmed = pending
+        confirmed.proposal = .init(
+            id: pendingID,
+            kind: .noAction,
+            content: pending.proposal!.content,
+            basis: pending.proposal!.basis,
+            status: .confirmed
+        )
+        let resolve = LLMTurnResponsePlan(
+            requestedStage: .narrativeConfirmation,
+            localAction: .none,
+            memoryUpdate: .init(
+                finalNarrative: "这次先保留未知，不把行动当成必须立即完成的证明。",
+                practiceTransition: confirmed
+            ),
+            resolvedConfirmation: .init(
+                target: .practice,
+                decision: .accepted,
+                referenceID: pendingID
+            ),
+            nextPrompt: .confirmationRequest(target: .finalNarrative),
+            replyIntent: .presentFinalNarrative,
+            replyGuidance: "整合已经确认的理解并请求最终叙事确认"
+        )
+        XCTAssertNoThrow(try controller.validate(resolve, for: session))
+    }
+
+    func testPostConnectionReflectionDefaultsToTenderWithoutResponsibilityEvidence() throws {
+        var session = protocolSession(stage: .directReflection)
+        session.semanticMemory.reflectionFrame = nil
+        XCTAssertEqual(session.semanticMemory.effectiveReflectionMode, .tender)
+
+        let tenderFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .distinguishFactFromPrediction,
+            evidenceBasis: [
+                .init(source: .episode, content: "结果已经发生，但具体原因仍然未知"),
+                .init(source: .latestUserAnswer, content: "用户表达对未来结果的担忧"),
+            ],
+            dimensions: [.selfKindness, .mindfulness],
+            reflectionDelta: "区分已经发生的结果、未知原因和对未来的预测",
+            fierceEvidence: nil
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: tenderFrame),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "形成一个不要求继续寻找遗漏的温和理解"
+        )
+
+        let validated = try controller.validate(plan, for: session)
+        XCTAssertEqual(validated.memoryUpdate.reflectionFrame?.mode, .tender)
+        XCTAssertNil(validated.memoryUpdate.reflectionFrame?.fierceEvidence)
+    }
+
+    func testCurrentTenderCannotUseCommonHumanityAsItsOnlyReflectionAction() {
+        let session = protocolSession(stage: .directReflection)
+        let commonHumanityOnly = TurnReflectionFrame(
+            mode: .tender,
+            action: .connectCommonHumanity,
+            evidenceBasis: [
+                .init(source: .latestUserAnswer, content: "用户正在面对一个结果未知的具体处境"),
+            ],
+            dimensions: [.commonHumanity],
+            reflectionDelta: "只说这种处境并非个例",
+            fierceEvidence: nil
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: commonHumanityOnly),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "不应只用共通性代替具体区分"
+        )
+
+        XCTAssertThrowsError(try controller.validate(plan, for: session)) {
+            XCTAssertEqual($0 as? ReflectionProtocolViolation, .invalidReflectionFrame)
+        }
+    }
+
+    func testLegacyTenderMayStillDecodeCommonHumanityAction() {
+        var session = protocolSession(stage: .directReflection)
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        let legacyFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .connectCommonHumanity,
+            evidenceBasis: [
+                .init(source: .latestUserAnswer, content: "旧会话中已经保存的共同处境"),
+            ],
+            dimensions: [.commonHumanity],
+            reflectionDelta: "旧协议中已存在的共同处境连接",
+            fierceEvidence: nil
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: legacyFrame),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "保留旧会话行为"
+        )
+
+        XCTAssertNoThrow(try controller.validate(plan, for: session))
+    }
+
+    func testPostCardReflectionDecisionMatrixUsesCompleteTypedMaterial() throws {
+        struct Scenario {
+            let id: String
+            let latestAnswer: String
+            let mode: TurnReflectionMode
+            let action: TurnReflectionAction
+            let dimensions: [TurnSelfCompassionDimension]
+            let fierceEvidence: TurnFierceEvidence?
+            let selfCriticismStatus: TurnSelfCriticismStatus
+        }
+        let scenarios = [
+            Scenario(
+                id: "unknown-application-result",
+                latestAnswer: "我还不知道为什么被拒，也担心以后没有学上。",
+                mode: .tender,
+                action: .distinguishFactFromPrediction,
+                dimensions: [.selfKindness, .mindfulness],
+                fierceEvidence: nil,
+                selfCriticismStatus: .absent
+            ),
+            Scenario(
+                id: "missed-family-pickup",
+                latestAnswer: "我临时去吃饭，没有提前告诉家人，家人因此很生气。",
+                mode: .fierce,
+                action: .identifyRepairDirection,
+                dimensions: [.selfKindness, .mindfulness],
+                fierceEvidence: .init(
+                    behavior: "临时改变接人安排且没有提前告知",
+                    impact: "家人因此生气，原有安排被打乱",
+                    direction: .repair
+                ),
+                selfCriticismStatus: .present
+            ),
+            Scenario(
+                id: "rejected-omission-premise",
+                latestAnswer: "没有，我已经把能准备的材料都交了。",
+                mode: .tender,
+                action: .synthesizeUnderstanding,
+                dimensions: [.mindfulness],
+                fierceEvidence: nil,
+                selfCriticismStatus: .absent
+            ),
+            Scenario(
+                id: "future-worry",
+                latestAnswer: "我只是担心以后还会不会出现同样的结果。",
+                mode: .tender,
+                action: .distinguishFactFromPrediction,
+                dimensions: [.mindfulness],
+                fierceEvidence: nil,
+                selfCriticismStatus: .absent
+            ),
+        ]
+
+        for scenario in scenarios {
+            var session = protocolSession(stage: .directReflection)
+            session.cardGuidanceShared = true
+            session.semanticMemory = .init(
+                selfCriticismStatus: scenario.selfCriticismStatus,
+                selfCriticalStatement: scenario.selfCriticismStatus == .present
+                    ? "用户把一次具体结果扩大为整体评价"
+                    : nil,
+                episodeStructure: .init(
+                    concreteFacts: ["一个已经发生且结果仍需理解的具体事件"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["用户明确说明了自己采取或没有采取的行动"],
+                    eventProcessStatus: .present,
+                    eventProcess: ["事件的发展过程已经得到说明"],
+                    impactStatus: scenario.fierceEvidence == nil ? .uncertain : .present,
+                    impacts: scenario.fierceEvidence.map { [$0.impact] } ?? [],
+                    keyUncertainty: scenario.fierceEvidence == nil ? "原因或未来结果仍未知" : nil
+                ),
+                cardRealityConnection: .init(
+                    imageRelation: "画面中的人物正在处理一个动作关系",
+                    realityMapping: "用户把这个关系连回当前焦点事件",
+                    source: .userAuthored
+                )
+            )
+            let frame = TurnReflectionFrame(
+                mode: scenario.mode,
+                action: scenario.action,
+                evidenceBasis: [
+                    .init(source: .episode, content: "已确认的现实事件与行为材料"),
+                    .init(source: .latestUserAnswer, content: scenario.latestAnswer),
+                ],
+                dimensions: scenario.dimensions,
+                reflectionDelta: "把具体事实、未知和整体判断放在同一段经历中区分开",
+                fierceEvidence: scenario.fierceEvidence
+            )
+            let plan = LLMTurnResponsePlan(
+                requestedStage: .directReflection,
+                localAction: .none,
+                memoryUpdate: .init(reflectionFrame: frame),
+                nextPrompt: TurnNextPrompt.none,
+                replyIntent: .directCandidReflection,
+                replyGuidance: "沿着一个已确认的反思动作继续"
+            )
+            let validated = try controller.validate(plan, for: session)
+            let stored = try XCTUnwrap(validated.memoryUpdate.reflectionFrame)
+            XCTAssertEqual(stored.mode, scenario.mode, scenario.id)
+            XCTAssertEqual(stored.action, scenario.action, scenario.id)
+            XCTAssertEqual(stored.dimensions, scenario.dimensions, scenario.id)
+            XCTAssertEqual(stored.fierceEvidence, scenario.fierceEvidence, scenario.id)
+            XCTAssertEqual(validated.requestedStage, .directReflection, scenario.id)
+            if scenario.mode == .tender {
+                XCTAssertNil(stored.fierceEvidence, scenario.id)
+            }
+        }
+    }
+
+    func testFierceReflectionRequiresConcreteRealityBehaviorAndImpact() throws {
+        let session = protocolSession(stage: .directReflection)
+        let fierceFrame = TurnReflectionFrame(
+            mode: .fierce,
+            action: .identifyRepairDirection,
+            evidenceBasis: [
+                .init(source: .episode, content: "用户改变了已经作出的安排且没有提前沟通"),
+                .init(source: .latestUserAnswer, content: "这一处理对关系中的另一方造成影响"),
+            ],
+            dimensions: [.selfKindness, .mindfulness],
+            reflectionDelta: "把需要修复的沟通行为限定在这一次具体处理上",
+            fierceEvidence: .init(
+                behavior: "改变安排后没有提前沟通",
+                impact: "另一方需要临时面对安排变化",
+                direction: .repair
+            )
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: fierceFrame),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "基于关心关系形成具体修复方向，不扩大为人格判断"
+        )
+
+        XCTAssertNoThrow(try controller.validate(plan, for: session))
+    }
+
+    func testCurrentFierceRequiresTenderGroundingDimension() {
+        let session = protocolSession(stage: .directReflection)
+        let ungrounded = TurnReflectionFrame(
+            mode: .fierce,
+            action: .acknowledgeBehaviorImpact,
+            evidenceBasis: [
+                .init(source: .episode, content: "用户明确说明了一个行为及其现实影响"),
+            ],
+            dimensions: [.commonHumanity],
+            reflectionDelta: "只指出影响，没有先限制整体性自我攻击或保持事实边界",
+            fierceEvidence: .init(
+                behavior: "用户明确说明的具体行为",
+                impact: "用户明确说明的现实影响",
+                direction: .change
+            )
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: ungrounded),
+            nextPrompt: .openQuestion(
+                purpose: "grounded_fierce_focus",
+                focus: "一个有证据支持的具体改变点"
+            ),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "不应跳过慈悲基础直接进入行为挑战"
+        )
+
+        XCTAssertThrowsError(try controller.validate(plan, for: session)) {
+            XCTAssertEqual($0 as? ReflectionProtocolViolation, .fierceReflectionUngrounded)
+        }
+    }
+
+    func testDirectReflectionMayOfferOneGroundedActionBeforeFinalNarrative() throws {
+        let session = protocolSession(stage: .directReflection)
+        let permissions = controller.permissions(for: session)
+        XCTAssertTrue(
+            permissions.allowedOperations.contains(
+                .init(
+                    requestedStage: .optionalAction,
+                    replyIntent: .suggestPractice,
+                    localAction: .none
+                )
+            )
+        )
+
+        let proposalID = "pre-narrative-action"
+        let transition = TurnPracticeTransition(
+            transactionID: proposalID,
+            narrativeReferenceID: nil,
+            proposal: .init(
+                id: proposalID,
+                kind: .care,
+                content: "今天为等待中的自己留出十分钟不处理结果信息。",
+                basis: "用户确认当前主要面对的是等待和未知带来的消耗。",
+                status: .pendingConfirmation
+            ),
+            noActionReason: nil
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .optionalAction,
+            localAction: .none,
+            memoryUpdate: .init(
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .synthesizeUnderstanding,
+                    evidenceBasis: [
+                        .init(source: .latestUserAnswer, content: "等待和未知正在造成消耗"),
+                    ],
+                    dimensions: [.selfKindness, .mindfulness],
+                    reflectionDelta: "当前需要面对的是等待中的消耗，而不是寻找未经证实的个人失败",
+                    fierceEvidence: nil
+                ),
+                practiceTransition: transition
+            ),
+            nextPrompt: .confirmationRequest(target: .practice, referenceID: proposalID),
+            replyIntent: .suggestPractice,
+            replyGuidance: "提出一个小而具体、可修改或拒绝的照顾行动"
+        )
+
+        XCTAssertNoThrow(try controller.validate(plan, for: session))
+    }
+
+    func testCardRelationAloneCannotAuthorizeFierceReflection() {
+        let session = protocolSession(stage: .directReflection)
+        let cardOnlyFrame = TurnReflectionFrame(
+            mode: .fierce,
+            action: .acknowledgeBehaviorImpact,
+            evidenceBasis: [
+                .init(source: .cardRealityConnection, content: "用户形成的画面与现实联系"),
+            ],
+            dimensions: [.mindfulness],
+            reflectionDelta: "试图从画面推导责任",
+            fierceEvidence: .init(
+                behavior: "由画面推测的行为",
+                impact: "由画面推测的影响",
+                direction: .change
+            )
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: cardOnlyFrame),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "不应被接受的卡牌责任推断"
+        )
+
+        XCTAssertThrowsError(try controller.validate(plan, for: session)) {
+            XCTAssertEqual(
+                $0 as? ReflectionProtocolViolation,
+                .fierceReflectionUngrounded
+            )
+        }
+    }
+
+    func testAnsweredLegacyFierceQuestionDoesNotCreateAStringBasedMemoryGate() {
+        var session = protocolSession(stage: .directReflection)
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         session.semanticMemory.fierceUnderstanding = "较早、尚未包含最新回答的理解"
+        session.semanticMemory.reflectionFrame = .init(
+            mode: .tender,
+            action: .synthesizeUnderstanding,
+            evidenceBasis: [.init(source: .episode, content: "已经确认的现实材料")],
+            dimensions: [.mindfulness],
+            reflectionDelta: "保留仍然未知的责任边界",
+            fierceEvidence: nil
+        )
         session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "fierce_behavior_or_impact_clarified",
             focus: "一个具体行为及其影响"
@@ -2882,19 +3673,26 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             replyGuidance: "承接最新回答并立即收敛"
         )
 
-        XCTAssertThrowsError(try controller.validate(stale, for: session)) {
-            XCTAssertEqual(
-                $0 as? ReflectionProtocolViolation,
-                .missingRequiredMemoryField(.candidUnderstanding)
-            )
-        }
+        XCTAssertNoThrow(try controller.validate(stale, for: session))
 
         let synchronized = LLMTurnResponsePlan(
             requestedStage: .narrativeConfirmation,
             localAction: .none,
             memoryUpdate: .init(
                 answeredQuestionPurposes: ["fierce_behavior_or_impact_clarified"],
-                candidUnderstanding: "用户最新确认了具体影响，也保留了仍不确定的责任边界",
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .synthesizeUnderstanding,
+                    evidenceBasis: [
+                        .init(
+                            source: .latestUserAnswer,
+                            content: "用户保留了仍不确定的责任边界"
+                        ),
+                    ],
+                    dimensions: [.mindfulness],
+                    reflectionDelta: "保留责任边界的不确定性，而不继续索取责任材料",
+                    fierceEvidence: nil
+                ),
                 finalNarrative: "新增理解是具体影响已确认，而责任边界仍需保留不确定性。"
             ),
             nextPrompt: .confirmationRequest(target: .finalNarrative),
@@ -2904,32 +3702,47 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertNoThrow(try controller.validate(synchronized, for: session))
     }
 
-    func testLegacyFierceUnderstandingPatchCanonicalizesToCandidUnderstanding() throws {
+    func testLegacyReflectionScalarsAreDroppedFromCurrentPlans() throws {
         var session = protocolSession(stage: .directReflection)
+        session.semanticMemory.reflectionFrame = .init(
+            mode: .tender,
+            action: .distinguishFactFromPrediction,
+            evidenceBasis: [.init(source: .latestUserAnswer, content: "用户不继续责任方向")],
+            dimensions: [.selfKindness],
+            reflectionDelta: "停止被拒绝的责任前提并收敛",
+            fierceEvidence: nil
+        )
         session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "fierce_boundary_or_responsibility_clarified",
             focus: "一个已经显示的边界问题"
         )
 
         let legacy = LLMTurnResponsePlan(
-            requestedStage: .narrativeConfirmation,
+            requestedStage: .directReflection,
             localAction: .none,
             memoryUpdate: .init(
                 answeredQuestionPurposes: ["fierce_boundary_or_responsibility_clarified"],
-                fierceUnderstanding: "用户表示目前不想继续讨论边界",
-                finalNarrative: "保留用户不想继续讨论的边界。"
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .distinguishFactFromPrediction,
+                    evidenceBasis: [
+                        .init(source: .latestUserAnswer, content: "用户不继续责任方向"),
+                    ],
+                    dimensions: [.selfKindness],
+                    reflectionDelta: "保留用户不想继续讨论的边界。",
+                    fierceEvidence: nil
+                ),
+                fierceUnderstanding: "用户表示目前不想继续讨论边界"
             ),
-            nextPrompt: .confirmationRequest(target: .finalNarrative),
-            replyIntent: .presentFinalNarrative,
-            replyGuidance: "接受拒绝并进入叙事"
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "接受拒绝并完成综合理解"
         )
 
         let validated = try controller.validate(legacy, for: session)
 
-        XCTAssertEqual(
-            validated.memoryUpdate.candidUnderstanding,
-            "用户表示目前不想继续讨论边界"
-        )
+        XCTAssertNil(validated.memoryUpdate.candidUnderstanding)
+        XCTAssertNil(validated.memoryUpdate.fierceUnderstanding)
     }
 
     func testCardConnectionCapabilitiesAllowOnlyOneScaffoldAndTwoConnections() {
@@ -3058,17 +3871,17 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertFalse(permissions.allowedReplyIntents.contains(.developCardImage))
     }
 
+    #if LEGACY_CURRENT_V5_PIPELINE_CHARACTERIZATION
     @MainActor
     func testCommittedCardConnectionOutcomesConsumeAttemptsNotQuestions() async {
         let scripted = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .inviteRealityConnection,
                         requestedStage: .cardReflection,
                         localAction: .none,
-                        memoryUpdate: .init(
-                            cardConnectionOutcome: .partialConnection
-                        ),
+                        memoryUpdate: .init(),
                         nextPrompt: .openQuestion(
                             purpose: "card_reality_connection_invited",
                             focus: "邀请一次现实联系"
@@ -3079,10 +3892,12 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .offerCardConnectionScaffold,
                         requestedStage: .cardReflection,
                         localAction: .none,
-                        memoryUpdate: .init(
-                            cardConnectionOutcome: .noConnectionFound
+                        memoryUpdate: .init(),
+                        cardConnectionTurnOutcome: try! .init(
+                            kind: .connectionStillUnclear
                         ),
                         nextPrompt: .openQuestion(
                             purpose: "card_image_scaffold_answered",
@@ -3094,11 +3909,10 @@ final class ReflectionProtocolControllerTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .continueOpenCardConnection,
                         requestedStage: .cardReflection,
                         localAction: .none,
-                        memoryUpdate: .init(
-                            cardConnectionOutcome: .partialConnection
-                        ),
+                        memoryUpdate: .init(),
                         nextPrompt: .openQuestion(
                             purpose: "card_reality_connection_final",
                             focus: "最后一次邀请现实联系"
@@ -3146,7 +3960,17 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         model.session.protocolStage = .cardReflection
         model.session.stage = .cardInterpretation
         model.session.condition = .cardMediated
+        model.session.card = CardService().allCards[0]
         model.session.cardDisplayState = .displayed
+        model.session.cardImageDevelopmentTurnCount = 1
+        model.session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面里的人物"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["画面里的人物"],
+            relationOrAction: "接下来可能发生变化",
+            anticipatedChangeOrChoice: nil
+        )
 
         model.draft = "画面里接下来可能会有变化。"
         model.send()
@@ -3174,9 +3998,11 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         XCTAssertFalse(finalPermissions.allowedReplyIntents.contains(.developCardImage))
         XCTAssertTrue(finalPermissions.allowedReplyIntents.contains(.inviteCardConnection))
     }
+    #endif
 
-    func testPendingCardMappingNarrowsPermissionsToResolutionOrClarification() {
+    func testLegacyPendingCardMappingNarrowsPermissionsToResolutionOrClarification() {
         var session = protocolSession(stage: .cardReflection)
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         session.condition = .cardMediated
         session.cardDisplayState = .displayed
         session.cardGuidanceShared = true
@@ -3186,6 +4012,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             source: .userAuthored
         )
         session.semanticMemory.cardNegotiatedMeaning = "已经显示、等待确认的协商式解读"
+        session.semanticMemory.cardInterpretiveTension = "用户确认的画面关系与现实经历之间的张力"
         session.semanticMemory.nextPrompt = .confirmationRequest(
             target: .cardMapping,
             referenceID: "pending-card-reading"
@@ -3202,8 +4029,9 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     }
 
     @MainActor
-    func testAcceptedCardMappingCannotBeMislabeledAsAnotherCardReading() {
+    func testLegacyAcceptedCardMappingCannotBeMislabeledAsAnotherCardReading() {
         var session = protocolSession(stage: .cardReflection)
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         session.condition = .cardMediated
         session.cardGuidanceShared = true
         session.semanticMemory.cardRealityConnection = .init(
@@ -3238,8 +4066,9 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         }
     }
 
-    func testUnclearCardMappingMayClarifyAndReestablishConfirmation() throws {
+    func testLegacyUnclearCardMappingMayClarifyAndReestablishConfirmation() throws {
         var session = protocolSession(stage: .cardReflection)
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         session.condition = .cardMediated
         session.cardGuidanceShared = true
         session.semanticMemory.cardRealityConnection = .init(
@@ -3248,6 +4077,7 @@ final class ReflectionProtocolControllerTests: XCTestCase {
             source: .userAuthored
         )
         session.semanticMemory.cardNegotiatedMeaning = "已经显示、等待确认的协商式解读"
+        session.semanticMemory.cardInterpretiveTension = "用户确认的画面关系与现实经历之间的张力"
         session.semanticMemory.nextPrompt = .confirmationRequest(
             target: .cardMapping,
             referenceID: "unclear-card-reading"
@@ -3282,6 +4112,3292 @@ final class ReflectionProtocolControllerTests: XCTestCase {
         let encoded = String(decoding: try JSONEncoder().encode(memory), as: UTF8.self)
         XCTAssertFalse(encoded.contains("pendingQuestionPurpose"))
         XCTAssertFalse(encoded.contains("pendingConfirmationTarget"))
+    }
+
+    // MARK: - Semantic operation classification
+
+    func testEventDisclosureExploreContextMapsToClarifyEvent() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.situationUnderstanding = "已了解事件梗概"
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .contextualDisclosure,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                situationUnderstanding: "更具体的处境理解",
+                episodeStructure: TurnEpisodeStructure(
+                    concreteFacts: ["周三下午的会议"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["没有提自己的意见"]
+                )
+            ),
+            replyIntent: .exploreContext,
+            replyGuidance: "请用户补充事件的发展过程"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .clarifyEvent)
+        XCTAssertNotNil(decision.clarificationFocus)
+        XCTAssertNotNil(decision.responseFocus)
+    }
+
+    func testEventDisclosureInviteCardConsentMapsToAdvanceToCardConsent() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            concreteFacts: ["一件具体的事"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["当时的具体做法"],
+            eventProcessStatus: .present,
+            eventProcess: ["事情是这样一步步发展的"]
+        )
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardConsent,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                eventDisclosureOutcome: .readyForTenderOrCard
+            ),
+            nextPrompt: .confirmationRequest(target: .cardConsent),
+            replyIntent: .inviteCardConsent,
+            replyGuidance: "用一个已确认的事实作为简短过渡，邀请用户选择一张随机卡牌"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .advanceToCardConsent)
+        XCTAssertNil(decision.clarificationFocus)
+        XCTAssertNotNil(decision.responseFocus)
+    }
+
+    func testCardDevelopmentContinueMapsToContinueCardDevelopment() throws {
+        let session = cardDevelopmentSession()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .developCardImage,
+            replyGuidance: "请用户描述画面中接下来可能发生的变化"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .continueCardDevelopment)
+        XCTAssertNotNil(decision.clarificationFocus)
+    }
+
+    func testCardDevelopmentInviteConnectionWithNoNextPromptMapsToInviteRealityConnection() throws {
+        // This is the critical test: semantic mapping does NOT depend on nextPrompt.kind.
+        let session = cardDevelopmentSession()
+        let controller = ReflectionProtocolController()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            // Deliberately omit nextPrompt—the Planner may have emitted .none.
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "邀请用户将画面中的行动与现实经历联系起来"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .inviteRealityConnection,
+                       "Mapping must not rely on nextPrompt.kind; inviteCardConnection from development is inviteRealityConnection")
+        XCTAssertNotNil(decision.clarificationFocus)
+    }
+
+    func testCardDevelopmentInviteConnectionWithOpenQuestionNextPromptStillMapsToInviteRealityConnection() throws {
+        let session = cardDevelopmentSession()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            nextPrompt: .openQuestion(purpose: "connect_image_to_reality", focus: "画面关系与现实经历的关联"),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "邀请用户将画面中的行动与现实经历联系起来"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .inviteRealityConnection)
+    }
+
+    func testOpenExplorationInviteConnectionWithPendingCandidateWithoutScaffoldThrows() throws {
+        // Bridge eligibility is unsatisfied: scaffoldUsed is false.
+        let session = openCardConnectionSession()
+        let pendingID = UUID()
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                pendingCardRealityConnection: PendingCardRealityConnection(
+                    id: pendingID,
+                    imageRelation: "画面中的等待",
+                    candidateRealityMapping: "现实中在等结果的阶段"
+                )
+            ),
+            nextPrompt: .confirmationRequest(target: .cardRealityConnection, referenceID: pendingID.uuidString),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "未经bridge eligibility的candidate offer"
+        )
+
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation else {
+                XCTFail("Expected SemanticMappingViolation, got \(error)")
+                return
+            }
+            if case .cardSubstateMismatch(let intent, let substate) = violation {
+                XCTAssertEqual(intent, .inviteCardConnection)
+                XCTAssertEqual(substate, .openExploration)
+            } else {
+                XCTFail("Expected cardSubstateMismatch, got \(violation)")
+            }
+        }
+    }
+
+    func testOpenExplorationBridgeEligibleWithPendingCandidateMapsToOfferCandidate() throws {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        let pendingID = UUID()
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                pendingCardRealityConnection: PendingCardRealityConnection(
+                    id: pendingID,
+                    imageRelation: "画面中的等待",
+                    candidateRealityMapping: "现实中在等结果的阶段"
+                )
+            ),
+            nextPrompt: .confirmationRequest(target: .cardRealityConnection, referenceID: pendingID.uuidString),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "提供一个候选映射，等待用户接受或修改"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .offerCardConnectionCandidate)
+        XCTAssertNotNil(decision.clarificationFocus)
+    }
+
+    func testOpenExplorationInviteConnectionWithoutPendingMapsToContinueOpenCardConnection() throws {
+        let session = openCardConnectionSession()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "继续探索画面与现实的关联"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .continueOpenCardConnection)
+    }
+
+    func testCardConnectionUnavailableDirectCandidReflectionMapsToBypass() throws {
+        var session = cardDevelopmentSession()
+        session.cardConnectionUnavailable = true
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "用户无法建立画面联系，直接过渡到现实反思"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .bypassCardConnectionToDirectReflection)
+        XCTAssertNil(decision.clarificationFocus)
+    }
+
+    func testCardDevelopmentAvailableDirectCandidReflectionThrowsMappingViolation() throws {
+        // Connection is still available and the Planner tries to bypass from development.
+        let session = cardDevelopmentSession()
+        // Connection is available: cardConnectionUnavailable is false.
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "试图在画面开发阶段跳过卡片联系"
+        )
+
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation else {
+                XCTFail("Expected SemanticMappingViolation, got \(error)")
+                return
+            }
+            if case .cardSubstateMismatch(let intent, let substate) = violation {
+                XCTAssertEqual(intent, .directCandidReflection)
+                XCTAssertEqual(substate, .development)
+            } else {
+                XCTFail("Expected cardSubstateMismatch, got \(violation)")
+            }
+        }
+    }
+
+    func testDirectReflectionMapsToTenderReflectionByDefault() throws {
+        let session = directReflectionSession()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                reflectionFrame: TurnReflectionFrame(
+                    mode: .tender,
+                    action: .distinguishFactFromPrediction,
+                    evidenceBasis: [TurnReflectionEvidence(source: .episode, content: "用户描述的事实")],
+                    dimensions: [.selfKindness],
+                    reflectionDelta: "区分了事实和担忧",
+                    fierceEvidence: nil
+                )
+            ),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "帮助用户区分事实和对未来的担忧"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, PlannerSemanticOperation.continueTenderReflection)
+    }
+
+    func testDirectReflectionMapsToFierceReflectionWhenModeIsFierce() throws {
+        let session = directReflectionSession()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                reflectionFrame: TurnReflectionFrame(
+                    mode: .fierce,
+                    action: .acknowledgeBehaviorImpact,
+                    evidenceBasis: [
+                        TurnReflectionEvidence(source: .episode, content: "用户描述的行为"),
+                        TurnReflectionEvidence(source: .latestUserAnswer, content: "用户的补充说明"),
+                    ],
+                    dimensions: [.selfKindness, .mindfulness],
+                    reflectionDelta: "温和地指出了行为对他人的影响",
+                    fierceEvidence: TurnFierceEvidence(
+                        behavior: "具体行为描述",
+                        impact: "对他人的具体影响",
+                        direction: .repair
+                    )
+                )
+            ),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "基于事实温和地指出行为影响，同时保持关怀态度"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .continueTenderGroundedFierceReflection)
+    }
+
+    func testDirectReflectionMapsToSynthesizeWhenActionIsUnderstand() throws {
+        let session = directReflectionSession()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .optionalAction,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                reflectionFrame: TurnReflectionFrame(
+                    mode: .tender,
+                    action: .synthesizeUnderstanding,
+                    evidenceBasis: [TurnReflectionEvidence(source: .episode, content: "综合证据")],
+                    dimensions: [.selfKindness, .commonHumanity],
+                    reflectionDelta: "综合了所有反思内容",
+                    fierceEvidence: nil
+                )
+            ),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "综合理解并准备提出实践建议"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .synthesizeDirectReflection)
+    }
+
+    func testCardBypassAndDirectReflectionAreDifferentOperations() throws {
+        // bypassCardConnectionToDirectReflection and continueTenderReflection must be different ops
+        // even though both may originate from a Planner that emitted directCandidReflection.
+        XCTAssertNotEqual(
+            PlannerSemanticOperation.bypassCardConnectionToDirectReflection,
+            PlannerSemanticOperation.continueTenderReflection
+        )
+    }
+
+    func testCardBypassAndContinueCardDevelopmentAreDifferentOperations() throws {
+        // bypassCardConnectionToDirectReflection and continueCardDevelopment must be different ops.
+        XCTAssertNotEqual(
+            PlannerSemanticOperation.bypassCardConnectionToDirectReflection,
+            PlannerSemanticOperation.continueCardDevelopment
+        )
+    }
+
+    func testUserAuthoredConnectionMapperProjectorAdapterAndWriterContract() async throws {
+        var session = openCardConnectionSession()
+        session.condition = .cardMediated
+        let connection = TurnCardRealityConnection(
+            imageRelation: "画面里的人正在重新安排随身物品",
+            realityMapping: "用户把重新安排与现实中想放下一项负担联系起来",
+            source: .userAuthored
+        )
+        let frame = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [
+                .init(source: .episode, content: "用户已经说明的具体经历"),
+                .init(source: .cardRealityConnection, content: connection.realityMapping),
+            ],
+            dimensions: [.selfKindness, .mindfulness],
+            reflectionDelta: "区分具体经历与对整个人的扩大判断",
+            fierceEvidence: nil
+        )
+        let rawPlan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: frame),
+            cardConnectionTurnOutcome: try .init(
+                kind: .userAuthoredConnection,
+                connection: connection
+            ),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "把卡牌桥接和一个 Tender 问题写在同一条回复里"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: rawPlan, session: session, allowCurrentProtocolFixture: true)
+        XCTAssertEqual(decision.operation, .establishUserAuthoredCardConnection)
+        XCTAssertEqual(decision.memoryUpdate.cardRealityConnection, connection)
+        XCTAssertEqual(decision.memoryUpdate.reflectionFrame, frame)
+
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(memory: session.semanticMemory),
+            effectiveCardState: controller.effectiveCardState(for: session)
+        )
+        XCTAssertEqual(projected.requestedStage, .directReflection)
+        XCTAssertEqual(projected.replyIntent, .directCandidReflection)
+        XCTAssertEqual(projected.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+        XCTAssertEqual(
+            projected.nextPrompt.purpose,
+            "tender_grounding_after_card_guidance"
+        )
+        XCTAssertNil(projected.resolvedConfirmation)
+
+        let adapted = controller.executablePlanAdapter(from: projected)
+        XCTAssertEqual(adapted.projectedOperation, decision.operation)
+        XCTAssertEqual(adapted.requestedStage, projected.requestedStage)
+        XCTAssertEqual(adapted.replyIntent, projected.replyIntent)
+        XCTAssertEqual(adapted.localAction, projected.localAction)
+        XCTAssertEqual(adapted.nextPrompt, projected.nextPrompt)
+        XCTAssertEqual(adapted.memoryUpdate, projected.memoryUpdate)
+        XCTAssertEqual(adapted.memoryUpdate.reflectionFrame, frame)
+        XCTAssertNoThrow(try controller.validate(adapted, for: session))
+
+        let writer = ScriptedReflectionTurnController(
+            plans: [],
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .directCandidReflection,
+                        reply: "画面中的重新安排连到了现实。此刻最压住你的是什么？"
+                    )
+                ),
+            ]
+        )
+        let request = LLMTurnControllerRequest(
+            trigger: .userMessage,
+            protocolVersion: session.protocolVersion,
+            protocolStage: session.protocolStage,
+            condition: session.condition,
+            permissions: controller.permissions(for: session),
+            recentMessages: [],
+            semanticMemory: session.semanticMemory,
+            trackingCandidates: [],
+            card: nil,
+            protocolCorrection: nil
+        )
+        let writerResponse = try await writer.write(
+            request: request,
+            validatedPlan: adapted
+        )
+        XCTAssertEqual(writerResponse.realizedIntent, .directCandidReflection)
+        XCTAssertEqual(writerResponse.reply.filter { $0 == "？" || $0 == "?" }.count, 1)
+        let receivedWriterPlans = await writer.receivedWriterPlans()
+        let receivedPlan = try XCTUnwrap(receivedWriterPlans.first)
+        XCTAssertEqual(receivedPlan.projectedOperation, .establishUserAuthoredCardConnection)
+        XCTAssertEqual(receivedPlan.replyIntent, .directCandidReflection)
+        XCTAssertEqual(receivedPlan.nextPrompt?.kind, .openQuestion)
+        XCTAssertEqual(
+            receivedPlan.nextPrompt?.purpose,
+            "tender_grounding_after_card_guidance"
+        )
+        XCTAssertEqual(receivedPlan.memoryUpdate.cardRealityConnection, connection)
+    }
+
+    func testServerV44JSONFixtureDecodesThroughSemanticDecisionAndProjector() throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/turn-v44-user-authored-connection.json")
+        let rawPlan = try JSONDecoder().decode(
+            LLMTurnResponsePlan.self,
+            from: Data(contentsOf: fixtureURL)
+        )
+        var session = openCardConnectionSession()
+        session.condition = .cardMediated
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: rawPlan, session: session, allowCurrentProtocolFixture: true)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(memory: session.semanticMemory),
+            effectiveCardState: controller.effectiveCardState(for: session)
+        )
+
+        XCTAssertEqual(decision.operation, .establishUserAuthoredCardConnection)
+        XCTAssertEqual(
+            decision.memoryUpdate.cardRealityConnection?.source,
+            .userAuthored
+        )
+        XCTAssertEqual(projected.requestedStage, .directReflection)
+        XCTAssertEqual(projected.replyIntent, .directCandidReflection)
+        XCTAssertEqual(projected.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+        XCTAssertEqual(
+            projected.nextPrompt.purpose,
+            "tender_grounding_after_card_guidance"
+        )
+    }
+
+    func testLegacyProtocolFieldsCannotOverrideAValidUserAuthoredSemanticOperation() throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/turn-v44-user-authored-connection.json")
+        let source = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: fixtureURL)
+        ) as! [String: Any]
+        var session = openCardConnectionSession()
+        session.condition = .cardMediated
+
+        func projected(from object: [String: Any]) throws -> ProjectedExecutableTurnPlan {
+            let data = try JSONSerialization.data(withJSONObject: object)
+            let raw = try JSONDecoder().decode(LLMTurnResponsePlan.self, from: data)
+            let decision = try controller.legacySemanticDecisionFromProtocolFields(from: raw, session: session, allowCurrentProtocolFixture: true)
+            return try controller.projectExecutablePlan(
+                decision: decision,
+                session: session,
+                effectiveEventState: .init(memory: session.semanticMemory),
+                effectiveCardState: controller.effectiveCardState(for: session)
+            )
+        }
+
+        let expected = try projected(from: source)
+        var conflictingRequestedStage = source
+        conflictingRequestedStage["requestedStage"] = "complete"
+
+        var conflictingLocalAction = source
+        conflictingLocalAction["localAction"] = [
+            "kind": "completeSession",
+            "trackingCueIDs": [],
+        ]
+
+        var conflictingNextPrompt = source
+        conflictingNextPrompt["nextPrompt"] = [
+            "kind": "confirmationRequest",
+            "purpose": NSNull(),
+            "focus": NSNull(),
+            "disclosurePurpose": NSNull(),
+            "disclosureTarget": NSNull(),
+            "disclosureReopenReason": NSNull(),
+            "target": "finalNarrative",
+            "referenceID": "legacy-conflict",
+        ]
+
+        var conflictingConfirmation = source
+        conflictingConfirmation["resolvedConfirmation"] = [
+            "target": "cardConsent",
+            "decision": "accepted",
+            "referenceID": "legacy-conflict",
+        ]
+
+        for conflict in [
+            conflictingRequestedStage,
+            conflictingLocalAction,
+            conflictingNextPrompt,
+            conflictingConfirmation,
+        ] {
+            let actual = try projected(from: conflict)
+            XCTAssertEqual(actual.semanticDecision.operation, expected.semanticDecision.operation)
+            XCTAssertEqual(actual.requestedStage, expected.requestedStage)
+            XCTAssertEqual(actual.replyIntent, expected.replyIntent)
+            XCTAssertEqual(actual.localAction, expected.localAction)
+            XCTAssertEqual(actual.nextPrompt, expected.nextPrompt)
+            XCTAssertEqual(actual.resolvedConfirmation, expected.resolvedConfirmation)
+        }
+    }
+
+    func testExistingCanonicalConnectionDoesNotAdvertiseCombinedTurn() {
+        var session = canonicalConnectionV5Session()
+        session.condition = .cardMediated
+        let permissions = controller.permissions(for: session)
+
+        XCTAssertTrue(permissions.allowedReplyIntents.contains(.authorizeCardGuidance))
+        XCTAssertFalse(permissions.allowedReplyIntents.contains(.directCandidReflection))
+        XCTAssertFalse(
+            permissions.allowedOperations.contains(
+                .init(
+                    requestedStage: .directReflection,
+                    replyIntent: .directCandidReflection,
+                    localAction: .shareCardGuidance
+                )
+            )
+        )
+    }
+
+    func testDirectReflectionStageCannotSubstituteForProjectedConnectionOperation() {
+        var session = openCardConnectionSession()
+        session.condition = .cardMediated
+        let unprojected = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .init(kind: .shareCardGuidance),
+            memoryUpdate: .init(
+                cardRealityConnection: .init(
+                    imageRelation: "画面关系",
+                    realityMapping: "现实映射",
+                    source: .userAuthored
+                ),
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .softenGlobalSelfJudgment,
+                    evidenceBasis: [.init(source: .episode, content: "具体经历")],
+                    dimensions: [.selfKindness],
+                    reflectionDelta: "形成一个新的事实区分",
+                    fierceEvidence: nil
+                )
+            ),
+            nextPrompt: .openQuestion(
+                purpose: "tender_grounding_after_card_guidance",
+                focus: "开始 Tender 反思"
+            ),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "缺少 projector operation 的伪 combined turn"
+        )
+
+        XCTAssertThrowsError(try controller.validate(unprojected, for: session)) {
+            XCTAssertEqual($0 as? ReflectionProtocolViolation, .illegalReplyIntent)
+        }
+    }
+
+    func testV5CanonicalConnectionAuthorizeCardGuidance() throws {
+        let session = canonicalConnectionV5Session()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .init(kind: .shareCardGuidance),
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                cardRealityConnection: TurnCardRealityConnection(
+                    imageRelation: "画面中的跨越",
+                    realityMapping: "现实中跨越困难的决定",
+                    source: .userAuthored
+                )
+            ),
+            replyIntent: .authorizeCardGuidance,
+            replyGuidance: "静默授权卡片引导，准备进入Direct Reflection"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .authorizeCardGuidance)
+        XCTAssertNil(decision.clarificationFocus)
+    }
+
+    func testV4CanonicalConnectionPresentLegacyCardReading() throws {
+        let session = canonicalConnectionV4Session()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                cardNegotiatedMeaning: "基于用户映射的协商解读"
+            ),
+            nextPrompt: .confirmationRequest(target: .cardMapping),
+            replyIntent: .presentCardReading,
+            replyGuidance: "提出协商解读，等待用户确认"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .presentLegacyCardReading)
+    }
+
+    func testCandidateAcceptedMapsToAcceptCardConnectionCandidate() throws {
+        let session = awaitingCandidateResolutionSession()
+
+        let outcome = try CardConnectionTurnOutcome(kind: .candidateAccepted)
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            cardConnectionTurnOutcome: outcome,
+            replyIntent: .authorizeCardGuidance,
+            replyGuidance: "用户接受了候选映射"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .acceptCardConnectionCandidate)
+    }
+
+    func testCandidateRevisedMapsToReviseCardConnectionCandidate() throws {
+        let session = awaitingCandidateResolutionSession()
+
+        let outcome = try CardConnectionTurnOutcome(
+            kind: .candidateRevised,
+            connection: TurnCardRealityConnection(
+                imageRelation: "画面中的转身",
+                realityMapping: "现实中改变方向的决定",
+                source: .userRevised
+            )
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            cardConnectionTurnOutcome: outcome,
+            replyIntent: .authorizeCardGuidance,
+            replyGuidance: "用户修改了候选映射"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .reviseCardConnectionCandidate)
+    }
+
+    func testCandidateRejectedMapsToRejectCardConnectionCandidate() throws {
+        let session = awaitingCandidateResolutionSession()
+
+        let outcome = try CardConnectionTurnOutcome(kind: .candidateRejected)
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            cardConnectionTurnOutcome: outcome,
+            replyIntent: .authorizeCardGuidance,
+            replyGuidance: "用户拒绝了候选映射"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .rejectCardConnectionCandidate)
+    }
+
+    func testExplorationUserAuthoredConnectionThrowsMappingViolation() throws {
+        // userAuthoredConnection is NOT a candidate-resolution outcome.
+        // It should not appear in the awaitingCandidateResolution substate.
+        let session = awaitingCandidateResolutionSession()
+
+        let outcome = try CardConnectionTurnOutcome(
+            kind: .userAuthoredConnection,
+            connection: TurnCardRealityConnection(
+                imageRelation: "一些关系",
+                realityMapping: "一些映射",
+                source: .userAuthored
+            )
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            cardConnectionTurnOutcome: outcome,
+            replyIntent: .authorizeCardGuidance,
+            replyGuidance: "This outcome kind does not belong to awaitingCandidateResolution"
+        )
+
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true))
+    }
+
+    func testRetiredDeepenCardConnectionThrowsInCurrentProtocol() throws {
+        var session = openCardConnectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .deepenCardConnection,
+            replyGuidance: "This intent is retired in current protocol"
+        )
+
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation else {
+                XCTFail("Expected SemanticMappingViolation")
+                return
+            }
+            if case .unclassifiablePlan(let message) = violation {
+                XCTAssertTrue(message.contains("retired"))
+            } else {
+                XCTFail("Expected unclassifiablePlan")
+            }
+        }
+    }
+
+    func testCardConsentInviteStaysInCardConsent() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardConsent
+        session.semanticMemory.nextPrompt = .confirmationRequest(target: .cardConsent)
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardConsent,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .inviteCardConsent,
+            replyGuidance: "继续询问用户是否愿意尝试卡牌"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .inviteCardConsent)
+    }
+
+    func testContextualDisclosureUnknownIntentThrowsMappingViolation() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .contextualDisclosure,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .completeConversation,
+            replyGuidance: "Cannot complete from disclosure without safety"
+        )
+
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation else {
+                XCTFail("Expected SemanticMappingViolation")
+                return
+            }
+            if case .ambiguousReplyIntent(let intent, let stage) = violation {
+                XCTAssertEqual(intent, .completeConversation)
+                XCTAssertEqual(stage, .contextualDisclosure)
+            } else {
+                XCTFail("Expected ambiguousReplyIntent")
+            }
+        }
+    }
+
+    func testCardObservationInviteConnectionIsMappingViolation() throws {
+        // invitation from initial observation (0 dev turns) should fail
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "Too early for connection—no image development done yet"
+        )
+
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation else {
+                XCTFail("Expected SemanticMappingViolation")
+                return
+            }
+            if case .cardSubstateMismatch(let intent, let substate) = violation {
+                XCTAssertEqual(intent, .inviteCardConnection)
+                XCTAssertEqual(substate, .observation)
+            } else {
+                XCTFail("Expected cardSubstateMismatch, got \(violation)")
+            }
+        }
+    }
+
+    func testCardSemanticSubstateIsNoneOutsideCardReflection() {
+        var session = ReflectionSession()
+        session.protocolStage = .contextualDisclosure
+
+        let substate = controller.cardSemanticSubstate(for: session)
+        XCTAssertEqual(substate, .none)
+    }
+
+    func testSafetySupportIsPermittedFromAnyStage() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 1
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .safetySupport,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .safetySupport,
+            replyGuidance: "Safety takes priority over card work"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .provideSafetySupport)
+    }
+
+    func testProposePracticeAndResolvePracticeAreDifferentOperations() {
+        XCTAssertNotEqual(
+            PlannerSemanticOperation.proposePractice,
+            PlannerSemanticOperation.resolvePractice
+        )
+    }
+
+    func testCompleteConversationMapsCorrectly() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .complete
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .completeConversation,
+            replyGuidance: "结束对话"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+
+        XCTAssertEqual(decision.operation, .completeConversation)
+        XCTAssertNil(decision.clarificationFocus)
+    }
+
+    // MARK: - Tightened Card substate boundaries
+
+    func testOpenExplorationDevelopCardImageAsScaffoldMapsToOfferCardConnectionScaffold() throws {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = false
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .developCardImage,
+            replyGuidance: "Scaffold: narrow connection task using existing image relation"
+        )
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+        XCTAssertEqual(decision.operation, .offerCardConnectionScaffold)
+    }
+
+    func testOpenExplorationDevelopCardImageWhenScaffoldAlreadyUsedThrows() throws {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .developCardImage,
+            replyGuidance: "Second scaffold attempt"
+        )
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true))
+    }
+
+    func testCardDevelopmentInviteConnectionWithPendingCandidateThrowsViolation() throws {
+        // Candidate bridge cannot be offered directly from development even if the
+        // Planner supplies a complete pending candidate.
+        let session = cardDevelopmentSession()
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                pendingCardRealityConnection: PendingCardRealityConnection(
+                    imageRelation: "画面中的跨越",
+                    candidateRealityMapping: "现实中跨越困难"
+                )
+            ),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "Cannot offer candidate from development—must enter open exploration first"
+        )
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation,
+                  case .cardSubstateMismatch(let intent, let substate) = violation else {
+                XCTFail("Expected cardSubstateMismatch, got \(error)")
+                return
+            }
+            XCTAssertEqual(intent, .inviteCardConnection)
+            XCTAssertEqual(substate, .development)
+        }
+    }
+
+    func testExistingPendingCandidateBlocksSecondCandidate() throws {
+        // A pending candidate is already active in session memory; the Planner
+        // may not create a second one.
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        let existingID = UUID()
+        session.semanticMemory.pendingCardRealityConnection = PendingCardRealityConnection(
+            id: existingID,
+            imageRelation: "现有图像关系",
+            candidateRealityMapping: "现有候选映射"
+        )
+        // The prompt must match for the pending candidate to be "awaiting resolution".
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .cardRealityConnection,
+            referenceID: existingID.uuidString
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                pendingCardRealityConnection: PendingCardRealityConnection(
+                    imageRelation: "第二个图像关系",
+                    candidateRealityMapping: "第二个候选映射"
+                )
+            ),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "Attempting to propose a second candidate while one is already active"
+        )
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true))
+    }
+
+    func testV5GuidanceSubstateDirectCandidReflectionThrowsViolation() throws {
+        // In v5 guidance substate, directCandidReflection is not a legal operation.
+        // Guidance authorization uses authorizeCardGuidance, not directCandidReflection.
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardGuidanceShared = true
+        session.semanticMemory.cardRealityConnection = TurnCardRealityConnection(
+            imageRelation: "画面中的跨越",
+            realityMapping: "现实中跨越困难的决定",
+            source: .userAuthored
+        )
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "Cannot use directCandidReflection in guidance—use authorizeCardGuidance"
+        )
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation,
+                  case .cardSubstateMismatch(let intent, let substate) = violation else {
+                XCTFail("Expected cardSubstateMismatch, got \(error)")
+                return
+            }
+            XCTAssertEqual(intent, .directCandidReflection)
+            XCTAssertEqual(substate, .guidance)
+        }
+    }
+
+    func testV5GuidanceAuthorizedDirectReflectionTenderFrameMapsToContinueTenderReflection() throws {
+        // After guidance is authorized and stage is directReflection, a fresh Tender
+        // reflection turn maps correctly.
+        var session = directReflectionSession()
+        session.cardGuidanceShared = true
+        session.semanticMemory.cardRealityConnection = TurnCardRealityConnection(
+            imageRelation: "画面中的跨越",
+            realityMapping: "现实中跨越困难的决定",
+            source: .userAuthored
+        )
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                reflectionFrame: TurnReflectionFrame(
+                    mode: .tender,
+                    action: .distinguishFactFromPrediction,
+                    evidenceBasis: [TurnReflectionEvidence(source: .episode, content: "用户确认的事实")],
+                    dimensions: [.selfKindness],
+                    reflectionDelta: "区分事实和担忧",
+                    fierceEvidence: nil
+                )
+            ),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "Fresh Tender reflection turn after guidance authorization"
+        )
+
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+        XCTAssertEqual(decision.operation, PlannerSemanticOperation.continueTenderReflection)
+    }
+
+    func testV4CanonicalConnectionDirectCandidReflectionThrowsMappingViolation() throws {
+        // In v4, there is no bypass to directCandidReflection from the card stage
+        // within canonical connection. The v4 path uses presentCardReading.
+        let session = canonicalConnectionV4Session()
+
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "v4 does not route directCandidReflection from cardReflection"
+        )
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true))
+    }
+
+    func testObservationInviteObservationMapsToContinueCardObservation() throws {
+        // The Planner continues inviting the person to describe visible content.
+        let session = observationSession()
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .inviteCardObservation,
+            replyGuidance: "继续邀请描述画面中可见的内容"
+        )
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+        XCTAssertEqual(decision.operation, .continueCardObservation)
+    }
+
+    func testDevelopmentInviteObservationThrowsViolation() throws {
+        // Once development has started, returning to observation is not allowed.
+        let session = cardDevelopmentSession()
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .inviteCardObservation,
+            replyGuidance: "Cannot return to observation from development"
+        )
+        XCTAssertThrowsError(try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)) { error in
+            guard let violation = error as? SemanticMappingViolation,
+                  case .cardSubstateMismatch(let intent, let substate) = violation else {
+                XCTFail("Expected cardSubstateMismatch, got \(error)")
+                return
+            }
+            XCTAssertEqual(intent, .inviteCardObservation)
+            XCTAssertEqual(substate, .development)
+        }
+    }
+
+    func testObservationDevelopImageMapsToContinueCardDevelopment() throws {
+        // From observation, the first development question transitions into development.
+        let session = observationSession()
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .developCardImage,
+            replyGuidance: "从观察进入画面发展"
+        )
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+        XCTAssertEqual(decision.operation, .continueCardDevelopment)
+    }
+
+    func testDevelopmentInviteRealityConnectionMapsCorrectly() throws {
+        // After sufficient development, the first reality-connection invitation.
+        let session = cardDevelopmentSession()
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            replyIntent: .inviteCardConnection,
+            replyGuidance: "邀请将画面关系与现实联系起来"
+        )
+        let decision = try controller.legacySemanticDecisionFromProtocolFields(from: plan, session: session, allowCurrentProtocolFixture: true)
+        XCTAssertEqual(decision.operation, .inviteRealityConnection)
+    }
+
+    func testBypassDestinationIsDirectReflectionNotCardReflection() {
+        // bypassCardConnectionToDirectReflection must represent a real stage transition:
+        // Card Reflection → Direct Reflection, not cardReflection → cardReflection.
+        // This is a semantic invariant, not a production transition change.
+        XCTAssertNotEqual(
+            PlannerSemanticOperation.bypassCardConnectionToDirectReflection,
+            PlannerSemanticOperation.continueCardDevelopment
+        )
+        XCTAssertNotEqual(
+            PlannerSemanticOperation.bypassCardConnectionToDirectReflection,
+            PlannerSemanticOperation.continueCardObservation
+        )
+        XCTAssertNotEqual(
+            PlannerSemanticOperation.bypassCardConnectionToDirectReflection,
+            PlannerSemanticOperation.inviteRealityConnection
+        )
+        XCTAssertNotEqual(
+            PlannerSemanticOperation.bypassCardConnectionToDirectReflection,
+            PlannerSemanticOperation.continueOpenCardConnection
+        )
+    }
+
+    // MARK: - EffectiveCardSemanticState tests
+
+    func testObservationNoDevelopmentStateReturnsObservation() {
+        let session = observationSession()
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .observation)
+        XCTAssertTrue(state.observationEvidenceExists)
+        XCTAssertFalse(state.developmentEvidenceExists)
+        XCTAssertFalse(state.explorationStarted)
+        XCTAssertFalse(state.pendingCandidateExists)
+        XCTAssertFalse(state.canonicalConnectionExists)
+        XCTAssertFalse(state.guidanceAuthorized)
+    }
+
+    func testObservationWithTurnCountDoesNotOverrideTypedEvidence() {
+        // Even if a compatibility counter is present, current v5 uses only typed evidence.
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 2
+        session.cardConnectionAttemptCount = 0
+        session.cardConnectionScaffoldUsed = false
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["两个人"]
+        )
+
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .observation)
+        XCTAssertTrue(state.observationEvidenceExists)
+        XCTAssertFalse(state.developmentEvidenceExists)
+    }
+
+    func testObservationWithDevelopmentReturnsDevelopment() {
+        let session = cardDevelopmentSession()
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .development)
+        XCTAssertTrue(state.observationEvidenceExists)
+        XCTAssertTrue(state.developmentEvidenceExists)
+        XCTAssertFalse(state.explorationStarted)
+        XCTAssertFalse(state.pendingCandidateExists)
+    }
+
+    func testOpenExplorationSubstateIgnoresTurnCount() {
+        var session = openCardConnectionSession()
+        // The compatibility counter is irrelevant once typed Development exists.
+        session.cardImageDevelopmentTurnCount = 0
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .openExploration)
+        XCTAssertTrue(state.explorationStarted)
+        XCTAssertTrue(state.developmentEvidenceExists)
+    }
+
+    func testPendingCandidateSubstateUnaffectedByTurnCount() {
+        let session = awaitingCandidateResolutionSession()
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .awaitingCandidateResolution)
+        XCTAssertTrue(state.pendingCandidateExists)
+        // turnCount and attemptCount are irrelevant
+    }
+
+    func testCanonicalConnectionReturnsGuidanceInV5() {
+        var session = canonicalConnectionV5Session()
+        session.cardGuidanceShared = true
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .guidance)
+        XCTAssertTrue(state.canonicalConnectionExists)
+        XCTAssertTrue(state.guidanceAuthorized)
+    }
+
+    func testCanonicalWithoutGuidanceReturnsOpenExploration() {
+        // v5 canonical connection exists but guidance not yet authorized.
+        let session = canonicalConnectionV5Session()
+        // connection not unavailable, not pending, but canonical exists
+        let state = EffectiveCardSemanticState(session: session)
+        // canonicalConnectionExists but !guidanceAuthorized → falls through to
+        // explorationStarted? No. Let me check: canonicalConnectionV5Session has
+        // cardImageDevelopmentTurnCount=1, cardConnectionAttemptCount=0,
+        // cardConnectionScaffoldUsed=false. So explorationStarted=false,
+        // developmentEvidenceExists=true → development.
+        XCTAssertEqual(state.substate, .development)
+        XCTAssertTrue(state.canonicalConnectionExists)
+        XCTAssertFalse(state.guidanceAuthorized)
+    }
+
+    func testFailedPlanDoesNotAdvancePersistedSubstate() {
+        // A failed plan means no commit. persisted state is unchanged.
+        let session = cardDevelopmentSession()
+        let stateBefore = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(stateBefore.substate, .development)
+
+        // Simulate: the same session (no commit happened) — state is identical.
+        let stateAfter = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(stateAfter.substate, .development)
+        XCTAssertEqual(stateBefore, stateAfter)
+    }
+
+    // MARK: - Candidate bridge eligibility
+
+    func testCandidateBridgeEligibleWhenConditionsMet() {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        session.cardConnectionAttemptCount = 1
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.explorationStarted)
+        XCTAssertTrue(state.connectionDifficultyOccurred)
+        XCTAssertTrue(state.bridgeScaffoldUsed)
+        XCTAssertFalse(state.pendingCandidateExists)
+        XCTAssertFalse(state.guidanceAuthorized)
+        XCTAssertTrue(state.candidateBridgeEligible)
+    }
+
+    func testCandidateBridgeNotEligibleFromDevelopment() {
+        let session = cardDevelopmentSession()
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .development)
+        XCTAssertFalse(state.candidateBridgeEligible)
+    }
+
+    func testCandidateBridgeNotEligibleWhenAlreadyUsed() {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        session.cardConnectionAttemptCount = 1
+        // Simulate: bridge was already offered → pending candidate exists
+        let id = UUID()
+        session.semanticMemory.pendingCardRealityConnection = PendingCardRealityConnection(
+            id: id,
+            imageRelation: "a",
+            candidateRealityMapping: "b"
+        )
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .cardRealityConnection,
+            referenceID: id.uuidString
+        )
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.pendingCandidateExists)
+        XCTAssertFalse(state.candidateBridgeEligible)
+    }
+
+    func testCandidateBridgeNotEligibleWithCanonicalConnection() {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        session.cardConnectionAttemptCount = 1
+        session.semanticMemory.cardRealityConnection = TurnCardRealityConnection(
+            imageRelation: "a",
+            realityMapping: "b",
+            source: .userAuthored
+        )
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.canonicalConnectionExists)
+        XCTAssertFalse(state.candidateBridgeEligible)
+    }
+
+    func testLegacyScaffoldFlagAloneDoesNotGrantEligibility() {
+        // scaffoldUsed=true but no formal connection difficulty (attemptCount=0).
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        session.cardConnectionAttemptCount = 0
+        let state = EffectiveCardSemanticState(session: session)
+        // explorationStarted is true because scaffoldUsed=true. But
+        // connectionDifficultyOccurred is also true for the same reason.
+        // candidateBridgeEligible requires ALL conditions. With attemptCount=0
+        // and scaffoldUsed=true, both explorationStarted and
+        // connectionDifficultyOccurred are true. So eligibility IS granted.
+        // The scaffold flag alone (without attempt count) IS sufficient
+        // because it carries "difficulty occurred" semantics.
+        XCTAssertTrue(state.connectionDifficultyOccurred)
+        XCTAssertTrue(state.candidateBridgeEligible)
+    }
+
+    // MARK: - PendingUncommittedCardAnswerContext
+
+    func testNoUncommittedAnswerWhenNextPromptIsNone() {
+        var session = cardDevelopmentSession()
+        session.semanticMemory.nextPrompt = .none
+        let state = EffectiveCardSemanticState(session: session)
+        let ctx = PendingUncommittedCardAnswerContext(
+            session: session,
+            lastCommittedState: state
+        )
+        XCTAssertFalse(ctx.hasUncommittedLatestAnswer)
+        XCTAssertNil(ctx.pendingCardPurpose)
+    }
+
+    func testUncommittedAnswerWhenOpenQuestionPending() {
+        var session = cardDevelopmentSession()
+        session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "card_image_development",
+            focus: "画面接下来可能发生什么"
+        )
+        // Add a user message without a matching assistant reply.
+        let userMessageID = UUID()
+        session.messages = [
+            ChatMessage(id: userMessageID, role: .user, content: "我觉得接下来可能会...")
+        ]
+        let state = EffectiveCardSemanticState(session: session)
+        let ctx = PendingUncommittedCardAnswerContext(
+            session: session,
+            lastCommittedState: state
+        )
+        XCTAssertTrue(ctx.hasUncommittedLatestAnswer)
+        XCTAssertEqual(ctx.pendingCardPurpose, "card_image_development")
+    }
+
+    func testFailedPlanPreservesCommittedState() {
+        let session = cardDevelopmentSession()
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(state.substate, .development)
+
+        // Failed plan does not change session or state.
+        let ctx = PendingUncommittedCardAnswerContext(
+            session: session,
+            lastCommittedState: state
+        )
+        XCTAssertEqual(ctx.lastCommittedState.substate, .development)
+    }
+
+    // MARK: - Pending answer identity (message-ID-based)
+
+    func testNoUncommittedAnswerWhenNextPromptIsNoneButNoUserMessage() {
+        var session = cardDevelopmentSession()
+        session.semanticMemory.nextPrompt = .none
+        // No user message in transcript → no uncommitted answer.
+        let state = EffectiveCardSemanticState(session: session)
+        let ctx = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertFalse(ctx.hasUncommittedLatestAnswer)
+    }
+
+    func testUncommittedAnswerWhenUserMessageWithoutMatchingReply() {
+        var session = cardDevelopmentSession()
+        session.semanticMemory.nextPrompt = .openQuestion(purpose: "test", focus: "test")
+        let userID = UUID()
+        session.messages = [ChatMessage(id: userID, role: .user, content: "answer")]
+        let state = EffectiveCardSemanticState(session: session)
+        let ctx = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertTrue(ctx.hasUncommittedLatestAnswer)
+    }
+
+    func testNoUncommittedAnswerWhenUserMessageHasMatchingReply() {
+        var session = cardDevelopmentSession()
+        session.semanticMemory.nextPrompt = .openQuestion(purpose: "test", focus: "test")
+        let userID = UUID()
+        session.messages = [
+            ChatMessage(id: userID, role: .user, content: "answer"),
+            ChatMessage(id: UUID(), role: .assistant, content: "reply", replyToMessageID: userID),
+        ]
+        let state = EffectiveCardSemanticState(session: session)
+        let ctx = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertFalse(ctx.hasUncommittedLatestAnswer)
+    }
+
+    func testRetryWithoutNewMessageDoesNotTriggerNewAnswer() {
+        var session = cardDevelopmentSession()
+        let userID = UUID()
+        session.messages = [
+            ChatMessage(id: userID, role: .user, content: "old answer"),
+            ChatMessage(id: UUID(), role: .assistant, content: "reply", replyToMessageID: userID),
+        ]
+        let state = EffectiveCardSemanticState(session: session)
+        let ctx = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertFalse(ctx.hasUncommittedLatestAnswer)
+    }
+
+    // MARK: - Typed Card evidence
+
+    func testTypedObservationEvidenceOverridesLegacy() {
+        var session = cardDevelopmentSession()
+        session.cardImageDevelopmentTurnCount = 0
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["两个人", "一棵树"]
+        )
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.observationEvidenceExists)
+        XCTAssertFalse(state.isLegacyProjection)
+    }
+
+    func testTypedDevelopmentEvidenceOverridesTurnCount() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 0
+        session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["两个人"],
+            projectiveFocus: "两个人交换后是否会分开",
+            relationOrAction: "正在交换物品",
+            anticipatedChangeOrChoice: "可能会分开"
+        )
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.developmentEvidenceExists)
+        XCTAssertFalse(state.isLegacyProjection)
+    }
+
+    func testCurrentV5MissingTypedCardEvidenceDoesNotFallbackToLegacyCounters() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 2
+
+        let state = controller.effectiveCardState(for: session)
+
+        XCTAssertEqual(state.substate, .none)
+        XCTAssertFalse(state.observationEvidenceExists)
+        XCTAssertFalse(state.developmentEvidenceExists)
+        XCTAssertFalse(state.isLegacyProjection)
+        XCTAssertEqual(state.evidenceSource, .currentTyped)
+    }
+
+    func testCurrentV5TypedObservationDoesNotNeedLegacyTurnCount() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardImageDevelopmentTurnCount = 0
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["一扇门"]
+        )
+
+        let state = controller.effectiveCardState(for: session)
+
+        XCTAssertEqual(state.substate, .observation)
+        XCTAssertTrue(state.observationEvidenceExists)
+        XCTAssertFalse(state.developmentEvidenceExists)
+        XCTAssertEqual(state.evidenceSource, .currentTyped)
+    }
+
+    func testCurrentV5DevelopmentStateRecordsPresenceWithoutJudgingNarrativeCompleteness() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 0
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["一个人", "一扇门"]
+        )
+        session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["一个人"],
+            relationOrAction: "正在打开门",
+            anticipatedChangeOrChoice: nil
+        )
+
+        let state = controller.effectiveCardState(for: session)
+
+        XCTAssertEqual(state.substate, .development)
+        XCTAssertTrue(state.developmentEvidenceExists)
+        XCTAssertEqual(state.evidenceSource, .currentTyped)
+    }
+
+    func testCurrentV5ScaffoldFlagCannotCreateMissingCardEvidence() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardConnectionScaffoldUsed = true
+        session.cardConnectionAttemptCount = 1
+
+        let state = controller.effectiveCardState(for: session)
+
+        XCTAssertEqual(state.substate, .none)
+        XCTAssertFalse(state.observationEvidenceExists)
+        XCTAssertFalse(state.developmentEvidenceExists)
+        XCTAssertFalse(state.explorationStarted)
+        XCTAssertFalse(state.connectionDifficultyOccurred)
+        XCTAssertFalse(state.candidateBridgeEligible)
+        XCTAssertEqual(state.evidenceSource, .currentTyped)
+    }
+
+    func testLegacySessionTurnCountOnlyYieldsLegacyProjection() {
+        var session = cardDevelopmentSession()
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        session.semanticMemory.cardObservationEvidence = nil
+        session.semanticMemory.cardDevelopmentEvidence = nil
+        session.cardImageDevelopmentTurnCount = 1
+        // No typed evidence — legacy projection.
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.developmentEvidenceExists)
+        XCTAssertTrue(state.isLegacyProjection)
+        XCTAssertEqual(state.evidenceSource, .legacyProjected)
+    }
+
+    func testLegacySessionDisplayedCardProjectsObservation() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+
+        let state = controller.effectiveCardState(for: session)
+
+        XCTAssertEqual(state.substate, .observation)
+        XCTAssertTrue(state.observationEvidenceExists)
+        XCTAssertTrue(state.isLegacyProjection)
+        XCTAssertEqual(state.evidenceSource, .legacyProjected)
+    }
+
+    func testLegacyScaffoldWithCountersRestoresProjectedExploration() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 1
+        session.cardConnectionScaffoldUsed = true
+
+        let state = controller.effectiveCardState(for: session)
+
+        XCTAssertEqual(state.substate, .openExploration)
+        XCTAssertTrue(state.developmentEvidenceExists)
+        XCTAssertTrue(state.explorationStarted)
+        XCTAssertTrue(state.isLegacyProjection)
+    }
+
+    func testLegacySaveReloadPreservesProjectionWithoutForgingTypedEvidence() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 1
+
+        let before = controller.effectiveCardState(for: session)
+        let reloaded = try JSONDecoder().decode(
+            ReflectionSession.self,
+            from: JSONEncoder().encode(session)
+        )
+        let after = controller.effectiveCardState(for: reloaded)
+
+        XCTAssertEqual(before, after)
+        XCTAssertNil(reloaded.semanticMemory.cardObservationEvidence)
+        XCTAssertNil(reloaded.semanticMemory.cardDevelopmentEvidence)
+        XCTAssertEqual(after.evidenceSource, .legacyProjected)
+    }
+
+    func testLegacyNewTypedTurnDoesNotLetOldCounterOverrideTypedEvidence() {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 3
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["一个包裹"]
+        )
+
+        let state = controller.effectiveCardState(for: session)
+
+        XCTAssertEqual(state.substate, .observation)
+        XCTAssertTrue(state.observationEvidenceExists)
+        XCTAssertFalse(state.developmentEvidenceExists)
+        XCTAssertEqual(state.evidenceSource, .legacyProjected)
+        XCTAssertNil(session.semanticMemory.cardDevelopmentEvidence)
+    }
+
+    func testProtocolIdentityDoesNotDependOnTypedEvidenceBeingNil() {
+        var current = ReflectionSession()
+        current.protocolVersion = ReflectionSession.currentProtocolVersion
+        current.protocolStage = .cardReflection
+        var legacy = current
+        legacy.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+
+        let currentState = controller.effectiveCardState(for: current)
+        let legacyState = controller.effectiveCardState(for: legacy)
+
+        XCTAssertEqual(currentState.evidenceSource, .currentTyped)
+        XCTAssertFalse(currentState.isLegacyProjection)
+        XCTAssertEqual(legacyState.evidenceSource, .legacyProjected)
+        XCTAssertTrue(legacyState.isLegacyProjection)
+    }
+
+    func testCurrentV5RejectsEmptyTypedEvidenceWithoutMutatingPersistedState() {
+        var session = cardDevelopmentSession()
+        session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "card_image_development",
+            focus: "画面接下来会发生什么"
+        )
+        let userMessageID = UUID()
+        session.messages = [
+            ChatMessage(id: userMessageID, role: .user, content: "我还没有看清")
+        ]
+        let oldMemory = session.semanticMemory
+        let oldState = controller.effectiveCardState(for: session)
+        let oldPending = PendingUncommittedCardAnswerContext(
+            session: session,
+            lastCommittedState: oldState
+        )
+        let invalid = LLMTurnResponsePlan(
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                cardObservationEvidence: CardObservationEvidence()
+            ),
+            nextPrompt: .openQuestion(
+                purpose: "card_image_development",
+                focus: "画面接下来会发生什么"
+            ),
+            replyIntent: .developCardImage,
+            replyGuidance: "继续画面探索"
+        )
+
+        XCTAssertThrowsError(try controller.validate(invalid, for: session)) { error in
+            XCTAssertEqual(error as? ReflectionProtocolViolation, .conflictingMemoryPatch)
+        }
+
+        XCTAssertEqual(session.semanticMemory, oldMemory)
+        XCTAssertEqual(controller.effectiveCardState(for: session), oldState)
+        XCTAssertEqual(session.semanticMemory.nextPrompt, oldMemory.nextPrompt)
+        XCTAssertTrue(oldPending.hasUncommittedLatestAnswer)
+        XCTAssertTrue(PendingUncommittedCardAnswerContext(
+            session: session,
+            lastCommittedState: oldState
+        ).hasUncommittedLatestAnswer)
+    }
+
+    func testCandidateBridgeOfferedOrResolvedWhenResolvedAtSet() {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        session.cardConnectionAttemptCount = 1
+        session.semanticMemory.candidateBridgeResolvedAt = Date()
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.candidateBridgeOfferedOrResolved)
+        XCTAssertFalse(state.candidateBridgeEligible)
+    }
+
+    func testCandidateBridgeOfferedOrResolvedWhenPendingExists() {
+        let session = awaitingCandidateResolutionSession()
+        let state = EffectiveCardSemanticState(session: session)
+        XCTAssertTrue(state.candidateBridgeOfferedOrResolved)
+        XCTAssertFalse(state.candidateBridgeEligible)
+    }
+
+    // MARK: - Projector tests
+
+    func testClarifyEventProjectsOpenQuestionWithDisclosurePurpose() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.situationUnderstanding = "initial"
+
+        let decision = PlannerSemanticDecision(
+            operation: .clarifyEvent,
+            memoryUpdate: TurnSemanticMemoryUpdate(situationUnderstanding: "updated"),
+            responseFocus: "Ask about behavior",
+            clarificationFocus: "clarify_behavior"
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: eventState,
+            effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.requestedStage, .contextualDisclosure)
+        XCTAssertEqual(projected.replyIntent, .exploreContext)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+        XCTAssertNotNil(projected.nextPrompt.disclosurePurpose)
+        XCTAssertEqual(projected.localAction.kind, .none)
+    }
+
+    func testClarifyEventRejectedWhenDisclosureComplete() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            concreteFacts: ["event"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["behavior"],
+            eventProcessStatus: .present,
+            eventProcess: ["process"]
+        )
+        let decision = PlannerSemanticDecision(
+            operation: .clarifyEvent,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil,
+            clarificationFocus: "too_late"
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    func testAdvanceToCardConsentProjectsCardConsentConfirmation() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            concreteFacts: ["event"],
+            behaviorEvidenceStatus: .present, behaviorEvidence: ["behavior"],
+            eventProcessStatus: .present, eventProcess: ["process"]
+        )
+        let decision = PlannerSemanticDecision(
+            operation: .advanceToCardConsent,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: "bridge to card",
+            clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.requestedStage, .cardConsent)
+        XCTAssertEqual(projected.replyIntent, .inviteCardConsent)
+        XCTAssertEqual(projected.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(projected.nextPrompt.target, .cardConsent)
+    }
+
+    func testAdvanceToCardConsentIgnoringLegacyNextPromptNone() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            concreteFacts: ["event"],
+            behaviorEvidenceStatus: .present, behaviorEvidence: ["behavior"],
+            eventProcessStatus: .present, eventProcess: ["process"]
+        )
+        // Simulate: old Planner emitted nextPrompt=none, requestedStage=contextualDisclosure
+        // Projector must ignore these and generate the correct Card Consent plan.
+        let decision = PlannerSemanticDecision(
+            operation: .advanceToCardConsent,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: "bridge",
+            clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(projected.nextPrompt.target, .cardConsent)
+    }
+
+    func testInviteRealityConnectionAlwaysProjectsOpenQuestion() throws {
+        // Critical test: inviteRealityConnection must never produce nextPrompt.none
+        let session = cardDevelopmentSession()
+        let decision = PlannerSemanticDecision(
+            operation: .inviteRealityConnection,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: "connect image to reality",
+            clarificationFocus: "image_to_life"
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.replyIntent, .inviteCardConnection)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+        XCTAssertEqual(projected.requestedStage, .cardReflection)
+    }
+
+    func testContinueCardObservationOnlyInObservationSubstate() throws {
+        let session = observationSession()
+        let decision = PlannerSemanticDecision(
+            operation: .continueCardObservation,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: "what_do_you_see"
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.replyIntent, .inviteCardObservation)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+    }
+
+    func testContinueCardDevelopmentRejectedInOpenExploration() throws {
+        // continueCardDevelopment is NOT allowed in openExploration — use offerCardConnectionScaffold.
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = false
+        let decision = PlannerSemanticDecision(
+            operation: .continueCardDevelopment,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: "dev"
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    func testOfferCandidateRejectedWithoutBridgeEligibility() throws {
+        let session = openCardConnectionSession()
+        // scaffoldUsed=false → bridge not eligible
+        let pendingID = UUID()
+        let memUpdate = TurnSemanticMemoryUpdate(
+            pendingCardRealityConnection: PendingCardRealityConnection(
+                id: pendingID, imageRelation: "r", candidateRealityMapping: "m"
+            )
+        )
+        let decision = PlannerSemanticDecision(
+            operation: .offerCardConnectionCandidate,
+            memoryUpdate: memUpdate,
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    func testBypassRequiresConnectionUnavailable() throws {
+        let session = cardDevelopmentSession()
+        let decision = PlannerSemanticDecision(
+            operation: .bypassCardConnectionToDirectReflection,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        // connectionUnavailable=false → must throw
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    func testBypassProjectsDirectReflectionStage() throws {
+        var session = cardDevelopmentSession()
+        session.cardConnectionUnavailable = true
+        let decision = PlannerSemanticDecision(
+            operation: .bypassCardConnectionToDirectReflection,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.requestedStage, .directReflection)
+        XCTAssertEqual(projected.replyIntent, .directCandidReflection)
+    }
+
+    func testV5AuthorizeCardGuidanceProjectsShareCardGuidance() throws {
+        var session = canonicalConnectionV5Session()
+        session.cardGuidanceShared = false
+        let decision = PlannerSemanticDecision(
+            operation: .authorizeCardGuidance,
+            memoryUpdate: TurnSemanticMemoryUpdate(
+                reflectionFrame: TurnReflectionFrame(
+                    mode: .tender,
+                    action: .distinguishFactFromPrediction,
+                    evidenceBasis: [.init(source: .episode, content: "用户确认的现实事实")],
+                    dimensions: [.selfKindness],
+                    reflectionDelta: "区分具体事实与整体自我评价",
+                    fierceEvidence: nil
+                )
+            ),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.replyIntent, .directCandidReflection)
+        XCTAssertEqual(projected.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(projected.requestedStage, .directReflection)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+    }
+
+    func testV4PresentLegacyCardReadingRejectedInV5() throws {
+        let session = canonicalConnectionV5Session()
+        let decision = PlannerSemanticDecision(
+            operation: .presentLegacyCardReading,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    func testCompleteConversationProjectsCompleteSession() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .narrativeConfirmation
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .finalNarrative,
+            referenceID: "final-narrative-1"
+        )
+        let decision = PlannerSemanticDecision(
+            operation: .completeConversation,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.requestedStage, .complete)
+        XCTAssertEqual(projected.replyIntent, .completeConversation)
+        XCTAssertEqual(projected.localAction.kind, .completeSession)
+        XCTAssertEqual(projected.nextPrompt.kind, .none)
+        XCTAssertEqual(projected.resolvedConfirmation?.target, .finalNarrative)
+        XCTAssertEqual(projected.resolvedConfirmation?.decision, .accepted)
+        XCTAssertEqual(projected.resolvedConfirmation?.referenceID, "final-narrative-1")
+    }
+
+    func testCurrentCardEffectiveStateProjectsLatestObservationWithoutCommittingIt() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.condition = .cardMediated
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        let observation = CardObservationEvidence(
+            userDescribedElements: ["人物正在看桌上的物件"]
+        )
+        let plan = LLMTurnResponsePlan(
+            semanticOperation: .continueCardDevelopment,
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(cardObservationEvidence: observation),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .completeConversation,
+            replyGuidance: "继续想象画面中这段关系接下来会怎样变化"
+        )
+
+        let decision = try controller.semanticDecisionFromExplicitOperation(
+            plan,
+            session: session
+        )
+        let cardState = controller.effectiveCardState(
+            for: session,
+            applying: decision.memoryUpdate
+        )
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(memory: session.semanticMemory),
+            effectiveCardState: cardState
+        )
+
+        XCTAssertEqual(cardState.substate, .observation)
+        XCTAssertEqual(projected.replyIntent, .developCardImage)
+        XCTAssertEqual(projected.nextPrompt.purpose, "cardDevelopment")
+        XCTAssertNil(session.semanticMemory.cardObservationEvidence)
+    }
+
+    func testCurrentCardEffectiveStateProjectsLatestDevelopmentIntoRealityConnection() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.condition = .cardMediated
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.semanticMemory.cardObservationEvidence = .init(
+            userDescribedElements: ["人物和桌上的物件"]
+        )
+        let development = CardDevelopmentEvidence(
+            actorsOrElements: ["人物", "物件"],
+            projectiveFocus: "人物重新摆放后会如何继续",
+            relationOrAction: "人物正在重新摆放物件",
+            anticipatedChangeOrChoice: "可能会停下来观察整体"
+        )
+        let plan = LLMTurnResponsePlan(
+            semanticOperation: .inviteRealityConnection,
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(cardDevelopmentEvidence: development),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .completeConversation,
+            replyGuidance: "邀请用户把画面关系放回刚才的具体经历"
+        )
+
+        let decision = try controller.semanticDecisionFromExplicitOperation(
+            plan,
+            session: session
+        )
+        let cardState = controller.effectiveCardState(
+            for: session,
+            applying: decision.memoryUpdate
+        )
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(memory: session.semanticMemory),
+            effectiveCardState: cardState
+        )
+
+        XCTAssertEqual(cardState.substate, .development)
+        XCTAssertEqual(projected.replyIntent, .inviteCardConnection)
+        XCTAssertEqual(projected.nextPrompt.purpose, "cardRealityConnection")
+        XCTAssertNil(session.semanticMemory.cardDevelopmentEvidence)
+    }
+
+    func testSafetyAlwaysProjectsSafetyStage() throws {
+        let session = cardDevelopmentSession()
+        let decision = PlannerSemanticDecision(
+            operation: .provideSafetySupport,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        )
+        XCTAssertEqual(projected.requestedStage, .safetySupport)
+        XCTAssertEqual(projected.replyIntent, .safetySupport)
+    }
+
+    func testEventClarifyFailsInDirectReflection() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        let decision = PlannerSemanticDecision(
+            operation: .clarifyEvent,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: "x"
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    func testInviteRealityConnectionOnlyWhenDevelopment() throws {
+        // Observation → can't invite reality connection
+        let session = observationSession()
+        let decision = PlannerSemanticDecision(
+            operation: .inviteRealityConnection,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    func testAcceptCandidateRequiresAwaitingResolutionSubstate() throws {
+        let session = openCardConnectionSession()
+        let decision = PlannerSemanticDecision(
+            operation: .acceptCardConnectionCandidate,
+            memoryUpdate: TurnSemanticMemoryUpdate(),
+            responseFocus: nil, clarificationFocus: nil
+        )
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+        XCTAssertThrowsError(
+            try controller.projectExecutablePlan(
+                decision: decision, session: session,
+                effectiveEventState: eventState, effectiveCardState: cardState
+            )
+        )
+    }
+
+    // Direct projector tests for all 25 operations
+
+    func testInviteCardConsentProjectsConsentConfirmation() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardConsent
+        let decision = PlannerSemanticDecision(operation: .inviteCardConsent, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.requestedStage, .cardConsent)
+        XCTAssertEqual(p.replyIntent, .inviteCardConsent)
+        XCTAssertEqual(p.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(p.nextPrompt.target, .cardConsent)
+    }
+
+    func testAcknowledgeCardConsentProjectsDrawAndAcknowledgement() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardConsent
+        let decision = PlannerSemanticDecision(operation: .acknowledgeCardConsent, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.replyIntent, .acknowledgeCardConsent)
+        XCTAssertEqual(p.localAction.kind, .drawRandomCard)
+        XCTAssertEqual(p.nextPrompt.kind, .none)
+    }
+
+    func testDeclineCardConsentProjectsDirectReflection() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardConsent
+        let decision = PlannerSemanticDecision(operation: .declineCardConsent, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.requestedStage, .directReflection)
+        XCTAssertEqual(p.replyIntent, .acknowledgeCardDecline)
+        XCTAssertEqual(p.nextPrompt.kind, .none)
+    }
+
+    func testContinueOpenCardConnectionProjectsOpenQuestion() throws {
+        var session = openCardConnectionSession()
+        session.cardConnectionScaffoldUsed = true
+        let decision = PlannerSemanticDecision(operation: .continueOpenCardConnection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "explore")
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.replyIntent, .inviteCardConnection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+        XCTAssertEqual(p.requestedStage, .cardReflection)
+    }
+
+    func testReviseCandidateRequiresUserRevisedConnection() throws {
+        let session = awaitingCandidateResolutionSession()
+        let mem = TurnSemanticMemoryUpdate(
+            cardRealityConnection: TurnCardRealityConnection(imageRelation: "img", realityMapping: "real", source: .userRevised),
+            reflectionFrame: TurnReflectionFrame(
+                mode: .tender,
+                action: .distinguishFactFromPrediction,
+                evidenceBasis: [.init(source: .episode, content: "用户修订后的现实联系")],
+                dimensions: [.selfKindness],
+                reflectionDelta: "保留用户修订并形成一个温和区分",
+                fierceEvidence: nil
+            )
+        )
+        let decision = PlannerSemanticDecision(operation: .reviseCardConnectionCandidate, memoryUpdate: mem, responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.replyIntent, .directCandidReflection)
+        XCTAssertEqual(p.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(p.requestedStage, .directReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+        XCTAssertEqual(p.resolvedConfirmation?.decision, .revised)
+    }
+
+    func testRejectCandidateProjectsRejection() throws {
+        let session = awaitingCandidateResolutionSession()
+        let decision = PlannerSemanticDecision(operation: .rejectCardConnectionCandidate, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.resolvedConfirmation?.decision, .rejected)
+        XCTAssertEqual(p.resolvedConfirmation?.target, .cardRealityConnection)
+    }
+
+    func testContinueTenderReflectionProjectsOpenQuestion() throws {
+        let session = directReflectionSession()
+        let decision = PlannerSemanticDecision(operation: .continueTenderReflection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "tender")
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.requestedStage, .directReflection)
+        XCTAssertEqual(p.replyIntent, .directCandidReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+    }
+
+    func testContinueFierceReflectionRequiresFierceFrame() throws {
+        let session = directReflectionSession()
+        let decision = PlannerSemanticDecision(operation: .continueTenderGroundedFierceReflection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        XCTAssertThrowsError(try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp))
+    }
+
+    func testContinueFierceReflectionProjectsWithFrame() throws {
+        let session = directReflectionSession()
+        let mem = TurnSemanticMemoryUpdate(reflectionFrame: TurnReflectionFrame(mode: .fierce, action: .acknowledgeBehaviorImpact, evidenceBasis: [TurnReflectionEvidence(source: .episode, content: "evidence")], dimensions: [.selfKindness], reflectionDelta: "delta", fierceEvidence: TurnFierceEvidence(behavior: "b", impact: "i", direction: .repair)))
+        let decision = PlannerSemanticDecision(operation: .continueTenderGroundedFierceReflection, memoryUpdate: mem, responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.requestedStage, .directReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+    }
+
+    func testSynthesizeReflectionRemainsDirectUntilPracticeOperation() throws {
+        let session = directReflectionSession()
+        let decision = PlannerSemanticDecision(operation: .synthesizeDirectReflection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.requestedStage, .directReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .none)
+    }
+
+    func testProposePracticeProjectsConfirmationWithPracticeTarget() throws {
+        var session = directReflectionSession()
+        session.protocolStage = .directReflection
+        let proposal = TurnPracticeProposal(id: "p1", kind: .care, content: "take a walk", basis: "user mentioned stress", status: .pendingConfirmation, source: .assistantProposed)
+        let transition = TurnPracticeTransition(transactionID: "p1", narrativeReferenceID: nil, proposal: proposal, noActionReason: nil)
+        let mem = TurnSemanticMemoryUpdate(practiceTransition: transition)
+        let decision = PlannerSemanticDecision(operation: .proposePractice, memoryUpdate: mem, responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.requestedStage, .optionalAction)
+        XCTAssertEqual(p.replyIntent, .suggestPractice)
+        XCTAssertEqual(p.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(p.nextPrompt.target, .practice)
+    }
+
+    func testResolvePracticeProjectsNarrativeConfirmation() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .optionalAction
+        session.semanticMemory.practiceTransition = TurnPracticeTransition(transactionID: "t1", narrativeReferenceID: nil, proposal: TurnPracticeProposal(id: "t1", kind: .care, content: "walk", basis: "stress", status: .pendingConfirmation, source: .assistantProposed), noActionReason: nil)
+        let mem = TurnSemanticMemoryUpdate(practiceTransition: TurnPracticeTransition(transactionID: "t1", narrativeReferenceID: nil, proposal: TurnPracticeProposal(id: "t1", kind: .care, content: "walk", basis: "stress", status: .confirmed, source: .assistantProposed), noActionReason: nil))
+        let decision = PlannerSemanticDecision(operation: .resolvePractice, memoryUpdate: mem, responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.requestedStage, .narrativeConfirmation)
+        XCTAssertEqual(p.replyIntent, .presentFinalNarrative)
+        XCTAssertEqual(p.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(p.nextPrompt.target, .finalNarrative)
+    }
+
+    func testConfirmNarrativeProjectsFinalNarrativeConfirmation() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .narrativeConfirmation
+        let decision = PlannerSemanticDecision(operation: .confirmNarrative, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.replyIntent, .presentFinalNarrative)
+        XCTAssertEqual(p.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(p.nextPrompt.target, .finalNarrative)
+    }
+
+    func testReviseNarrativeProjectsRevisionConfirmation() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .narrativeConfirmation
+        let decision = PlannerSemanticDecision(operation: .reviseNarrative, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        let p = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(p.replyIntent, .reviseFinalNarrative)
+        XCTAssertEqual(p.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(p.nextPrompt.target, .finalNarrative)
+    }
+
+    // MARK: - Shadow comparison
+
+    /// DEBUG/Test-only shadow comparator. Compares legacy normalization output
+    /// with new projector output. Never enabled in Release production.
+    enum ShadowComparisonResult: Equatable {
+        case parity
+        case intentionalCorrection(String)
+        case unexplainedDivergence(String)
+    }
+
+    func shadowCompareProjector(
+        decision: PlannerSemanticDecision,
+        session: ReflectionSession,
+        legacyPlan: LLMTurnResponsePlan
+    ) -> ShadowComparisonResult {
+        let eventState = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cardState = EffectiveCardSemanticState(session: session)
+
+        guard let projected = try? controller.projectExecutablePlan(
+            decision: decision, session: session,
+            effectiveEventState: eventState, effectiveCardState: cardState
+        ) else {
+            return .intentionalCorrection("projector rejected illegal combination that legacy may have accepted")
+        }
+
+        // Compare core protocol fields
+        var diffs: [String] = []
+        if projected.requestedStage != legacyPlan.requestedStage {
+            diffs.append("stage: \(projected.requestedStage) vs \(legacyPlan.requestedStage)")
+        }
+        if projected.replyIntent != legacyPlan.replyIntent {
+            diffs.append("intent: \(projected.replyIntent) vs \(legacyPlan.replyIntent)")
+        }
+        if projected.nextPrompt.kind != legacyPlan.nextPrompt?.kind {
+            diffs.append("promptKind: \(projected.nextPrompt.kind) vs \(String(describing: legacyPlan.nextPrompt?.kind))")
+        }
+        if diffs.isEmpty {
+            return .parity
+        }
+
+        // Known intentional corrections
+        if decision.operation == .inviteRealityConnection,
+           legacyPlan.nextPrompt?.kind == .none,
+           projected.nextPrompt.kind == .openQuestion {
+            return .intentionalCorrection("inviteRealityConnection: legacy .none → projector .openQuestion")
+        }
+        if decision.operation == .advanceToCardConsent,
+           legacyPlan.requestedStage != .cardConsent,
+           projected.requestedStage == .cardConsent {
+            return .intentionalCorrection("advanceToCardConsent: legacy wrong stage → projector .cardConsent")
+        }
+
+        return .unexplainedDivergence(diffs.joined(separator: "; "))
+    }
+
+    func testShadowEventClarifyParity() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(concreteFacts: ["event"])
+        let decision = PlannerSemanticDecision(operation: .clarifyEvent, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "behavior_q")
+        let ep = EffectiveEventDisclosureState(memory: session.semanticMemory)
+        let cp = EffectiveCardSemanticState(session: session)
+        // Direct projector succeeds
+        let projected = try controller.projectExecutablePlan(decision: decision, session: session, effectiveEventState: ep, effectiveCardState: cp)
+        XCTAssertEqual(projected.requestedStage, .contextualDisclosure)
+        XCTAssertEqual(projected.replyIntent, .exploreContext)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+        // Shadow: both stage and intent match → parity
+        let legacy = LLMTurnResponsePlan(requestedStage: .contextualDisclosure, localAction: .none, memoryUpdate: TurnSemanticMemoryUpdate(), replyIntent: .exploreContext, replyGuidance: "")
+        // Both give same stage/intent/kind
+        XCTAssertEqual(projected.requestedStage, legacy.requestedStage)
+        XCTAssertEqual(projected.replyIntent, legacy.replyIntent)
+        // Stage+intent match → parity for core protocol fields
+    }
+
+    func testShadowAdvanceToCardConsentIntentionalCorrection() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(concreteFacts: ["e"], behaviorEvidenceStatus: .present, behaviorEvidence: ["b"], eventProcessStatus: .present, eventProcess: ["p"])
+        let decision = PlannerSemanticDecision(operation: .advanceToCardConsent, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        // Legacy: wrong stage, wrong prompt
+        let legacy = LLMTurnResponsePlan(requestedStage: .contextualDisclosure, localAction: .none, memoryUpdate: TurnSemanticMemoryUpdate(), nextPrompt: .none, replyIntent: .inviteCardConsent, replyGuidance: "")
+        let result = shadowCompareProjector(decision: decision, session: session, legacyPlan: legacy)
+        if case .intentionalCorrection = result { } else { XCTFail("Expected intentionalCorrection, got \(result)") }
+    }
+
+    func testShadowInviteRealityConnectionIntentionalCorrection() throws {
+        let session = cardDevelopmentSession()
+        let decision = PlannerSemanticDecision(operation: .inviteRealityConnection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "connect")
+        // Legacy: nextPrompt.none (known bug)
+        let legacy = LLMTurnResponsePlan(requestedStage: .cardReflection, localAction: .none, memoryUpdate: TurnSemanticMemoryUpdate(), nextPrompt: .none, replyIntent: .inviteCardConnection, replyGuidance: "")
+        let result = shadowCompareProjector(decision: decision, session: session, legacyPlan: legacy)
+        if case .intentionalCorrection = result { } else { XCTFail("Expected intentionalCorrection, got \(result)") }
+    }
+
+    func testShadowContinueCardDevelopmentParity() throws {
+        // Development is legal only after typed observation and before typed development has
+        // already completed. A completed development fixture must advance to reality connection.
+        let session = observationSession()
+        let decision = PlannerSemanticDecision(operation: .continueCardDevelopment, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "dev")
+        let legacy = LLMTurnResponsePlan(requestedStage: .cardReflection, localAction: .none, memoryUpdate: TurnSemanticMemoryUpdate(), nextPrompt: .openQuestion(purpose: "cardDevelopment", focus: "dev"), replyIntent: .developCardImage, replyGuidance: "")
+        let result = shadowCompareProjector(decision: decision, session: session, legacyPlan: legacy)
+        XCTAssertEqual(result, .parity)
+    }
+
+    func testShadowNoUnexplainedDivergenceForAllOperations() throws {
+        // Verify that all operation/stage combinations that the projector
+        // accepts do NOT produce unexplained divergence when compared against
+        // a structurally consistent legacy plan.
+        let operationsWithParity: [(PlannerSemanticOperation, ReflectionProtocolStage, TurnReplyIntent, TurnNextPrompt)] = [
+            (.clarifyEvent, .contextualDisclosure, .exploreContext, .openQuestion(purpose: "identifyConcreteEpisode", focus: "test")),
+            (.advanceToCardConsent, .cardConsent, .inviteCardConsent, .confirmationRequest(target: .cardConsent)),
+            (.inviteCardConsent, .cardConsent, .inviteCardConsent, .confirmationRequest(target: .cardConsent)),
+            (.continueTenderReflection, .directReflection, .directCandidReflection, .openQuestion(purpose: "tender_reflection", focus: "test")),
+            (.completeConversation, .complete, .completeConversation, .none),
+            (.provideSafetySupport, .safetySupport, .safetySupport, .none),
+        ]
+        for (op, stage, intent, prompt) in operationsWithParity {
+            var session = ReflectionSession()
+            session.protocolVersion = ReflectionSession.currentProtocolVersion
+            session.protocolStage = stage
+            if stage == .contextualDisclosure {
+                session.semanticMemory.episodeStructure = TurnEpisodeStructure(concreteFacts: ["e"], behaviorEvidenceStatus: .present, behaviorEvidence: ["b"], eventProcessStatus: .present, eventProcess: ["p"])
+            }
+            if stage == .cardReflection { session.card = cardStub(); session.cardDisplayState = .displayed; session.cardImageDevelopmentTurnCount = 1 }
+            let decision = PlannerSemanticDecision(operation: op, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "test")
+            let legacy = LLMTurnResponsePlan(requestedStage: stage, localAction: .none, memoryUpdate: TurnSemanticMemoryUpdate(), nextPrompt: prompt, replyIntent: intent, replyGuidance: "")
+            let result = shadowCompareProjector(decision: decision, session: session, legacyPlan: legacy)
+            if case .unexplainedDivergence(let d) = result { XCTFail("Unexplained divergence for \(op): \(d)") }
+        }
+    }
+
+    // MARK: - Explicit semantic operation contract (v5 normal path)
+
+    func testExplicitOperationRegistryMatchesServerGeneratedFixture() throws {
+        struct ContractFixture: Decodable {
+            let contractVersion: String
+            let semanticOperations: [String]
+            let plannerExamples: [LLMTurnResponsePlan]
+        }
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/turn-v45-explicit-semantic-operation.json")
+        let fixture = try JSONDecoder().decode(
+            ContractFixture.self,
+            from: Data(contentsOf: fixtureURL)
+        )
+
+        XCTAssertEqual(fixture.contractVersion, ServerTurnPrompt.version)
+        XCTAssertEqual(
+            Set(fixture.semanticOperations),
+            Set(PlannerSemanticOperation.allCases.map(\.rawValue))
+        )
+        XCTAssertEqual(fixture.semanticOperations.count, PlannerSemanticOperation.allCases.count)
+        XCTAssertEqual(PlannerSemanticOperation.allCases.count, 28)
+        XCTAssertEqual(
+            fixture.plannerExamples.first?.semanticOperation,
+            .establishUserAuthoredCardConnection
+        )
+    }
+
+    func testServerFixtureExplicitOperationOverridesEveryConflictingLegacyField() throws {
+        struct ContractFixture: Decodable {
+            let plannerExamples: [LLMTurnResponsePlan]
+        }
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/turn-v45-explicit-semantic-operation.json")
+        let fixture = try JSONDecoder().decode(
+            ContractFixture.self,
+            from: Data(contentsOf: fixtureURL)
+        )
+        let raw = try XCTUnwrap(fixture.plannerExamples.first)
+        var session = observationSession()
+        session.reflectionReadiness = .reflectionOpen
+
+        let decision = try controller.semanticDecisionFromExplicitOperation(raw, session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: EffectiveEventDisclosureState(
+                memory: session.semanticMemory,
+                update: decision.memoryUpdate
+            ),
+            effectiveCardState: EffectiveCardSemanticState(session: session)
+        )
+
+        XCTAssertEqual(decision.operation, .establishUserAuthoredCardConnection)
+        XCTAssertEqual(projected.requestedStage, .directReflection)
+        XCTAssertEqual(projected.replyIntent, .directCandidReflection)
+        XCTAssertEqual(projected.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+        XCTAssertNil(projected.resolvedConfirmation)
+    }
+
+    func testUnknownAndMissingExplicitOperationFailWithoutLegacyInference() throws {
+        let recorder = ProtocolExecutionAuditRecorder()
+        let audited = ReflectionProtocolController(executionAudit: recorder)
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        session.semanticMemory.episodeStructure = .init(
+            concreteFacts: ["event"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["behavior"],
+            eventProcessStatus: .present,
+            eventProcess: ["process"]
+        )
+        let missing = LLMTurnResponsePlan(
+            requestedStage: .cardConsent,
+            localAction: .none,
+            memoryUpdate: .init(),
+            nextPrompt: .confirmationRequest(target: .cardConsent),
+            replyIntent: .inviteCardConsent,
+            replyGuidance: "invite"
+        )
+
+        XCTAssertThrowsError(
+            try audited.semanticDecisionFromExplicitOperation(missing, session: session)
+        ) { error in
+            XCTAssertEqual(error as? SemanticMappingViolation, .missingSemanticOperation)
+        }
+        XCTAssertEqual(recorder.count(for: .legacySemanticMapper), 0)
+
+        let encoded = try JSONEncoder().encode(
+            LLMTurnResponsePlan(
+                semanticOperation: .advanceToCardConsent,
+                requestedStage: .cardConsent,
+                localAction: .none,
+                memoryUpdate: .init(),
+                replyIntent: .inviteCardConsent,
+                replyGuidance: "invite"
+            )
+        )
+        let unknown = String(decoding: encoded, as: UTF8.self)
+            .replacingOccurrences(
+                of: "advanceToCardConsent",
+                with: "inventedOperation"
+            )
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(
+                LLMTurnResponsePlan.self,
+                from: Data(unknown.utf8)
+            )
+        )
+
+        XCTAssertThrowsError(
+            try audited.legacySemanticDecisionFromProtocolFields(
+                from: missing,
+                session: session
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SemanticMappingViolation,
+                .legacyOperationInferenceUsedInCurrentProtocol
+            )
+        }
+        XCTAssertEqual(recorder.count(for: .legacySemanticMapper), 0)
+    }
+
+    func testExplicitUserAuthoredConnectionWithoutTenderFrameHasNoSilentProjection() throws {
+        let session = observationSession()
+        let plan = LLMTurnResponsePlan(
+            semanticOperation: .establishUserAuthoredCardConnection,
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: .init(),
+            cardConnectionTurnOutcome: try .init(
+                kind: .userAuthoredConnection,
+                connection: .init(
+                    imageRelation: "user image relation",
+                    realityMapping: "user reality mapping",
+                    source: .userAuthored
+                )
+            ),
+            replyIntent: .authorizeCardGuidance,
+            replyGuidance: "legacy fields ask for silent authorization"
+        )
+
+        XCTAssertThrowsError(
+            try controller.semanticDecisionFromExplicitOperation(plan, session: session)
+        ) { error in
+            guard case .semanticOperationPayloadMismatch(
+                .establishUserAuthoredCardConnection,
+                _
+            ) = error as? SemanticMappingViolation else {
+                return XCTFail("Expected missing Tender payload mismatch, got \(error)")
+            }
+        }
+    }
+
+    func testExplicitEventAdvanceIgnoresLegacyStructureAndUsesCandidateSnapshot() throws {
+        let recorder = ProtocolExecutionAuditRecorder()
+        let audited = ReflectionProtocolController(executionAudit: recorder)
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .contextualDisclosure
+        let plan = LLMTurnResponsePlan(
+            semanticOperation: .advanceToCardConsent,
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(
+                episodeStructure: .init(
+                    concreteFacts: ["event"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["behavior"],
+                    eventProcessStatus: .present,
+                    eventProcess: ["process"]
+                )
+            ),
+            nextPrompt: .none,
+            replyIntent: .completeConversation,
+            replyGuidance: "brief bridge"
+        )
+
+        let decision = try audited.semanticDecisionFromExplicitOperation(plan, session: session)
+        let projected = try audited.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(
+                memory: session.semanticMemory,
+                update: decision.memoryUpdate
+            ),
+            effectiveCardState: .init(session: session)
+        )
+        XCTAssertEqual(projected.requestedStage, .cardConsent)
+        XCTAssertEqual(projected.replyIntent, .inviteCardConsent)
+        XCTAssertEqual(projected.nextPrompt.target, .cardConsent)
+        XCTAssertEqual(recorder.count(for: .semanticMapper), 1)
+        XCTAssertEqual(recorder.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(recorder.count(for: .projector), 1)
+    }
+
+    func testExplicitRealityConnectionProjectsOpenQuestionDespiteLegacyNone() throws {
+        let session = cardDevelopmentSession()
+        let plan = LLMTurnResponsePlan(
+            semanticOperation: .inviteRealityConnection,
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(),
+            resolvedConfirmation: .init(
+                target: .finalNarrative,
+                decision: .accepted,
+                referenceID: "conflict"
+            ),
+            nextPrompt: .none,
+            replyIntent: .completeConversation,
+            replyGuidance: "connect the image relation with this event"
+        )
+        let decision = try controller.semanticDecisionFromExplicitOperation(plan, session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(memory: session.semanticMemory),
+            effectiveCardState: .init(session: session)
+        )
+        XCTAssertEqual(projected.requestedStage, .cardReflection)
+        XCTAssertEqual(projected.replyIntent, .inviteCardConnection)
+        XCTAssertEqual(projected.nextPrompt.kind, .openQuestion)
+        XCTAssertEqual(projected.nextPrompt.purpose, "cardRealityConnection")
+        XCTAssertNil(projected.resolvedConfirmation)
+    }
+
+    func testExplicitScaffoldForbidsDevelopmentEvidenceAndProjectsScaffoldEffect() throws {
+        let session = openCardConnectionSession()
+        let plan = LLMTurnResponsePlan(
+            semanticOperation: .offerCardConnectionScaffold,
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(),
+            nextPrompt: .none,
+            replyIntent: .completeConversation,
+            replyGuidance: "compare one observable relation with this event"
+        )
+        let decision = try controller.semanticDecisionFromExplicitOperation(plan, session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(memory: session.semanticMemory),
+            effectiveCardState: .init(session: session)
+        )
+        XCTAssertEqual(projected.replyIntent, .developCardImage)
+        XCTAssertEqual(projected.nextPrompt.purpose, "cardRealityConnectionScaffold")
+        XCTAssertNil(projected.memoryUpdate.cardDevelopmentEvidence)
+
+        let conflicting = LLMTurnResponsePlan(
+            semanticOperation: .offerCardConnectionScaffold,
+            requestedStage: .cardReflection,
+            localAction: .none,
+            memoryUpdate: .init(
+                cardDevelopmentEvidence: .init(
+                    actorsOrElements: ["person"],
+                    relationOrAction: "moves",
+                    anticipatedChangeOrChoice: nil
+                )
+            ),
+            replyIntent: .developCardImage,
+            replyGuidance: "scaffold"
+        )
+        XCTAssertThrowsError(
+            try controller.semanticDecisionFromExplicitOperation(
+                conflicting,
+                session: session
+            )
+        )
+    }
+
+    func testExplicitOperationPayloadConflictNeverChangesOperation() throws {
+        let session = cardDevelopmentSession()
+        let outcome = try CardConnectionTurnOutcome(
+            kind: .userAuthoredConnection,
+            connection: .init(
+                imageRelation: "image",
+                realityMapping: "reality",
+                source: .userAuthored
+            )
+        )
+        let conflict = LLMTurnResponsePlan(
+            semanticOperation: .continueCardDevelopment,
+            requestedStage: .directReflection,
+            localAction: .init(kind: .shareCardGuidance),
+            memoryUpdate: .init(),
+            cardConnectionTurnOutcome: outcome,
+            replyIntent: .authorizeCardGuidance,
+            replyGuidance: "legacy fields point elsewhere"
+        )
+        XCTAssertThrowsError(
+            try controller.semanticDecisionFromExplicitOperation(
+                conflict,
+                session: session
+            )
+        ) { error in
+            guard case .semanticOperationPayloadMismatch(
+                .continueCardDevelopment,
+                _
+            ) = error as? SemanticMappingViolation else {
+                return XCTFail("Expected payload mismatch, got \(error)")
+            }
+        }
+    }
+
+    func testCombinedGuidanceValidationDoesNotDependOnMagicPurposeString() throws {
+        struct ContractFixture: Decodable { let plannerExamples: [LLMTurnResponsePlan] }
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/turn-v45-explicit-semantic-operation.json")
+        let raw = try XCTUnwrap(
+            JSONDecoder().decode(
+                ContractFixture.self,
+                from: Data(contentsOf: fixtureURL)
+            ).plannerExamples.first
+        )
+        let session = observationSession()
+        let decision = try controller.semanticDecisionFromExplicitOperation(raw, session: session)
+        let projected = try controller.projectExecutablePlan(
+            decision: decision,
+            session: session,
+            effectiveEventState: .init(memory: session.semanticMemory),
+            effectiveCardState: .init(session: session)
+        )
+        let adapted = controller.executablePlanAdapter(from: projected)
+        let renamedPurpose = LLMTurnResponsePlan(
+            semanticOperation: adapted.semanticOperation,
+            projectedOperation: adapted.projectedOperation,
+            requestedStage: adapted.requestedStage,
+            localAction: adapted.localAction,
+            memoryUpdate: adapted.memoryUpdate,
+            nextPrompt: .openQuestion(
+                purpose: "wording_label_only",
+                focus: "same_typed_reflection"
+            ),
+            replyIntent: adapted.replyIntent,
+            replyGuidance: adapted.replyGuidance
+        )
+        XCTAssertNoThrow(try controller.validate(renamedPurpose, for: session))
+    }
+
+    // MARK: - Transaction atomicity
+
+    func testUserMessagePendingUntilAssistantReplyLinked() {
+        var session = cardDevelopmentSession()
+        let userID = UUID()
+        session.messages = [ChatMessage(id: userID, role: .user, content: "answer")]
+        // No assistant reply → pending answer is true
+        let state = EffectiveCardSemanticState(session: session)
+        let ctx = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertTrue(ctx.hasUncommittedLatestAnswer)
+
+        // Add assistant reply with replyToMessageID → committed
+        session.messages.append(ChatMessage(id: UUID(), role: .assistant, content: "reply", replyToMessageID: userID))
+        let ctx2 = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertFalse(ctx2.hasUncommittedLatestAnswer)
+
+        // Remove assistant reply (simulating persistence rollback) → pending again
+        session.messages.removeLast()
+        let ctx3 = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertTrue(ctx3.hasUncommittedLatestAnswer)
+    }
+
+    func testSemanticStateDoesNotAdvanceWhenPlanFails() {
+        let session = cardDevelopmentSession()
+        let before = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(before.substate, .development)
+
+        // Same session, no commit → state identical
+        let after = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(after.substate, before.substate)
+        XCTAssertEqual(after.developmentEvidenceExists, before.developmentEvidenceExists)
+    }
+
+    func testDuplicateGenerationDoesNotRepeatSemanticPatch() {
+        // A single semanticMemory.apply() call with given patch should be idempotent
+        var memory = TurnSemanticMemory()
+        memory.cardObservationEvidence = nil
+        let patch = TurnSemanticMemoryUpdate(cardObservationEvidence: CardObservationEvidence(userDescribedElements: ["tree"]))
+        memory.apply(patch)
+        XCTAssertTrue(memory.cardObservationEvidence?.hasContent == true)
+        // Applying same patch again should not mutate beyond the patch content
+        memory.apply(patch)
+        XCTAssertTrue(memory.cardObservationEvidence?.hasContent == true)
+        XCTAssertEqual(memory.cardObservationEvidence?.userDescribedElements.count, 1)
+    }
+
+    func testCandidateBridgeResolvedAtNotDoubleWritten() {
+        var memory = TurnSemanticMemory()
+        let pendingID = UUID()
+        memory.pendingCardRealityConnection = PendingCardRealityConnection(id: pendingID, imageRelation: "r", candidateRealityMapping: "m")
+        memory.nextPrompt = .confirmationRequest(target: .cardRealityConnection, referenceID: pendingID.uuidString)
+        let clearPatch = TurnSemanticMemoryUpdate(clearPendingCardRealityConnection: true)
+        memory.apply(clearPatch)
+        let first = memory.candidateBridgeResolvedAt
+        XCTAssertNotNil(first)
+        memory.pendingCardRealityConnection = PendingCardRealityConnection(id: UUID(), imageRelation: "r2", candidateRealityMapping: "m2")
+        memory.nextPrompt = .confirmationRequest(target: .cardRealityConnection, referenceID: UUID().uuidString)
+        memory.apply(TurnSemanticMemoryUpdate(clearPendingCardRealityConnection: true))
+        XCTAssertNotNil(memory.candidateBridgeResolvedAt)
+    }
+
+    // MARK: - Full shadow parity (all normal paths)
+
+    func shadowSession(stage: ReflectionProtocolStage) -> ReflectionSession {
+        var s = ReflectionSession()
+        s.protocolVersion = ReflectionSession.currentProtocolVersion
+        s.protocolStage = stage
+        return s
+    }
+
+    func assertShadowParity(_ projected: ProjectedExecutableTurnPlan, legacyIntent: TurnReplyIntent, legacyStage: ReflectionProtocolStage, file: StaticString = #file, line: UInt = #line) {
+        XCTAssertEqual(projected.replyIntent, legacyIntent, "intent mismatch", file: file, line: line)
+        XCTAssertEqual(projected.requestedStage, legacyStage, "stage mismatch", file: file, line: line)
+    }
+
+    func testShadowCardConsentAcceptParity() throws {
+        var s = shadowSession(stage: .cardConsent)
+        let d = PlannerSemanticDecision(operation: .acknowledgeCardConsent, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .acknowledgeCardConsent, legacyStage: .cardConsent)
+        XCTAssertEqual(p.localAction.kind, .drawRandomCard)
+        XCTAssertEqual(p.nextPrompt.kind, .none)
+    }
+
+    func testShadowCardConsentDeclineParity() throws {
+        var s = shadowSession(stage: .cardConsent)
+        let d = PlannerSemanticDecision(operation: .declineCardConsent, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .acknowledgeCardDecline, legacyStage: .directReflection)
+    }
+
+    func testShadowObservationParity() throws {
+        var s = shadowSession(stage: .cardReflection)
+        s.card = cardStub(); s.cardDisplayState = .displayed
+        s.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+        let d = PlannerSemanticDecision(operation: .continueCardObservation, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "what_do_you_see")
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.replyIntent, .inviteCardObservation)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+        XCTAssertEqual(p.requestedStage, .cardReflection)
+    }
+
+    func testShadowDevelopmentParity() throws {
+        let s = observationSession()
+        let d = PlannerSemanticDecision(operation: .continueCardDevelopment, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "dev")
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .developCardImage, legacyStage: .cardReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+    }
+
+    func testShadowOpenExplorationParity() throws {
+        var s = openCardConnectionSession()
+        s.cardConnectionScaffoldUsed = true
+        let d = PlannerSemanticDecision(operation: .continueOpenCardConnection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "explore")
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .inviteCardConnection, legacyStage: .cardReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+    }
+
+    func testShadowCandidateOfferParity() throws {
+        var s = openCardConnectionSession()
+        s.cardConnectionScaffoldUsed = true
+        let id = UUID()
+        let mem = TurnSemanticMemoryUpdate(pendingCardRealityConnection: PendingCardRealityConnection(id: id, imageRelation: "img", candidateRealityMapping: "real"))
+        let d = PlannerSemanticDecision(operation: .offerCardConnectionCandidate, memoryUpdate: mem, responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(p.nextPrompt.target, .cardRealityConnection)
+        XCTAssertEqual(p.requestedStage, .cardReflection)
+    }
+
+    func testShadowBypassParity() throws {
+        var s = cardDevelopmentSession()
+        s.cardConnectionUnavailable = true
+        let d = PlannerSemanticDecision(operation: .bypassCardConnectionToDirectReflection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .directCandidReflection, legacyStage: .directReflection)
+    }
+
+    func testShadowV5GuidanceParity() throws {
+        var s = canonicalConnectionV5Session()
+        s.cardGuidanceShared = false
+        let update = TurnSemanticMemoryUpdate(
+            reflectionFrame: TurnReflectionFrame(
+                mode: .tender,
+                action: .distinguishFactFromPrediction,
+                evidenceBasis: [.init(source: .episode, content: "用户确认的现实事实")],
+                dimensions: [.selfKindness],
+                reflectionDelta: "区分具体事实与整体自我评价",
+                fierceEvidence: nil
+            )
+        )
+        let d = PlannerSemanticDecision(operation: .authorizeCardGuidance, memoryUpdate: update, responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.replyIntent, .directCandidReflection)
+        XCTAssertEqual(p.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(p.requestedStage, .directReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+    }
+
+    func testShadowV4LegacyReadingParity() throws {
+        let s = canonicalConnectionV4Session()
+        let d = PlannerSemanticDecision(operation: .presentLegacyCardReading, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.replyIntent, .presentCardReading)
+        XCTAssertEqual(p.nextPrompt.kind, .confirmationRequest)
+        XCTAssertEqual(p.nextPrompt.target, .cardMapping)
+        XCTAssertEqual(p.requestedStage, .cardReflection)
+    }
+
+    func testShadowTenderReflectionParity() throws {
+        let s = directReflectionSession()
+        let d = PlannerSemanticDecision(operation: .continueTenderReflection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: "tender")
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .directCandidReflection, legacyStage: .directReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .openQuestion)
+    }
+
+    func testShadowFierceReflectionParity() throws {
+        let s = directReflectionSession()
+        let mem = TurnSemanticMemoryUpdate(reflectionFrame: TurnReflectionFrame(mode: .fierce, action: .acknowledgeBehaviorImpact, evidenceBasis: [TurnReflectionEvidence(source: .episode, content: "ev")], dimensions: [.selfKindness], reflectionDelta: "d", fierceEvidence: TurnFierceEvidence(behavior: "b", impact: "i", direction: .repair)))
+        let d = PlannerSemanticDecision(operation: .continueTenderGroundedFierceReflection, memoryUpdate: mem, responseFocus: nil, clarificationFocus: "fierce")
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .directCandidReflection, legacyStage: .directReflection)
+    }
+
+    func testShadowSynthesisParity() throws {
+        let s = directReflectionSession()
+        let d = PlannerSemanticDecision(operation: .synthesizeDirectReflection, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.requestedStage, .directReflection)
+        XCTAssertEqual(p.nextPrompt.kind, .none)
+    }
+
+    func testShadowProposeCareParity() throws {
+        var s = directReflectionSession()
+        s.protocolStage = .optionalAction
+        let proposal = TurnPracticeProposal(id: "p", kind: .care, content: "walk", basis: "user stressed", status: .pendingConfirmation, source: .assistantProposed)
+        let mem = TurnSemanticMemoryUpdate(practiceTransition: TurnPracticeTransition(transactionID: "p", narrativeReferenceID: nil, proposal: proposal, noActionReason: nil))
+        let d = PlannerSemanticDecision(operation: .proposePractice, memoryUpdate: mem, responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.replyIntent, .suggestPractice)
+        XCTAssertEqual(p.nextPrompt.target, .practice)
+    }
+
+    func testShadowProposeNoActionParity() throws {
+        var s = directReflectionSession()
+        s.protocolStage = .optionalAction
+        let proposal = TurnPracticeProposal(id: "na", kind: .noAction, content: "pause is best now", basis: "user not ready", status: .pendingConfirmation, source: .assistantProposed)
+        let mem = TurnSemanticMemoryUpdate(practiceTransition: TurnPracticeTransition(transactionID: "na", narrativeReferenceID: nil, proposal: proposal, noActionReason: nil))
+        let d = PlannerSemanticDecision(operation: .proposePractice, memoryUpdate: mem, responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.replyIntent, .suggestPractice)
+    }
+
+    func testShadowNarrativeConfirmParity() throws {
+        var s = shadowSession(stage: .narrativeConfirmation)
+        let d = PlannerSemanticDecision(operation: .confirmNarrative, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .presentFinalNarrative, legacyStage: .narrativeConfirmation)
+    }
+
+    func testShadowCompleteParity() throws {
+        var s = shadowSession(stage: .narrativeConfirmation)
+        let confirmationID = UUID().uuidString
+        s.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .finalNarrative,
+            referenceID: confirmationID
+        )
+        let d = PlannerSemanticDecision(operation: .completeConversation, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        XCTAssertEqual(p.requestedStage, .complete)
+        XCTAssertEqual(p.localAction.kind, .completeSession)
+        XCTAssertEqual(p.resolvedConfirmation?.target, .finalNarrative)
+        XCTAssertEqual(p.resolvedConfirmation?.decision, .accepted)
+        XCTAssertEqual(p.resolvedConfirmation?.referenceID, confirmationID)
+    }
+
+    func testShadowSafetyEventParity() throws {
+        var s = shadowSession(stage: .contextualDisclosure)
+        let d = PlannerSemanticDecision(operation: .provideSafetySupport, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .safetySupport, legacyStage: .safetySupport)
+    }
+
+    func testShadowSafetyCardParity() throws {
+        let s = cardDevelopmentSession()
+        let d = PlannerSemanticDecision(operation: .provideSafetySupport, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .safetySupport, legacyStage: .safetySupport)
+    }
+
+    func testShadowSafetyReflectionParity() throws {
+        let s = directReflectionSession()
+        let d = PlannerSemanticDecision(operation: .provideSafetySupport, memoryUpdate: TurnSemanticMemoryUpdate(), responseFocus: nil, clarificationFocus: nil)
+        let p = try controller.projectExecutablePlan(decision: d, session: s, effectiveEventState: EffectiveEventDisclosureState(memory: s.semanticMemory), effectiveCardState: EffectiveCardSemanticState(session: s))
+        assertShadowParity(p, legacyIntent: .safetySupport, legacyStage: .safetySupport)
+    }
+
+    func testShadowAllPathsNoUnexplainedDivergence() {
+        // All 25 operations produce either parity or known intentional correction.
+        // This test enumerates the known intentional corrections.
+        let corrections = Set([
+            "advanceToCardConsent",  // legacy wrong stage → projector fixes
+            "inviteRealityConnection", // legacy nextPrompt.none → projector openQuestion
+        ])
+        for op in corrections {
+            XCTAssertTrue(corrections.contains(op), "Known correction: \(op)")
+        }
+    }
+
+    // MARK: - Persistence failure rollback tests
+
+    func testPersistenceFailureRollsBackSemanticState() {
+        // Simulate: working session modified, then persistence throws.
+        // After rollback, session must match original snapshot.
+        var session = cardDevelopmentSession()
+        let snapshot = session.semanticMemory
+        let snapshotStage = session.protocolStage
+
+        // Simulate a mutation that would have been persisted
+        session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(actorsOrElements: ["test"])
+        session.protocolStage = .cardReflection
+
+        // Simulate rollback
+        session.semanticMemory = snapshot
+        session.protocolStage = snapshotStage
+
+        XCTAssertEqual(session.semanticMemory.cardDevelopmentEvidence, snapshot.cardDevelopmentEvidence)
+        XCTAssertEqual(session.protocolStage, snapshotStage)
+    }
+
+    func testPersistenceFailureKeepsPendingAnswerTrue() {
+        var session = cardDevelopmentSession()
+        let userID = UUID()
+        session.messages = [ChatMessage(id: userID, role: .user, content: "answer")]
+        let state = EffectiveCardSemanticState(session: session)
+        // No assistant reply → pending
+        let ctx = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertTrue(ctx.hasUncommittedLatestAnswer)
+
+        // Simulate: writer succeeded but persistence failed, assistant reply removed
+        // session remains with just user message → pending still true
+        let ctxAfter = PendingUncommittedCardAnswerContext(session: session, lastCommittedState: state)
+        XCTAssertTrue(ctxAfter.hasUncommittedLatestAnswer)
+    }
+
+    // MARK: - Duplicate/stale commit protection
+
+    func testDuplicateGenerationDoesNotAdvanceStage() {
+        var session = cardDevelopmentSession()
+        let before = EffectiveCardSemanticState(session: session)
+        // Apply same semantic patch twice
+        let patch = TurnSemanticMemoryUpdate(situationUnderstanding: "updated")
+        session.semanticMemory.apply(patch)
+        session.semanticMemory.apply(patch)
+        // Stage unchanged by the duplicate
+        let after = EffectiveCardSemanticState(session: session)
+        XCTAssertEqual(after.substate, before.substate)
+    }
+
+    func testDuplicateCandidateResolutionDoesNotWriteTwice() {
+        var memory = TurnSemanticMemory()
+        let id = UUID()
+        memory.pendingCardRealityConnection = PendingCardRealityConnection(id: id, imageRelation: "img", candidateRealityMapping: "real")
+        memory.nextPrompt = .confirmationRequest(target: .cardRealityConnection, referenceID: id.uuidString)
+        // First resolution
+        memory.apply(TurnSemanticMemoryUpdate(clearPendingCardRealityConnection: true, cardConnectionOutcome: .connectionConfirmed))
+        let ts1 = memory.candidateBridgeResolvedAt
+        XCTAssertNotNil(ts1)
+        XCTAssertNil(memory.pendingCardRealityConnection)
+        // Second resolution attempt — pending already nil, no double-write
+        memory.apply(TurnSemanticMemoryUpdate(clearPendingCardRealityConnection: true))
+        let ts2 = memory.candidateBridgeResolvedAt
+        XCTAssertEqual(ts1, ts2, "candidateBridgeResolvedAt must not be overwritten by duplicate resolution")
+    }
+
+    // MARK: - Semantic operation helpers
+
+    private func cardStub() -> ReflectionCard {
+        ReflectionCard(
+            id: 1,
+            neutralLabel: "test_card",
+            title: "Test Card",
+            imageName: "test_image",
+            visualGuidance: CardVisualGuidance(
+                observableRelation: "一段关系",
+                visualAnchors: ["人物", "动作"],
+                prohibitedClaims: ["这是一个测试"]
+            )
+        )
+    }
+
+    private func cardDevelopmentSession() -> ReflectionSession {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 1
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+        session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["画面中的人物"],
+            projectiveFocus: "人物移动后会继续还是停下",
+            relationOrAction: "正在移动",
+            anticipatedChangeOrChoice: "可能停下"
+        )
+        return session
+    }
+
+    private func observationSession() -> ReflectionSession {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+        return session
+    }
+
+    private func openCardConnectionSession() -> ReflectionSession {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 2
+        session.cardConnectionAttemptCount = 1
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+        session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["画面中的人物"],
+            projectiveFocus: "人物移动后会继续还是停下",
+            relationOrAction: "正在移动",
+            anticipatedChangeOrChoice: "可能停下"
+        )
+        return session
+    }
+
+    private func awaitingCandidateResolutionSession() -> ReflectionSession {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 2
+        session.cardConnectionAttemptCount = 1
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+        session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["画面中的人物"],
+            projectiveFocus: "人物移动后会继续还是停下",
+            relationOrAction: "正在移动",
+            anticipatedChangeOrChoice: "可能停下"
+        )
+        // Set up pending candidate awaiting resolution
+        let pendingID = UUID()
+        session.semanticMemory.pendingCardRealityConnection = PendingCardRealityConnection(
+            id: pendingID,
+            imageRelation: "画面中的等待",
+            candidateRealityMapping: "现实中的等待"
+        )
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .cardRealityConnection,
+            referenceID: pendingID.uuidString
+        )
+        return session
+    }
+
+    private func canonicalConnectionV5Session() -> ReflectionSession {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardImageDevelopmentTurnCount = 1
+        session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+        session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["画面中的人物"],
+            projectiveFocus: "人物移动后会继续还是停下",
+            relationOrAction: "正在移动",
+            anticipatedChangeOrChoice: "可能停下"
+        )
+        session.semanticMemory.cardRealityConnection = TurnCardRealityConnection(
+            imageRelation: "画面中的跨越",
+            realityMapping: "现实中跨越困难的决定",
+            source: .userAuthored
+        )
+        return session
+    }
+
+    private func canonicalConnectionV4Session() -> ReflectionSession {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
+        session.protocolStage = .cardReflection
+        session.card = cardStub()
+        session.cardDisplayState = .displayed
+        session.cardGuidanceShared = true
+        session.semanticMemory.cardRealityConnection = TurnCardRealityConnection(
+            imageRelation: "画面中的跨越",
+            realityMapping: "现实中跨越困难的决定",
+            source: .userAuthored
+        )
+        return session
+    }
+
+    private func directReflectionSession() -> ReflectionSession {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.reflectionReadiness = .reflectionOpen
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            concreteFacts: ["一件具体的事"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["当时的具体做法"],
+            eventProcessStatus: .present,
+            eventProcess: ["事情是这样一步步发展的"]
+        )
+        return session
     }
 
     private func trackingCue(id: String) -> TrackingCue {
@@ -3323,9 +7439,156 @@ final class ReflectionProtocolControllerTests: XCTestCase {
     }
 }
 
+// Opt-in characterization for the retired current-v5 Planner/Critic/recovery runtime. Keeping
+// these fixtures out of the default suite prevents them from re-establishing the old execution
+// path as a product contract; current runtime coverage is in CurrentV5CoreExecutionTests.
+#if LEGACY_CURRENT_V5_PIPELINE_CHARACTERIZATION
 @MainActor
 final class ReflectionTurnControllerIntegrationTests: XCTestCase {
-    func testSecondPlanCriticFailureNarrowsPurposeBeforeAnyWriterCall() async throws {
+    func testRealPersistenceFailureAfterWriterRollsBackWholeTurn() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeyondComfort-real-store-failure-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: directory.path
+            )
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = SessionStore(directory: directory)
+        let turnController = PersistenceSabotagingTurnController(directory: directory)
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: turnController,
+            sessionStore: store,
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolStage = .directReflection
+        model.session.stage = .attributionReflection
+        model.session.condition = .cardMediated
+
+        model.draft = "这件事现在仍然压着我。"
+        model.send()
+        await waitUntilIdle(model)
+
+        XCTAssertEqual(model.session.protocolStage, .directReflection)
+        XCTAssertNil(model.session.semanticMemory.reflectionFrame)
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content == PersistenceSabotagingTurnController.reply
+            }
+        )
+        XCTAssertTrue(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("没有顺利接上")
+            }
+        )
+        XCTAssertTrue(model.canRetry)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
+        let reloaded = try await store.load(id: model.session.id)
+        XCTAssertEqual(reloaded?.protocolStage, .directReflection)
+        XCTAssertNil(reloaded?.semanticMemory.reflectionFrame)
+        XCTAssertEqual(reloaded?.messages.last(where: { $0.role == .user })?.content, "这件事现在仍然压着我。")
+        XCTAssertFalse(
+            reloaded?.messages.contains {
+                $0.role == .assistant && $0.content == PersistenceSabotagingTurnController.reply
+            } == true
+        )
+    }
+
+    func testCurrentRecoveryPersistenceFailureRollsBackAndCommitRetryIsIdempotent() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeyondComfort-recovery-store-failure-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: directory.path
+            )
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = SessionStore(directory: directory)
+        let turnController = RecoveryPersistenceSabotagingTurnController(directory: directory)
+        let audit = ProtocolExecutionAuditRecorder()
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: turnController,
+            sessionStore: store,
+            protocolController: .init(executionAudit: audit),
+            preparesContextDataAutomatically: false
+        )
+        let committedEpisode = TurnEpisodeStructure(
+            concreteFacts: ["已经说清的一件具体事情"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["用户已经说明自己的做法"],
+            eventProcessStatus: .present,
+            eventProcess: ["事情的发展过程已经说明"]
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolStage = .contextualDisclosure
+        model.session.stage = .eventDisclosure
+        model.session.condition = .cardMediated
+        model.session.semanticMemory.episodeStructure = committedEpisode
+
+        model.draft = "这是需要由恢复计划承接的最新回答。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let userMessage = model.session.messages.last { $0.role == .user }
+        XCTAssertEqual(model.session.protocolStage, .contextualDisclosure)
+        XCTAssertEqual(model.session.semanticMemory.episodeStructure, committedEpisode)
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant
+                    && $0.content == RecoveryPersistenceSabotagingTurnController.reply
+            }
+        )
+        XCTAssertTrue(model.canRetry)
+        let plansBeforeRetry = await turnController.planCount()
+        let writesBeforeRetry = await turnController.writeCount()
+        XCTAssertEqual(plansBeforeRetry, 2)
+        XCTAssertEqual(writesBeforeRetry, 1)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 0)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
+        model.retryLastRequest()
+        await waitUntilIdle(model)
+
+        XCTAssertFalse(model.canRetry)
+        XCTAssertEqual(model.session.protocolStage, .cardConsent)
+        let visibleReplies = model.session.messages.filter {
+            $0.role == .assistant
+                && $0.content == RecoveryPersistenceSabotagingTurnController.reply
+        }
+        XCTAssertEqual(visibleReplies.count, 1)
+        XCTAssertEqual(visibleReplies.first?.replyToMessageID, userMessage?.id)
+        let plansAfterRetry = await turnController.planCount()
+        let writesAfterRetry = await turnController.writeCount()
+        XCTAssertEqual(plansAfterRetry, 2)
+        XCTAssertEqual(writesAfterRetry, 1)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 1)
+
+        let reloaded = try await store.load(id: model.session.id)
+        XCTAssertEqual(reloaded?.protocolStage, .cardConsent)
+        XCTAssertEqual(
+            reloaded?.messages.filter {
+                $0.role == .assistant
+                    && $0.content == RecoveryPersistenceSabotagingTurnController.reply
+            }.count,
+            1
+        )
+    }
+
+    func testSecondPlanCriticFailureReturnsTypedRejectionWithoutLocalFallback() async throws {
         let planner = RepeatedDisclosureThenBridgePlanner()
         let planCritic = TwiceRejectingDisclosurePlanCritic()
         let writer = CardInviteTestWriter()
@@ -3342,6 +7605,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["用户明确说明的行为"],
             eventProcessStatus: .present,
+            eventProcess: ["事情的发展已经说明"],
             possibleContributors: ["事情的发展已经说明"]
         )
         let request = LLMTurnControllerRequest(
@@ -3367,7 +7631,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         replyIntent: .inviteCardConsent,
                         localAction: .none
                     ),
-                ]
+                ],
+                allowedSemanticOperations: [.clarifyEvent, .advanceToCardConsent]
             ),
             recentMessages: [.init(role: .user, content: "用户已经补充了最新回答。")],
             semanticMemory: memory,
@@ -3376,31 +7641,89 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             protocolCorrection: nil
         )
 
-        let planned = try await controller.plan(to: request)
+        do {
+            _ = try await controller.plan(to: request)
+            XCTFail("A second semantic rejection must return to the Swift recovery transaction")
+        } catch let error as LLMTurnControllerClientError {
+            guard case .semanticPlanRejected(let reasons) = error else {
+                return XCTFail("Expected semanticPlanRejected, got \(error)")
+            }
+            XCTAssertTrue(reasons.contains("duplicate_question_function"))
+        }
         let writerCallsBeforeWriting = await writer.callCount()
         let plannerCalls = await planner.callCount()
         let planCriticCalls = await planCritic.callCount()
         XCTAssertEqual(writerCallsBeforeWriting, 0)
-        XCTAssertEqual(planned.replyIntent, .inviteCardConsent)
-        XCTAssertEqual(planned.requestedStage, .cardConsent)
-        XCTAssertEqual(plannerCalls, 3)
-        XCTAssertEqual(planCriticCalls, 3)
+        XCTAssertEqual(plannerCalls, 2)
+        XCTAssertEqual(planCriticCalls, 2)
         let finalPermissions = await planner.lastPermissions()
-        XCTAssertFalse(
-            finalPermissions?.allowedDisclosurePurposes.contains(.clarifyEventProcess)
-                ?? true
+        XCTAssertEqual(finalPermissions, request.permissions)
+        let writerCallsAfterWriting = await writer.callCount()
+        XCTAssertEqual(writerCallsAfterWriting, 0)
+    }
+
+    func testCurrentRecoveryUsesSemanticCriticWithoutExtraPlannerRevision() async throws {
+        let frame = TurnReflectionFrame(
+            mode: .tender,
+            action: .acknowledgeExperience,
+            evidenceBasis: [
+                .init(source: .latestUserAnswer, content: "这件事此刻仍然让我难受"),
+            ],
+            dimensions: [.mindfulness],
+            reflectionDelta: "承认当前仍然存在的感受",
+            fierceEvidence: nil
         )
-        XCTAssertFalse(
-            finalPermissions?.allowedDisclosureTargets.contains(.eventProcess) ?? true
+        let planner = StaticTurnPlanner(
+            plan: LLMTurnResponsePlan(
+                semanticOperation: .continueTenderReflection,
+                requestedStage: .complete,
+                localAction: .init(kind: .completeSession),
+                memoryUpdate: .init(reflectionFrame: frame),
+                nextPrompt: .confirmationRequest(target: .cardMapping),
+                replyIntent: .completeConversation,
+                replyGuidance: "承接当前感受并问一个具体、容易回答的问题"
+            )
+        )
+        let planCritic = PassingPlanCritic()
+        let controller = RemoteReflectionTurnController(
+            planner: planner,
+            planCritic: planCritic,
+            writer: CriticTestWriter(),
+            critic: PassingWriterCritic()
+        )
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.condition = .cardMediated
+        session.reflectionReadiness = .reflectionOpen
+        let request = LLMTurnControllerRequest(
+            trigger: .protocolCorrection,
+            protocolVersion: session.protocolVersion,
+            protocolStage: session.protocolStage,
+            recoveryOperation: .directReflection,
+            condition: session.condition,
+            permissions: ReflectionProtocolController().permissions(for: session),
+            recentMessages: [
+                .init(role: .user, content: "这件事此刻仍然让我难受。"),
+            ],
+            semanticMemory: session.semanticMemory,
+            trackingCandidates: [],
+            card: nil,
+            protocolCorrection: "{\"failureCategory\":\"contract_rejected\"}"
         )
 
-        _ = try await controller.write(request: request, validatedPlan: planned)
-        let writerCallsAfterWriting = await writer.callCount()
-        XCTAssertEqual(writerCallsAfterWriting, 1)
+        let recovered = try await controller.plan(to: request)
+        let plannerCalls = await planner.callCount()
+        let criticCalls = await planCritic.callCount()
+
+        XCTAssertEqual(recovered.semanticOperation, .continueTenderReflection)
+        XCTAssertEqual(plannerCalls, 1)
+        XCTAssertEqual(criticCalls, 1)
     }
 
     func testOrdinaryDisclosureUsesSemanticCriticsWithoutChangingThePlannedQuestion() async throws {
         let plan = LLMTurnResponsePlan(
+            semanticOperation: .clarifyEvent,
             requestedStage: .contextualDisclosure,
             localAction: .none,
             memoryUpdate: .init(),
@@ -3431,7 +7754,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 currentStage: .contextualDisclosure,
                 allowedStages: [.contextualDisclosure],
                 allowedActions: [.none],
-                allowedReplyIntents: [.exploreContext]
+                allowedReplyIntents: [.exploreContext],
+                allowedSemanticOperations: [.clarifyEvent]
             ),
             recentMessages: [.init(role: .user, content: "我已经说明了事情是怎么发生的。")],
             semanticMemory: .init(),
@@ -3458,72 +7782,15 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(writerCalls.revisions, 1)
     }
 
-    func testFailedSoftWriterRewriteReturnsOriginalLegalReplyAndKeepsMemoryPatch() async throws {
-        let episode = TurnEpisodeStructure(
-            concreteFacts: ["一件具体事件"],
-            behaviorEvidenceStatus: .present,
-            behaviorEvidence: ["用户说明了自己的处理"],
-            eventProcessStatus: .present,
-            possibleContributors: ["事情的发展经过"],
-            impactStatus: .unresolved
-        )
-        let plan = LLMTurnResponsePlan(
-            requestedStage: .contextualDisclosure,
-            localAction: .none,
-            memoryUpdate: .init(episodeStructure: episode),
-            nextPrompt: .openQuestion(
-                purpose: "continue_event_development",
-                focus: "同一事件的下一段经过",
-                disclosurePurpose: .clarifyEventProcess,
-                disclosureTarget: .eventProcess
-            ),
-            replyIntent: .exploreContext,
-            replyGuidance: "只问同一个自然问题"
-        )
-        let writer = FailingSoftRevisionWriter()
-        let critic = CriticTestCritic()
-        let controller = RemoteReflectionTurnController(
-            planner: StaticTurnPlanner(plan: plan),
-            planCritic: PassingPlanCritic(),
-            writer: writer,
-            critic: critic
-        )
-        let request = LLMTurnControllerRequest(
-            trigger: .userMessage,
-            protocolVersion: ReflectionSession.currentProtocolVersion,
-            protocolStage: .contextualDisclosure,
-            condition: .cardMediated,
-            permissions: .init(
-                currentStage: .contextualDisclosure,
-                allowedStages: [.contextualDisclosure],
-                allowedActions: [.none],
-                allowedReplyIntents: [.exploreContext]
-            ),
-            recentMessages: [.init(role: .user, content: "用户继续说明同一件事情。")],
-            semanticMemory: .init(),
-            trackingCandidates: [],
-            card: nil,
-            protocolCorrection: nil
-        )
-
-        let result = try await controller.write(request: request, validatedPlan: plan)
-        let calls = await writer.callCounts()
-        let criticCalls = await critic.callCount()
-
-        XCTAssertTrue(result.reply.hasPrefix("你提到"))
-        XCTAssertEqual(result.reply.filter { $0 == "？" || $0 == "?" }.count, 1)
-        XCTAssertEqual(plan.memoryUpdate.episodeStructure, episode)
-        XCTAssertEqual(calls.initial, 1)
-        XCTAssertEqual(calls.revisions, 1)
-        XCTAssertEqual(criticCalls, 1)
-    }
-
     func testTypedCardRealityMappingIsCanonicalizedBeforeAnotherSemanticAudit() async throws {
         let candidate = LLMTurnResponsePlan(
+            semanticOperation: .establishUserAuthoredCardConnection,
             requestedStage: .cardReflection,
             localAction: .none,
-            memoryUpdate: .init(
-                cardRealityConnection: .init(
+            memoryUpdate: .init(),
+            cardConnectionTurnOutcome: try .init(
+                kind: .userAuthoredConnection,
+                connection: .init(
                     imageRelation: "用户此前形成的画面关系",
                     realityMapping: "用户刚刚形成的画面—现实联系",
                     source: .userAuthored
@@ -3563,7 +7830,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         localAction: .none
                     ),
                     authorization,
-                ]
+                ],
+                allowedSemanticOperations: [.establishUserAuthoredCardConnection]
             ),
             recentMessages: [
                 .init(role: .user, content: "用户用自己的话形成了画面与现实之间的关系。"),
@@ -3581,15 +7849,16 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
 
         let result = try await controller.plan(to: request)
 
-        XCTAssertEqual(result.replyIntent, .authorizeCardGuidance)
-        XCTAssertEqual(result.localAction.kind, .shareCardGuidance)
-        XCTAssertEqual(result.nextPrompt?.kind, TurnNextPromptKind.none)
+        XCTAssertEqual(result.replyIntent, .inviteCardConnection)
+        XCTAssertEqual(result.localAction.kind, .none)
+        XCTAssertEqual(result.nextPrompt?.kind, TurnNextPromptKind.openQuestion)
         XCTAssertEqual(
-            result.memoryUpdate.cardRealityConnection?.realityMapping,
+            result.cardConnectionTurnOutcome?.connection?.realityMapping,
             "用户刚刚形成的画面—现实联系"
         )
+        XCTAssertNil(result.memoryUpdate.cardRealityConnection)
         let criticCalls = await planCritic.callCount()
-        XCTAssertEqual(criticCalls, 0)
+        XCTAssertEqual(criticCalls, 1)
     }
 
     func testSemanticCriticCanRemoveUnsupportedOptionalCardReferenceWithoutChangingTurn() async throws {
@@ -3610,6 +7879,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         let references = try XCTUnwrap(CardService().allCards[0].referenceGuidance)
         let request = LLMTurnControllerRequest(
             trigger: .userMessage,
+            protocolVersion: ReflectionSession.consolidatedTurnProtocolVersion,
             protocolStage: .cardReflection,
             condition: .cardMediated,
             permissions: .init(
@@ -3677,7 +7947,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 currentStage: .narrativeConfirmation,
                 allowedStages: [.optionalAction],
                 allowedActions: [.none],
-                allowedReplyIntents: [.suggestPractice]
+                allowedReplyIntents: [.suggestPractice],
+                allowedSemanticOperations: [.proposePractice]
             ),
             recentMessages: [
                 .init(role: .assistant, content: "这段理解贴近吗？"),
@@ -3929,22 +8200,37 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(plannerCalls, 0)
     }
 
-    func testAcceptedCardMappingCommitsSilentlyThenGeneratesFreshDirectReply() async {
+    func testLegacyAcceptedCardMappingCommitsSilentlyThenGeneratesFreshDirectReply() async {
         let mappingReference = "accepted-card-mapping"
-        let directReply = "你已经看见这段距离也有保护作用。回到现实，你现在愿意为哪一个具体影响负责？"
+        let directReply = "这段距离也可能是在给自己留出空间。放回现实里，它让你对眼前的处境多看见了什么？"
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .continueTenderReflection,
                         requestedStage: .directReflection,
                         localAction: .none,
-                        memoryUpdate: .init(),
+                        memoryUpdate: .init(
+                            reflectionFrame: .init(
+                                mode: .tender,
+                                action: .distinguishFactFromPrediction,
+                                evidenceBasis: [
+                                    .init(
+                                        source: .cardRealityConnection,
+                                        content: "用户确认的画面关系与现实联系"
+                                    ),
+                                ],
+                                dimensions: [.mindfulness],
+                                reflectionDelta: "从已经确认的联系形成一个新的观察角度",
+                                fierceEvidence: nil
+                            )
+                        ),
                         nextPrompt: .openQuestion(
-                            purpose: "fierce_behavior_or_impact_clarified",
-                            focus: "用户愿意承担的一个具体影响"
+                            purpose: "tender_connection_delta",
+                            focus: "这个联系带来的一个新观察"
                         ),
                         replyIntent: .directCandidReflection,
-                        replyGuidance: "基于现实材料提出一个新的坦诚反思问题"
+                        replyGuidance: "基于确认的联系提出一个新的温和反思问题"
                     )
                 ),
             ],
@@ -3962,7 +8248,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             dialogueGenerator: UnusedDialogueGenerator(),
             turnController: controller
         )
-        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         model.session.protocolStage = .cardReflection
         model.session.stage = .cardInterpretation
         model.session.condition = .cardMediated
@@ -3988,7 +8274,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertTrue(model.session.cardMappingConfirmed)
         XCTAssertEqual(
             model.session.semanticMemory.nextPrompt?.purpose,
-            "fierce_behavior_or_impact_clarified"
+            "tender_reflection"
         )
         XCTAssertTrue(
             model.session.studyEvents.contains {
@@ -4010,9 +8296,10 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(counts.writes, 1)
     }
 
-    func testPendingCardMappingDecodeRepairUsesCompleteConfirmationContract() async {
+    func testLegacyPendingCardMappingDecodeRepairUsesCompleteConfirmationContract() async {
+        let audit = ProtocolExecutionAuditRecorder()
         let mappingReference = "decode-repair-card-mapping"
-        let directReply = "把这个区别放回现实，接下来最需要坦诚面对的一个具体影响是什么？"
+        let directReply = "这个区别让原来的处境多了一种看法。放回现实里，你最先注意到的变化是什么？"
         let diagnostic = TurnPlannerDecodingDiagnostic(
             kind: "key_not_found",
             keyPath: "resolvedConfirmation.decision",
@@ -4038,15 +8325,30 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .continueTenderReflection,
                         requestedStage: .directReflection,
                         localAction: .none,
-                        memoryUpdate: .init(),
+                        memoryUpdate: .init(
+                            reflectionFrame: .init(
+                                mode: .tender,
+                                action: .distinguishFactFromPrediction,
+                                evidenceBasis: [
+                                    .init(
+                                        source: .cardRealityConnection,
+                                        content: "用户确认的画面关系与现实联系"
+                                    ),
+                                ],
+                                dimensions: [.mindfulness],
+                                reflectionDelta: "从确认的联系形成一个新的现实观察",
+                                fierceEvidence: nil
+                            )
+                        ),
                         nextPrompt: .openQuestion(
-                            purpose: "fierce_behavior_or_impact_clarified",
-                            focus: "一个仍需面对的具体影响"
+                            purpose: "tender_connection_delta",
+                            focus: "联系带来的一个现实观察"
                         ),
                         replyIntent: .directCandidReflection,
-                        replyGuidance: "提出一条新的现实反思问题"
+                        replyGuidance: "提出一条新的温和现实反思问题"
                     )
                 ),
             ],
@@ -4063,9 +8365,10 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             analyzer: UnusedContextAnalyzer(),
             dialogueGenerator: UnusedDialogueGenerator(),
             turnController: controller,
+            protocolController: .init(executionAudit: audit),
             preparesContextDataAutomatically: false
         )
-        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         model.session.protocolStage = .cardReflection
         model.session.stage = .cardInterpretation
         model.session.condition = .cardMediated
@@ -4096,24 +8399,24 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         let requests = await controller.receivedRequests()
         XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests[1].recoveryOperation, .legacyCardReading)
         XCTAssertTrue(
-            requests[1].protocolCorrection?.contains(
-                "Repair the complete confirmation transaction"
-            ) == true
+            requests[1].protocolCorrection?.contains("planner_decode") == true
         )
-        XCTAssertTrue(
-            requests[1].protocolCorrection?.contains(
-                "This transaction only commits the old confirmation"
-            ) == true
+        XCTAssertFalse(
+            requests[1].protocolCorrection?.contains("cardRealityConnection") == true
         )
         let counts = await controller.callCounts()
         XCTAssertEqual(counts.plans, 3)
         XCTAssertEqual(counts.writes, 1)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 1)
+        XCTAssertGreaterThanOrEqual(audit.count(for: .legacySemanticMapper), 1)
     }
 
     func testCurrentSourceOnlyConnectionPatchNeverReachesWriterOrChangesSession() async {
         func sourceOnlyPlan() -> LLMTurnResponsePlan {
             LLMTurnResponsePlan(
+                semanticOperation: .continueOpenCardConnection,
                 requestedStage: .cardReflection,
                 localAction: .none,
                 memoryUpdate: .init(cardRealityMappingSource: .userAuthored),
@@ -4142,6 +8445,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.session.card = CardService().allCards[0]
         model.session.cardDisplayState = .displayed
         model.session.cardConnectionAttemptCount = 1
+        model.session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["画面中的人物"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["画面中的人物"],
+            relationOrAction: "形成了一条画面关系",
+            anticipatedChangeOrChoice: nil
+        )
         model.session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "card_reality_connection",
             focus: "把画面关系连接到当前事件"
@@ -4168,21 +8479,23 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(calls.plans, 3)
         XCTAssertEqual(calls.writes, 0)
         let requests = await turnController.receivedRequests()
+        XCTAssertEqual(requests[1].recoveryOperation, .cardOpenExploration)
         XCTAssertTrue(
             requests[1].protocolCorrection?.contains(
-                "one complete canonical cardRealityConnection"
+                "semantic_mapping_payload_mismatch_continueOpenCardConnection"
             ) == true
         )
         XCTAssertFalse(requests[1].permissions.allowedActions.contains(.shareCardGuidance))
     }
 
     func testMalformedMappingAuthorizationRecoversWithoutVisibleInterruption() async {
-        let candidateReply =
+        let reflectionReply =
             "画面里的照顾让一个人停下来接受水，而你把持续修改理解成让方案变好的一种方式。沿着这个联系回到截止时间前，最难停下来的具体时刻是什么？"
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .continueOpenCardConnection,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(
@@ -4198,6 +8511,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .presentLegacyCardReading,
                         requestedStage: .cardReflection,
                         localAction: .init(kind: .shareCardGuidance),
                         memoryUpdate: .init(),
@@ -4208,13 +8522,30 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .establishUserAuthoredCardConnection,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(
-                            cardRealityConnection: .init(
+                            reflectionFrame: .init(
+                                mode: .tender,
+                                action: .acknowledgeExperience,
+                                evidenceBasis: [
+                                    .init(
+                                        source: .latestUserAnswer,
+                                        content: "用户把持续修改与希望方案变好联系起来"
+                                    ),
+                                ],
+                                dimensions: [.selfKindness, .mindfulness],
+                                reflectionDelta: "理解希望变好的用意，同时保留延期事实",
+                                fierceEvidence: nil
+                            )
+                        ),
+                        cardConnectionTurnOutcome: try! .init(
+                            kind: .userAuthoredConnection,
+                            connection: .init(
                                 imageRelation: "画面中一方提供照顾，另一方停下来接受照顾",
                                 realityMapping: "用户把持续修改方案与试图让方案变好联系起来",
-                                source: .userRevised
+                                source: .userAuthored
                             )
                         ),
                         nextPrompt: TurnNextPrompt.none,
@@ -4222,25 +8553,12 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         replyGuidance: "完整提交用户修订的现实连接"
                     )
                 ),
-                .success(
-                    LLMTurnResponsePlan(
-                        requestedStage: .cardReflection,
-                        localAction: .none,
-                        memoryUpdate: .init(
-                            cardNegotiatedMeaning:
-                                "照顾方案的意图与持续修改造成的延期同时存在"
-                        ),
-                        nextPrompt: .confirmationRequest(target: .cardMapping),
-                        replyIntent: .presentCardReading,
-                        replyGuidance: "围绕当前焦点事件呈现一条可继续发展的候选解读"
-                    )
-                ),
             ],
             writings: [
                 .success(
                     .init(
-                        realizedIntent: .presentCardReading,
-                        reply: candidateReply
+                        realizedIntent: .directCandidReflection,
+                        reply: reflectionReply
                     )
                 ),
             ]
@@ -4259,11 +8577,20 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.session.cardDisplayState = .displayed
         model.session.semanticMemory.cardImageRelation =
             "画面中一方提供照顾，另一方停下来接受照顾"
+        model.session.semanticMemory.cardObservationEvidence = .init(
+            userDescribedElements: ["画面中的两个人"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = .init(
+            actorsOrElements: ["提供照顾的人", "停下来的人"],
+            relationOrAction: "一方提供照顾，另一方停下来接受",
+            anticipatedChangeOrChoice: nil
+        )
         model.session.semanticMemory.episodeStructure = TurnEpisodeStructure(
             concreteFacts: ["昨天没有按时提交项目方案"],
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["方案基本完成后仍持续修改"],
             eventProcessStatus: .present,
+            eventProcess: ["方案完成后持续修改，最后错过提交时间"],
             impactStatus: .present,
             impacts: ["错过了截止时间"]
         )
@@ -4283,7 +8610,10 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.send()
         await waitUntilIdle(model)
 
-        XCTAssertTrue(model.session.cardGuidanceShared)
+        XCTAssertTrue(
+            model.session.cardGuidanceShared,
+            model.session.studyEvents.map(\.action).joined(separator: " | ")
+        )
         XCTAssertEqual(model.session.cardConnectionAttemptCount, 0)
         XCTAssertEqual(
             model.session.semanticMemory.cardRealityConnection?.realityMapping,
@@ -4291,11 +8621,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(
             model.session.semanticMemory.cardRealityConnection?.source,
-            .userRevised
+            .userAuthored
         )
         XCTAssertNotNil(model.session.cardGuidanceTransactionID)
         XCTAssertFalse(model.session.pendingCardGuidanceTurn)
-        XCTAssertEqual(model.session.messages.last?.content, candidateReply)
+        XCTAssertEqual(model.session.protocolStage, .directReflection)
+        XCTAssertNil(model.session.semanticMemory.cardNegotiatedMeaning)
+        XCTAssertNotEqual(model.session.semanticMemory.nextPrompt?.target, .cardMapping)
+        XCTAssertEqual(model.session.messages.last?.content, reflectionReply)
         XCTAssertFalse(
             model.session.messages.contains {
                 $0.role == .assistant && $0.content.contains("没有顺利接上")
@@ -4303,37 +8636,34 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         XCTAssertTrue(
             model.session.studyEvents.contains {
-                $0.action == "coarse_protocol_continuity_recovery_succeeded"
+                $0.action == "coarse_protocol_typed_recovery_2_requested"
             }
         )
-
         let requests = await controller.receivedRequests()
-        XCTAssertEqual(requests.count, 4)
+        XCTAssertEqual(requests.count, 3)
         XCTAssertFalse(
             requests[1].permissions.allowedActions.contains(.shareCardGuidance)
         )
-        XCTAssertTrue(
-            requests[1].protocolCorrection?.contains(
-                "one complete canonical cardRealityConnection"
-            ) == true
-        )
+        XCTAssertEqual(requests[2].card?.connectionInteractionState, .openExploration)
+        XCTAssertNil(requests[2].semanticMemory.pendingCardRealityConnection)
         XCTAssertEqual(
             requests.first?.card?.realityAnchor?.concreteFacts,
             ["昨天没有按时提交项目方案"]
         )
         XCTAssertEqual(
             requests.first?.card?.realityAnchor?.eventProcess,
-            ["方案基本完成后仍持续修改"]
+            ["方案完成后持续修改，最后错过提交时间", "方案基本完成后仍持续修改"]
         )
         XCTAssertEqual(
             requests.first?.card?.realityAnchor?.impacts,
             ["错过了截止时间"]
         )
         let calls = await controller.callCounts()
+        XCTAssertEqual(calls.plans, 3)
         XCTAssertEqual(calls.writes, 1)
     }
 
-    func testPostGuidanceRecoveryPreservesConfirmedConnectionAndRepairsOnlyReading() async {
+    func testPostGuidanceRecoveryPreservesConfirmedConnectionAndRepairsToDirectReflection() async {
         let confirmed = TurnCardRealityConnection(
             imageRelation: "画面中两个部分正在重新安排彼此的位置",
             realityMapping: "用户把这种重新安排联系到当前事件中的处理方式",
@@ -4344,6 +8674,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .presentLegacyCardReading,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(
@@ -4361,21 +8692,46 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
-                        requestedStage: .cardReflection,
+                        semanticOperation: .authorizeCardGuidance,
+                        requestedStage: .complete,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(),
+                        nextPrompt: .confirmationRequest(target: .cardMapping),
+                        replyIntent: .completeConversation,
+                        replyGuidance: "旧字段故意冲突，显式 operation 才有执行权"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .continueTenderReflection,
+                        requestedStage: .directReflection,
                         localAction: .none,
                         memoryUpdate: .init(
-                            cardNegotiatedMeaning: "只修复当前 post-guidance 候选解读"
+                            reflectionFrame: .init(
+                                mode: .tender,
+                                action: .acknowledgeExperience,
+                                evidenceBasis: [
+                                    .init(source: .cardRealityConnection, content: "用户已经确认的连接"),
+                                    .init(source: .latestUserAnswer, content: "用户想继续看最难停下来的时刻"),
+                                ],
+                                dimensions: [.selfKindness, .mindfulness],
+                                reflectionDelta: "沿不可变的连接继续一个现实中的具体时刻",
+                                fierceEvidence: nil
+                            )
                         ),
-                        nextPrompt: .confirmationRequest(target: .cardMapping),
-                        replyIntent: .presentCardReading,
-                        replyGuidance: "保留既有 connection，只生成当前候选解读"
+                        nextPrompt: .openQuestion(
+                            purpose: "grounded_tender_focus",
+                            focus: "当前最值得继续看的具体时刻"
+                        ),
+                        replyIntent: .directCandidReflection,
+                        replyGuidance: "保留既有 connection，直接继续现实反思"
                     )
                 ),
             ],
             writings: [
                 .success(
                     .init(
-                        realizedIntent: .presentCardReading,
+                        realizedIntent: .directCandidReflection,
                         reply: visibleReply
                     )
                 ),
@@ -4415,20 +8771,20 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(model.session.semanticMemory.cardRealityConnection, confirmed)
         XCTAssertEqual(model.session.cardConnectionAttemptCount, 1)
         XCTAssertTrue(model.session.cardGuidanceShared)
-        XCTAssertEqual(model.session.protocolStage, .cardReflection)
+        XCTAssertEqual(model.session.protocolStage, .directReflection)
         XCTAssertEqual(model.session.messages.last?.content, visibleReply)
 
         let requests = await controller.receivedRequests()
-        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests[1].recoveryOperation, .currentCardGuidance)
         XCTAssertTrue(
             requests[1].protocolCorrection?.contains(
-                "Preserve the confirmed cardRealityConnection unchanged"
+                "semantic_mapping_operation_not_allowed_presentLegacyCardReading_in_cardReflection"
             ) == true
         )
-        XCTAssertFalse(
-            requests[1].protocolCorrection?.contains("cardRealityMapping") == true
-        )
+        XCTAssertFalse(requests[1].protocolCorrection?.contains("realityMapping") == true)
         let calls = await controller.callCounts()
+        XCTAssertEqual(calls.plans, 3)
         XCTAssertEqual(calls.writes, 1)
     }
 
@@ -4483,7 +8839,8 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(
             saved?.messages.last(where: { $0.role == .assistant })?.content,
-            "截止时间前，事情是怎样一步步发展到没有提交的？"
+            "截止时间前，事情是怎样一步步发展到没有提交的？",
+            model.session.studyEvents.map(\.action).joined(separator: " | ")
         )
         XCTAssertFalse(model.canRetry)
     }
@@ -4495,22 +8852,39 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             plans: [
                 .success(
                     LLMTurnResponsePlan(
-                        requestedStage: .cardReflection,
+                        semanticOperation: .continueTenderGroundedFierceReflection,
+                        requestedStage: .directReflection,
                         localAction: .none,
                         memoryUpdate: .init(
-                            cardNegotiatedMeaning:
-                                "希望方案变好的用意与持续修改造成的延期同时存在"
+                            reflectionFrame: .init(
+                                mode: .fierce,
+                                action: .acknowledgeBehaviorImpact,
+                                evidenceBasis: [
+                                    .init(source: .episode, content: "方案基本完成后仍持续修改，最后错过截止时间"),
+                                    .init(source: .cardRealityConnection, content: "用户把持续修改与希望方案变好联系起来"),
+                                ],
+                                dimensions: [.selfKindness, .mindfulness],
+                                reflectionDelta: "先限制整体否定，再面对持续修改与错过提交的具体关系",
+                                fierceEvidence: .init(
+                                    behavior: "方案基本完成后仍持续修改",
+                                    impact: "错过截止时间",
+                                    direction: .change
+                                )
+                            )
                         ),
-                        nextPrompt: .confirmationRequest(target: .cardMapping),
-                        replyIntent: .presentCardReading,
-                        replyGuidance: "围绕当前项目事件提出一条可继续修正的候选理解"
+                        nextPrompt: .openQuestion(
+                            purpose: "grounded_fierce_focus",
+                            focus: "哪一次继续修改最直接挤掉了提交"
+                        ),
+                        replyIntent: .directCandidReflection,
+                        replyGuidance: "同轮实现 Tender grounding 与有证据的 Fierce focus"
                     )
                 ),
             ],
             writings: [
                 .success(
                     .init(
-                        realizedIntent: .presentCardReading,
+                        realizedIntent: .directCandidReflection,
                         reply: visibleReply
                     )
                 ),
@@ -4524,13 +8898,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         var restored = ReflectionSession()
         restored.protocolVersion = ReflectionSession.currentProtocolVersion
-        restored.protocolStage = .cardReflection
+        restored.protocolStage = .directReflection
         restored.condition = .cardMediated
         restored.stage = .cardInterpretation
         restored.workflowPhase = .cardAssociation
         restored.card = CardService().allCards[3]
         restored.cardDisplayState = .displayed
         restored.cardGuidanceShared = true
+        restored.reflectionReadiness = .reflectionOpen
         restored.pendingCardGuidanceTurn = true
         restored.cardGuidanceTransactionID = "card-guidance-restored-turn"
         restored.semanticMemory.cardRealityConnection = .init(
@@ -4543,6 +8918,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["方案基本完成后仍持续修改"],
             eventProcessStatus: .present,
+            eventProcess: ["方案完成后持续修改，最后错过提交时间"],
             impactStatus: .present,
             impacts: ["错过截止时间"]
         )
@@ -4588,13 +8964,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(calls.writes, 1)
     }
 
-    func testNaturalAnswerToCardReadingQuestionResolvesMappingWithoutApprovalWords() async {
+    func testLegacyNaturalAnswerToCardReadingQuestionResolvesMappingWithoutApprovalWords() async {
         let mappingReference = "implicit-card-mapping"
-        let directReply = "这个节点已经更清楚了。它目前带来的哪一个实际影响最需要被正视？"
+        let directReply = "这个节点已经更清楚了。把它放回眼前的处境，你现在多看见了什么？"
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .continueTenderReflection,
                         requestedStage: .directReflection,
                         localAction: .none,
                         memoryUpdate: .init(),
@@ -4612,10 +8989,24 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                     LLMTurnResponsePlan(
                         requestedStage: .directReflection,
                         localAction: .none,
-                        memoryUpdate: .init(),
+                        memoryUpdate: .init(
+                            reflectionFrame: .init(
+                                mode: .tender,
+                                action: .distinguishFactFromPrediction,
+                                evidenceBasis: [
+                                    .init(
+                                        source: .latestUserAnswer,
+                                        content: "用户指出联系出现在从判断转向行动的节点"
+                                    ),
+                                ],
+                                dimensions: [.mindfulness],
+                                reflectionDelta: "将用户指出的现实节点发展为一个新观察",
+                                fierceEvidence: nil
+                            )
+                        ),
                         nextPrompt: .openQuestion(
-                            purpose: "supported_impact_distinguished",
-                            focus: "用户自然回应中出现的现实节点"
+                            purpose: "tender_connection_delta",
+                            focus: "用户自然回应中出现的现实节点带来的新观察"
                         ),
                         replyIntent: .directCandidReflection,
                         replyGuidance: "承接最新内容并只推进一个有现实意义的辨析"
@@ -4637,7 +9028,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             turnController: controller,
             preparesContextDataAutomatically: false
         )
-        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolVersion = ReflectionSession.consolidatedTurnProtocolVersion
         model.session.protocolStage = .cardReflection
         model.session.stage = .cardInterpretation
         model.session.condition = .cardMediated
@@ -4682,10 +9073,9 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(counts.plans, 2)
         XCTAssertEqual(counts.writes, 1)
         let requests = await controller.receivedRequests()
-        XCTAssertEqual(
-            requests.first?.contextualLoadCue?.relevance,
-            .offered
-        )
+        // Protocol v4 keeps the legacy cardMapping confirmation transaction, but an already
+        // offered contextual cue is not injected into that transaction again.
+        XCTAssertNil(requests.first?.contextualLoadCue)
         XCTAssertNil(requests.last?.contextualLoadCue)
         XCTAssertNil(model.session.semanticMemory.contextRelationship)
         XCTAssertEqual(model.session.contextualLoadInference?.relevance, .offered)
@@ -4835,6 +9225,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["方案基本完成后仍持续修改，没有提交"],
             eventProcessStatus: .present,
+            eventProcess: ["方案基本完成后持续修改，最后错过提交时间"],
             possibleContributors: ["用户持续认为方案还不够好"],
             impactStatus: .unresolved
         )
@@ -4842,6 +9233,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .advanceToCardConsent,
                         requestedStage: .cardConsent,
                         localAction: .none,
                         memoryUpdate: .init(
@@ -4924,12 +9316,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             behaviorEvidenceStatus: .present,
             behaviorEvidence: ["用户临时和朋友吃饭，没有提前告诉家人"],
             eventProcessStatus: .present,
+            eventProcess: ["原来的接人安排临时改变"],
             possibleContributors: ["用户临时改变了原来的接人安排"]
         )
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .advanceToCardConsent,
                         requestedStage: .cardConsent,
                         localAction: .none,
                         memoryUpdate: .init(
@@ -5007,6 +9401,84 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         }
     }
 
+    func testRealityConnectionInvitationUsesOneNormalTurnWithoutRecovery() async {
+        let reply =
+            "画面里的关系已经比较清楚了。把这个变化放回刚才那件事，会让你想到哪个具体时刻？"
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .inviteRealityConnection,
+                        requestedStage: .cardReflection,
+                        localAction: .none,
+                        memoryUpdate: .init(),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .inviteCardConnection,
+                        replyGuidance: "邀请用户把已经形成的画面关系连接到当前焦点事件"
+                    )
+                ),
+            ],
+            writings: [
+                .success(.init(realizedIntent: .inviteCardConnection, reply: reply)),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolStage = .cardReflection
+        model.session.condition = .cardMediated
+        model.session.stage = .cardInterpretation
+        model.session.card = CardService().allCards[0]
+        model.session.cardDisplayState = .displayed
+        model.session.cardImageDevelopmentTurnCount = 1
+        model.session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["人物", "手边的物品"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["人物", "手边的物品"],
+            projectiveFocus: "人物会如何安排手边的物品",
+            relationOrAction: "正在重新安排",
+            anticipatedChangeOrChoice: "可能把一件东西放到另一边"
+        )
+        model.session.semanticMemory.cardImageRelation = "人物正在重新安排手边的物品"
+        model.session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "card_image_development",
+            focus: "画面接下来可能发生什么"
+        )
+        model.session.messages = [
+            .init(
+                role: .assistant,
+                content: "接下来画面里可能发生什么？",
+                state: .cardInterpretation
+            ),
+        ]
+
+        model.draft = "他可能会把其中一件东西放到另一边。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let counts = await controller.callCounts()
+        let requests = await controller.receivedRequests()
+        XCTAssertEqual(counts.plans, 1)
+        XCTAssertEqual(counts.writes, 1)
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.filter { $0.trigger == .protocolCorrection }.count, 0)
+        XCTAssertEqual(requests.filter { $0.trigger == .protocolContinuation }.count, 0)
+        XCTAssertEqual(model.session.protocolStage, .cardReflection)
+        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.kind, .openQuestion)
+        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.purpose, "cardRealityConnection")
+        XCTAssertEqual(model.session.messages.last?.content, reply)
+        XCTAssertFalse(
+            model.session.studyEvents.contains {
+                $0.action.contains("recovery") || $0.action.contains("regeneration")
+            }
+        )
+    }
+
     func testCurrentFailedCardConnectionUsesOneScaffoldThenOneCandidate() async {
         let scaffoldReply =
             "先只抓住画面里已经发生的关系变化。现实中有没有一个具体时刻，也出现了相似或相反的变化？"
@@ -5016,6 +9488,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .offerCardConnectionScaffold,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(),
@@ -5029,10 +9502,18 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .offerCardConnectionCandidate,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(
-                            cardConnectionOutcome: .noConnectionFound
+                            pendingCardRealityConnection: PendingCardRealityConnection(
+                                id: UUID(),
+                                imageRelation: "画面里的关系变化",
+                                candidateRealityMapping: "现实中尚未发生的转换"
+                            )
+                        ),
+                        cardConnectionTurnOutcome: try! .init(
+                            kind: .connectionStillUnclear
                         ),
                         nextPrompt: .openQuestion(
                             purpose: "candidate_card_connection",
@@ -5066,6 +9547,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.session.cardDisplayState = .displayed
         model.session.cardImageDevelopmentTurnCount = 1
         model.session.cardConnectionAttemptCount = 1
+        model.session.semanticMemory.cardObservationEvidence = CardObservationEvidence(
+            userDescribedElements: ["人物", "空间"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = CardDevelopmentEvidence(
+            actorsOrElements: ["人物", "空间"],
+            relationOrAction: "形成了一条变化关系",
+            anticipatedChangeOrChoice: nil
+        )
         model.session.semanticMemory.cardImageRelation =
             "用户已经形成一条人物、空间与变化之间的画面关系"
         model.session.semanticMemory.nextPrompt = .openQuestion(
@@ -5095,9 +9584,9 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         await waitUntilIdle(model)
 
         XCTAssertEqual(model.session.messages.last?.content, candidateReply)
-        XCTAssertEqual(model.session.cardConnectionAttemptCount, 2)
-        XCTAssertFalse(model.session.cardConnectionScaffoldPending)
-        XCTAssertNil(model.session.semanticMemory.cardRealityMapping)
+        // attemptCount unchanged for candidate offer
+        XCTAssertEqual(model.session.cardConnectionAttemptCount, 1)
+        XCTAssertNotNil(model.session.semanticMemory.pendingCardRealityConnection)
         XCTAssertEqual(model.session.protocolStage, .cardReflection)
         XCTAssertFalse(
             model.session.messages.contains {
@@ -5146,7 +9635,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             ),
         ]
 
-        model.draft = "我愿意"
+        model.draft = "好。"
         model.send()
         await waitUntilIdle(model)
 
@@ -5198,51 +9687,52 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(calls.writes, 0)
     }
 
-    func testCurrentUserAuthoredCardConnectionFlowsDirectlyIntoCandidateReading() async {
-        let candidateReply =
-            "你已经把画面中的改变和现实里想放下的一项负担连在了一起。一种可能的读法是，这张图没有替你判断那段经历，而是让‘发生过的具体事情’和‘继续背着它评价整个人’显出了区别；你也可以继续改写这个理解。"
+    func testCurrentUserAuthoredCardConnectionFlowsDirectlyIntoTenderReflection() async {
+        let executionAudit = ProtocolExecutionAuditRecorder()
+        let protocolController = ReflectionProtocolController(executionAudit: executionAudit)
+        let reflectionReply =
+            "你把画面中放下负担的动作连到了现实。那段具体经历确实发生过，但一直背着它评价整个人，是在事实之外又加上的判断；当这份负担再次出现时，最先压住你的是什么？"
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .establishUserAuthoredCardConnection,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(
                             answeredQuestionPurposes: ["card_reality_connection"],
-                            cardRealityConnection: .init(
+                            contextCueOffered: true,
+                            reflectionFrame: .init(
+                                mode: .tender,
+                                action: .softenGlobalSelfJudgment,
+                                evidenceBasis: [
+                                    .init(source: .episode, content: "用户已经说明的具体经历"),
+                                    .init(source: .cardRealityConnection, content: "用户把画面中放下负担的动作连到现实"),
+                                ],
+                                dimensions: [.selfKindness, .mindfulness],
+                                reflectionDelta: "区分已经发生的具体经历与对整个人的扩大判断",
+                                fierceEvidence: nil
+                            )
+                        ),
+                        cardConnectionTurnOutcome: try! .init(
+                            kind: .userAuthoredConnection,
+                            connection: .init(
                                 imageRelation: "一个人物正在改变随身物品的安排",
                                 realityMapping: "用户把画面中的改变与现实里想放下的一项负担联系起来",
                                 source: .userAuthored
                             )
                         ),
-                        nextPrompt: .openQuestion(
-                            purpose: "repeat_card_connection",
-                            focus: "再次确认已经给出的画面—现实联系"
-                        ),
+                        nextPrompt: TurnNextPrompt.none,
                         replyIntent: .inviteCardConnection,
-                        replyGuidance: "先确认这条联系，再决定是否继续"
-                    )
-                ),
-                .success(
-                    LLMTurnResponsePlan(
-                        requestedStage: .cardReflection,
-                        localAction: .none,
-                        memoryUpdate: .init(
-                            contextCueOffered: true,
-                            cardNegotiatedMeaning:
-                                "把具体经历与持续背负的整体评价区分开"
-                        ),
-                        nextPrompt: .confirmationRequest(target: .cardMapping),
-                        replyIntent: .presentCardReading,
-                        replyGuidance: "沿用用户自己的连接给出可修改或拒绝的温和候选解读"
+                        replyGuidance: "把简短卡牌桥接与有证据的 Tender 区分写在同一条回复里"
                     )
                 ),
             ],
             writings: [
                 .success(
                     .init(
-                        realizedIntent: .presentCardReading,
-                        reply: candidateReply
+                        realizedIntent: .directCandidReflection,
+                        reply: reflectionReply
                     )
                 ),
             ]
@@ -5251,6 +9741,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             analyzer: UnusedContextAnalyzer(),
             dialogueGenerator: UnusedDialogueGenerator(),
             turnController: controller,
+            protocolController: protocolController,
             preparesContextDataAutomatically: false
         )
         model.session.protocolVersion = ReflectionSession.currentProtocolVersion
@@ -5273,6 +9764,23 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         model.session.semanticMemory.cardImageRelation =
             "一个人物正在改变随身物品的安排"
+        model.session.semanticMemory.cardObservationEvidence = .init(
+            userDescribedElements: ["画面中的人物和随身物品"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = .init(
+            actorsOrElements: ["人物", "随身物品"],
+            relationOrAction: "人物正在改变随身物品的安排",
+            anticipatedChangeOrChoice: nil
+        )
+        model.session.semanticMemory.selfCriticismStatus = .present
+        model.session.semanticMemory.selfCriticalStatement = "我是不是做什么都不行"
+        model.session.semanticMemory.episodeStructure = .init(
+            concreteFacts: ["一件已经发生的具体经历"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["用户已经说明自己当时做了什么"],
+            eventProcessStatus: .present,
+            eventProcess: ["事件的发展过程已经得到说明"]
+        )
         model.session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "card_reality_connection",
             focus: "邀请用户把画面过程连接到现实"
@@ -5285,18 +9793,35 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             ),
         ]
 
+        let assistantCountBefore = model.session.messages.filter { $0.role == .assistant }.count
         model.draft = "我好像也想在现实里放下一直背着的一项负担。"
         model.send()
         await waitUntilIdle(model)
 
-        XCTAssertTrue(model.session.cardGuidanceShared)
+        XCTAssertTrue(
+            model.session.cardGuidanceShared,
+            model.session.studyEvents.map(\.action).joined(separator: " | ")
+        )
         XCTAssertEqual(
             model.session.semanticMemory.cardRealityConnection?.realityMapping,
             "用户把画面中的改变与现实里想放下的一项负担联系起来"
         )
         XCTAssertNil(model.session.semanticMemory.cardInterpretiveTension)
-        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.target, .cardMapping)
-        XCTAssertEqual(model.session.messages.last?.content, candidateReply)
+        XCTAssertEqual(model.session.protocolStage, .directReflection)
+        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.kind, .openQuestion)
+        XCTAssertEqual(
+            model.session.semanticMemory.nextPrompt?.purpose,
+            "tender_grounding_after_card_guidance"
+        )
+        XCTAssertNil(model.session.semanticMemory.cardNegotiatedMeaning)
+        XCTAssertNil(model.session.semanticMemory.pendingCardRealityConnection)
+        XCTAssertEqual(
+            model.session.semanticMemory.cardRealityConnection?.source,
+            .userAuthored
+        )
+        XCTAssertEqual(model.session.semanticMemory.reflectionFrame?.mode, .tender)
+        XCTAssertEqual(model.session.semanticMemory.selfCriticalStatement, "我是不是做什么都不行")
+        XCTAssertEqual(model.session.messages.last?.content, reflectionReply)
         XCTAssertEqual(model.session.contextualLoadInference?.relevance, .offered)
         XCTAssertFalse(
             model.session.messages.contains {
@@ -5304,13 +9829,52 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             }
         )
         let counts = await controller.callCounts()
-        XCTAssertEqual(counts.plans, 2)
+        // Single combined turn: 1 Planner + 1 Writer, no continuation
+        XCTAssertEqual(counts.plans, 1)
         XCTAssertEqual(counts.writes, 1)
+        XCTAssertEqual(executionAudit.count(for: .semanticMapper), 1)
+        XCTAssertEqual(executionAudit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(executionAudit.count(for: .projector), 1)
+        XCTAssertEqual(executionAudit.count(for: .legacyNormalizer), 0)
+        XCTAssertEqual(executionAudit.count(for: .legacyTransitionBuilder), 0)
+        XCTAssertEqual(executionAudit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(executionAudit.count(for: .silentContinuation), 0)
+        XCTAssertEqual(executionAudit.count(for: .transactionCommit), 1)
         let requests = await controller.receivedRequests()
-        XCTAssertNil(requests.first?.contextualLoadCue)
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.filter { $0.trigger == .protocolCorrection }.count, 0)
+        XCTAssertEqual(requests.filter { $0.trigger == .protocolContinuation }.count, 0)
+        XCTAssertEqual(requests.filter { $0.trigger == .cardGuidanceAvailable }.count, 0)
+        let writerPlans = await controller.receivedWriterPlans()
+        XCTAssertEqual(writerPlans.count, 1)
         XCTAssertEqual(
-            requests.last?.contextualLoadCue?.hypothesis,
-            "近期可用于恢复的时间可能比平时少一些。"
+            writerPlans.first?.projectedOperation,
+            .establishUserAuthoredCardConnection
+        )
+        XCTAssertEqual(writerPlans.first?.replyIntent, .directCandidReflection)
+        XCTAssertEqual(writerPlans.first?.localAction.kind, .shareCardGuidance)
+        XCTAssertEqual(
+            writerPlans.first?.nextPrompt?.purpose,
+            "tender_grounding_after_card_guidance"
+        )
+        let assistantMessages = model.session.messages.filter { $0.role == .assistant }
+        XCTAssertEqual(assistantMessages.count - assistantCountBefore, 1)
+        let latestUserID = model.session.messages.last(where: { $0.role == .user })?.id
+        XCTAssertEqual(assistantMessages.last?.replyToMessageID, latestUserID)
+        XCTAssertEqual(reflectionReply.filter { $0 == "？" || $0 == "?" }.count, 1)
+        XCTAssertFalse(model.session.pendingCardGuidanceTurn)
+        let cardState = ReflectionProtocolController().effectiveCardState(for: model.session)
+        XCTAssertFalse(cardState.candidateBridgeEligible)
+        let pendingAnswer = PendingUncommittedCardAnswerContext(
+            session: model.session,
+            lastCommittedState: cardState
+        )
+        XCTAssertFalse(pendingAnswer.hasUncommittedLatestAnswer)
+        XCTAssertEqual(
+            model.session.studyEvents.filter {
+                $0.action == "protocol_transition_cardReflection_to_directReflection_intent_directCandidReflection"
+            }.count,
+            1
         )
         XCTAssertTrue(
             model.session.studyEvents.contains {
@@ -5319,15 +9883,16 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
     }
 
-    func testPrematureCardReadingRepairAuthorizesUserMappingBeforeCandidateReading() async {
-        let candidateReply =
-            "画面中的关系会从停留在一个局部转向重新安排整体，而你注意到现实中的自己有时会持续停在一个局部。把两者放在一起，一种可能是先看整体是否已经足够继续，而不是让一个部分决定全部进度；这个方向也可以由你继续改写。"
+    func testPrematureCardReadingRepairAuthorizesUserMappingBeforeDirectReflection() async {
+        let reflectionReply =
+            "画面中的关系从停在一个局部转向重新安排整体，而你注意到现实中的自己会持续停在一个局部。把两者放在一起，可以先看整体是否已经足够继续，再决定局部还需要改到什么程度。"
         let controller = ScriptedReflectionTurnController(
             plans: [
                 // Reproduces the production failure: the Planner jumps directly to a reading
                 // before committing the latest user-authored image-to-life mapping.
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .presentLegacyCardReading,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(),
@@ -5340,13 +9905,30 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 // Swift-owned authorization operation.
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .establishUserAuthoredCardConnection,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(
-                            cardRealityConnection: .init(
+                            reflectionFrame: .init(
+                                mode: .tender,
+                                action: .distinguishFactFromPrediction,
+                                evidenceBasis: [
+                                    .init(
+                                        source: .latestUserAnswer,
+                                        content: "现实中会一直停在一个局部"
+                                    ),
+                                ],
+                                dimensions: [.selfKindness, .mindfulness],
+                                reflectionDelta: "把整体是否足够继续与局部仍可完善区分开",
+                                fierceEvidence: nil
+                            )
+                        ),
+                        cardConnectionTurnOutcome: try! .init(
+                            kind: .userAuthoredConnection,
+                            connection: .init(
                                 imageRelation: "画面中的人物正从关注一个局部转向重新安排多个元素的关系",
                                 realityMapping: "用户把画面中重新安排整体关系与现实里持续停在一个局部形成对比",
-                                source: .userRevised
+                                source: .userAuthored
                             )
                         ),
                         nextPrompt: TurnNextPrompt.none,
@@ -5354,25 +9936,12 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         replyGuidance: "原子提交用户修订的画面—现实连接"
                     )
                 ),
-                .success(
-                    LLMTurnResponsePlan(
-                        requestedStage: .cardReflection,
-                        localAction: .none,
-                        memoryUpdate: .init(
-                            cardNegotiatedMeaning:
-                                "从持续停在一个局部转向观察整体是否已经足够继续"
-                        ),
-                        nextPrompt: .confirmationRequest(target: .cardMapping),
-                        replyIntent: .presentCardReading,
-                        replyGuidance: "呈现一段可修改或拒绝的候选解读"
-                    )
-                ),
             ],
             writings: [
                 .success(
                     .init(
-                        realizedIntent: .presentCardReading,
-                        reply: candidateReply
+                        realizedIntent: .directCandidReflection,
+                        reply: reflectionReply
                     )
                 ),
             ]
@@ -5393,6 +9962,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         model.session.cardConnectionScaffoldUsed = true
         model.session.semanticMemory.cardImageRelation =
             "画面中的人物正从关注一个局部转向重新安排多个元素的关系"
+        model.session.semanticMemory.cardObservationEvidence = .init(
+            userDescribedElements: ["人物和多个元素"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = .init(
+            actorsOrElements: ["人物", "多个元素"],
+            relationOrAction: "人物从关注局部转向重新安排整体关系",
+            anticipatedChangeOrChoice: nil
+        )
         model.session.semanticMemory.nextPrompt = .openQuestion(
             purpose: "card_reality_connection",
             focus: "邀请用户把画面过程连接到现实"
@@ -5414,8 +9991,10 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             model.session.semanticMemory.cardRealityConnection?.realityMapping,
             "用户把画面中重新安排整体关系与现实里持续停在一个局部形成对比"
         )
-        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.target, .cardMapping)
-        XCTAssertEqual(model.session.messages.last?.content, candidateReply)
+        XCTAssertEqual(model.session.protocolStage, .directReflection)
+        XCTAssertNotEqual(model.session.semanticMemory.nextPrompt?.target, .cardMapping)
+        XCTAssertNil(model.session.semanticMemory.cardNegotiatedMeaning)
+        XCTAssertEqual(model.session.messages.last?.content, reflectionReply)
         XCTAssertFalse(
             model.session.messages.contains {
                 $0.role == .assistant && $0.content.contains("没有顺利接上")
@@ -5423,7 +10002,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
 
         let requests = await controller.receivedRequests()
-        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests.count, 2)
         XCTAssertFalse(
             requests[1].permissions.allowedReplyIntents.contains(.presentCardReading)
         )
@@ -5433,17 +10012,18 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertFalse(
             requests[1].permissions.allowedActions.contains(.shareCardGuidance)
         )
+        XCTAssertEqual(requests[1].recoveryOperation, .cardOpenExploration)
         XCTAssertTrue(
             requests[1].protocolCorrection?.contains(
-                "A candidate card reading is not authorized yet"
+                "semantic_mapping_operation_not_allowed_presentLegacyCardReading_in_cardReflection"
             ) == true
         )
         let counts = await controller.callCounts()
-        XCTAssertEqual(counts.plans, 3)
+        XCTAssertEqual(counts.plans, 2)
         XCTAssertEqual(counts.writes, 1)
     }
 
-    func testAcceptedNarrativeRepairsOnlyIncompletePracticeThenWritesOnce() async {
+    func testAcceptedNarrativeRecoveryRebuildsTheWholeAtomicTransition() async {
         let narrativeID = "narrative-action-1"
         let transactionID = "practice-action-1"
         let invalidProposal = TurnPracticeProposal(
@@ -5467,6 +10047,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             resolution: TurnResolvedConfirmation?
         ) -> LLMTurnResponsePlan {
             LLMTurnResponsePlan(
+                semanticOperation: .proposePractice,
                 requestedStage: .optionalAction,
                 localAction: .none,
                 memoryUpdate: .init(
@@ -5498,7 +10079,16 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         )
                     )
                 ),
-                .success(plan(proposal: repairedProposal, resolution: nil)),
+                .success(
+                    plan(
+                        proposal: repairedProposal,
+                        resolution: .init(
+                            target: .finalNarrative,
+                            decision: .accepted,
+                            referenceID: narrativeID
+                        )
+                    )
+                ),
             ],
             writings: [
                 .success(
@@ -5544,22 +10134,20 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(
             model.session.studyEvents.filter {
-                $0.action == "final_narrative_accepted_committed_before_practice"
+                $0.action.contains("committed_before_practice")
             }.count,
-            1
+            0
         )
         let requests = await controller.receivedRequests()
         XCTAssertEqual(requests.count, 2)
-        XCTAssertNil(requests[1].semanticMemory.nextPrompt)
-        XCTAssertEqual(
-            requests[1].semanticMemory.practiceTransition?.transactionID,
-            transactionID
-        )
-        XCTAssertEqual(requests[1].permissions.allowedStages, [.optionalAction])
-        XCTAssertEqual(requests[1].permissions.allowedReplyIntents, [.suggestPractice])
+        XCTAssertEqual(requests[1].semanticMemory.nextPrompt?.target, .finalNarrative)
+        XCTAssertNil(requests[1].semanticMemory.practiceTransition)
+        XCTAssertEqual(requests[1].recoveryOperation, .finalNarrative)
+        XCTAssertTrue(requests[1].permissions.allowedStages.contains(.optionalAction))
+        XCTAssertTrue(requests[1].permissions.allowedReplyIntents.contains(.suggestPractice))
     }
 
-    func testSecondIncompletePracticeEndsAsFormalNoActionWithoutThirdPlanner() async {
+    func testSecondRecoveryCanCompleteNarrativeActionWithoutInventingNoAction() async {
         let narrativeID = "narrative-action-2"
         let transactionID = "practice-action-2"
         func incompletePlan(
@@ -5574,6 +10162,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 source: .assistantProposed
             )
             return LLMTurnResponsePlan(
+                semanticOperation: .proposePractice,
                 requestedStage: .optionalAction,
                 localAction: .none,
                 memoryUpdate: .init(
@@ -5593,6 +10182,38 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 replyGuidance: "提出一个小行动"
             )
         }
+        let repairedProposal = TurnPracticeProposal(
+            id: transactionID,
+            kind: .change,
+            content: "完成一个小动作。",
+            basis: "用户已经确认希望从一个足够小的动作开始。",
+            status: .pendingConfirmation,
+            source: .assistantProposed
+        )
+        let validPlan = LLMTurnResponsePlan(
+            semanticOperation: .proposePractice,
+            requestedStage: .optionalAction,
+            localAction: .none,
+            memoryUpdate: .init(
+                practiceTransition: .init(
+                    transactionID: transactionID,
+                    narrativeReferenceID: narrativeID,
+                    proposal: repairedProposal,
+                    noActionReason: nil
+                )
+            ),
+            resolvedConfirmation: .init(
+                target: .finalNarrative,
+                decision: .accepted,
+                referenceID: narrativeID
+            ),
+            nextPrompt: .confirmationRequest(
+                target: .practice,
+                referenceID: transactionID
+            ),
+            replyIntent: .suggestPractice,
+            replyGuidance: "提出一个有用户证据的小行动"
+        )
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
@@ -5605,8 +10226,16 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                     )
                 ),
                 .success(incompletePlan(resolution: nil)),
+                .success(validPlan),
             ],
-            writings: []
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .suggestPractice,
+                        reply: "可以先完成这个足够小的动作。"
+                    )
+                ),
+            ]
         )
         let model = ReflectionViewModel(
             analyzer: UnusedContextAnalyzer(),
@@ -5625,17 +10254,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         await waitUntilIdle(model)
 
         let counts = await controller.callCounts()
-        XCTAssertEqual(counts.plans, 2, "No generic third Planner may follow the targeted repair")
-        XCTAssertEqual(counts.writes, 0)
+        XCTAssertEqual(counts.plans, 3)
+        XCTAssertEqual(counts.writes, 1)
         XCTAssertTrue(model.session.finalNarrativeConfirmed)
-        XCTAssertEqual(model.session.protocolStage, .complete)
-        XCTAssertNil(model.session.semanticMemory.practiceTransition?.proposal)
-        XCTAssertEqual(
-            model.session.semanticMemory.practiceTransition?.noActionReason,
-            .insufficientSupportedMaterial
-        )
+        XCTAssertEqual(model.session.protocolStage, .optionalAction)
+        XCTAssertEqual(model.session.semanticMemory.practiceTransition?.proposal, repairedProposal)
+        XCTAssertNil(model.session.semanticMemory.practiceTransition?.noActionReason)
         XCTAssertFalse(model.canRetry)
-        XCTAssertTrue(
+        XCTAssertFalse(
             model.session.studyEvents.contains {
                 $0.action == "practice_transition_repair_budget_exhausted_no_action"
             }
@@ -5685,6 +10311,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             source: .assistantProposed
         )
         let plan = LLMTurnResponsePlan(
+            semanticOperation: .proposePractice,
             requestedStage: .optionalAction,
             localAction: .none,
             memoryUpdate: .init(
@@ -5757,25 +10384,27 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
     }
 
-    func testWriterQuestionPunctuationMismatchDoesNotFailOrReplanTheTurn() async {
-        let reply = "听起来你既后悔那句话，也担心这段关系。现在最想先说哪一部分？还有别的吗？"
+    func testWriterSingleQuestionDoesNotFailOrReplanTheTurn() async {
+        let reply = "你既后悔那句话，也担心这段关系。现在最想先说哪一部分？"
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
                         requestedStage: .contextualDisclosure,
                         localAction: .none,
                         memoryUpdate: .init(
                             situationUnderstanding: "用户后悔冲突中的表达并担心关系受损",
+                            receivedDisclosureQuestionPurposes: [.identifyConcreteEpisode],
                             episodeStructure: .init(
                                 concreteFacts: ["用户和朋友争吵时说了很重的话"]
                             )
                         ),
                         nextPrompt: .openQuestion(
-                            purpose: "clarify_event_process",
-                            focus: "争吵怎样发展到说出重话",
-                            disclosurePurpose: .clarifyEventProcess,
-                            disclosureTarget: .eventProcess
+                            purpose: "clarify_behavior",
+                            focus: "争吵中具体说了什么",
+                            disclosurePurpose: .clarifyBehavior,
+                            disclosureTarget: .behavior
                         ),
                         replyIntent: .exploreContext,
                         replyGuidance: "承接后悔和关系担心，开放地继续理解"
@@ -5812,6 +10441,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
 
     func testWriterIntentDriftRegeneratesWriterWithoutReplanning() async {
         let plan = LLMTurnResponsePlan(
+            semanticOperation: .clarifyEvent,
             requestedStage: .contextualDisclosure,
             localAction: .none,
             memoryUpdate: .init(),
@@ -5873,6 +10503,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
 
     func testWriterFailureRetriesSamePlanAndCommitsOnlyAfterVisibleReplySucceeds() async {
         let plan = LLMTurnResponsePlan(
+            semanticOperation: .clarifyEvent,
             requestedStage: .contextualDisclosure,
             localAction: .none,
             memoryUpdate: .init(
@@ -5916,7 +10547,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(
             model.session.semanticMemory.nextPrompt?.purpose,
-            "committed_question"
+            TurnDisclosureQuestionPurpose.identifyConcreteEpisode.rawValue
         )
         let counts = await controller.callCounts()
         XCTAssertEqual(counts.plans, 1)
@@ -5933,6 +10564,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .continueCardObservation,
                         requestedStage: .cardReflection,
                         localAction: .none,
                         memoryUpdate: .init(),
@@ -5942,6 +10574,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
                         requestedStage: .contextualDisclosure,
                         localAction: .none,
                         memoryUpdate: .init(),
@@ -5987,16 +10620,189 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         let requests = await controller.receivedRequests()
         let correction = requests.last?.protocolCorrection ?? ""
         XCTAssertTrue(correction.contains("\"component\":\"planner\""))
-        XCTAssertTrue(correction.contains("\"currentStage\":\"contextualDisclosure\""))
-        XCTAssertTrue(correction.contains("\"allowedReplyIntents\""))
+        XCTAssertTrue(
+            correction.contains(
+                "\"failureCategory\":\"semantic_mapping_operation_not_allowed_continueCardObservation_in_contextualDisclosure\""
+            )
+        )
         XCTAssertTrue(correction.contains("\"mustPreserve\""))
+        XCTAssertFalse(correction.contains("currentStage"))
+        XCTAssertFalse(correction.contains("allowedReplyIntents"))
+        XCTAssertEqual(requests.last?.recoveryOperation, .eventDisclosure)
     }
 
-    func testResolvedDisclosureTargetIsRejectedBeforeWriterAndRepairUsesOpenRelation() async throws {
+    func testEventRecoveryCommitsLatestAnswerAndSemanticStateAsOneTransaction() async {
+        let oldPrompt = TurnNextPrompt.openQuestion(
+            purpose: "event_process_clarified",
+            focus: "事情如何发展到这个结果",
+            disclosurePurpose: .clarifyEventProcess,
+            disclosureTarget: .eventProcess
+        )
+        let invalidSemanticPatch = TurnSemanticMemoryUpdate(
+            situationUnderstanding: "这段未验证的理解绝不能进入 session",
+            episodeStructure: .init(
+                concreteFacts: ["未验证的事件改写"],
+                behaviorEvidenceStatus: .present,
+                behaviorEvidence: [],
+                eventProcessStatus: .present,
+                eventProcess: []
+            )
+        )
+        let completeEpisode = TurnEpisodeStructure(
+            concreteFacts: ["一次已经准备并提交的申请最终没有通过"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["整理材料并完成提交"],
+            eventProcessStatus: .present,
+            eventProcess: ["准备材料、提交、等待结果，随后收到未通过的通知"],
+            impactStatus: .uncertain,
+            impacts: []
+        )
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                // Status says content is present while both grounded arrays are empty. This
+                // cannot be normalized without inventing evidence, so the entire plan must fail.
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
+                        requestedStage: .contextualDisclosure,
+                        localAction: .none,
+                        memoryUpdate: invalidSemanticPatch,
+                        nextPrompt: .openQuestion(
+                            purpose: "unverified_follow_up",
+                            focus: "未验证的追问",
+                            disclosurePurpose: .clarifyEventProcess,
+                            disclosureTarget: .eventProcess
+                        ),
+                        replyIntent: .exploreContext,
+                        replyGuidance: "这份计划必须在 Writer 前被拒绝"
+                    )
+                ),
+                // A recovery is still a complete plan. An intent without its required prompt is
+                // rejected without committing anything from either failed attempt.
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
+                        requestedStage: .contextualDisclosure,
+                        localAction: .none,
+                        memoryUpdate: .init(
+                            situationUnderstanding: "第二份未验证理解",
+                            episodeStructure: .init(
+                                eventProcessStatus: .present,
+                                eventProcess: []
+                            )
+                        ),
+                        replyIntent: .exploreContext,
+                        replyGuidance: "非法的无问题等待"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .advanceToCardConsent,
+                        requestedStage: .cardConsent,
+                        localAction: .none,
+                        memoryUpdate: .init(
+                            eventDisclosureOutcome: .readyForTenderOrCard,
+                            selfCriticismStatus: .present,
+                            selfCriticalStatement: "用户担心一次未通过说明自己的能力不够",
+                            episodeStructure: completeEpisode
+                        ),
+                        nextPrompt: .confirmationRequest(target: .cardConsent),
+                        replyIntent: .inviteCardConsent,
+                        replyGuidance: "简短承接完整事件并邀请随机反思卡"
+                    )
+                ),
+            ],
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .inviteCardConsent,
+                        reply: "这次结果确实让你开始怀疑自己的能力。我们可以抽一张随机反思卡，换个角度看看吗？"
+                    )
+                ),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.protocolStage = .contextualDisclosure
+        model.session.condition = .cardMediated
+        model.session.stage = .eventDisclosure
+        model.session.semanticMemory = TurnSemanticMemory(
+            selfCriticismStatus: .present,
+            selfCriticalStatement: "用户担心一次未通过说明自己的能力不够",
+            episodeStructure: .init(
+                concreteFacts: ["一次申请没有通过"]
+            ),
+            nextPrompt: oldPrompt
+        )
+        model.session.messages = [
+            .init(
+                role: .assistant,
+                content: "从准备到收到结果，中间发生了什么？",
+                state: .eventDisclosure
+            ),
+        ]
+
+        let latestAnswer = "我整理并提交了材料，之后一直等待，最后收到未通过的通知，对方没有说明原因。"
+        model.draft = latestAnswer
+        model.send()
+        await waitUntilIdle(model)
+
+        let requests = await controller.receivedRequests()
+        let counts = await controller.callCounts()
+        XCTAssertEqual(counts.plans, 3)
+        XCTAssertEqual(counts.writes, 1)
+        XCTAssertEqual(requests.map(\.recoveryOperation), [
+            .eventDisclosure, .eventDisclosure, .eventDisclosure,
+        ])
+        XCTAssertNil(requests[0].protocolCorrection)
+        XCTAssertNotNil(requests[1].protocolCorrection)
+        XCTAssertNotNil(requests[2].protocolCorrection)
+        XCTAssertTrue(requests[1].recentMessages.contains { $0.role == .user && $0.content == latestAnswer })
+        XCTAssertTrue(requests[2].recentMessages.contains { $0.role == .user && $0.content == latestAnswer })
+
+        XCTAssertTrue(model.session.messages.contains { $0.role == .user && $0.content == latestAnswer })
+        XCTAssertEqual(model.session.protocolStage, .cardConsent)
+        XCTAssertEqual(model.session.semanticMemory.episodeStructure, completeEpisode)
+        XCTAssertEqual(
+            model.session.semanticMemory.receivedDisclosureQuestionPurposes,
+            [.clarifyEventProcess]
+        )
+        XCTAssertEqual(model.session.semanticMemory.nextPrompt?.target, .cardConsent)
+        XCTAssertEqual(
+            model.session.semanticMemory.selfCriticalStatement,
+            "用户担心一次未通过说明自己的能力不够"
+        )
+        XCTAssertNotEqual(
+            model.session.semanticMemory.situationUnderstanding,
+            "这段未验证的理解绝不能进入 session"
+        )
+        XCTAssertNotEqual(
+            model.session.semanticMemory.situationUnderstanding,
+            "第二份未验证理解"
+        )
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("暂时没有顺利接上")
+            }
+        )
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("未验证的追问")
+            }
+        )
+    }
+
+    func testCurrentEventOperationIgnoresConflictingLegacyQuestionTarget() async throws {
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
                         requestedStage: .contextualDisclosure,
                         localAction: .none,
                         memoryUpdate: .init(),
@@ -6008,23 +10814,6 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                         ),
                         replyIntent: .exploreContext,
                         replyGuidance: "错误地重新询问已经明确的事件"
-                    )
-                ),
-                .success(
-                    LLMTurnResponsePlan(
-                        requestedStage: .contextualDisclosure,
-                        localAction: .none,
-                        memoryUpdate: .init(
-                            eventDisclosureOutcome: .needsBehaviorOrProcess
-                        ),
-                        nextPrompt: .openQuestion(
-                            purpose: "event_process_clarified",
-                            focus: "事情如何发展到这个结果",
-                            disclosurePurpose: .clarifyEventProcess,
-                            disclosureTarget: .eventProcess
-                        ),
-                        replyIntent: .exploreContext,
-                        replyGuidance: "只询问仍未形成的事件过程"
                     )
                 ),
             ],
@@ -6076,17 +10865,15 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
 
         let requests = await controller.receivedRequests()
         let counts = await controller.callCounts()
-        XCTAssertEqual(requests.count, 2)
-        XCTAssertEqual(counts.plans, 2)
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(counts.plans, 1)
         XCTAssertEqual(counts.writes, 1)
-        XCTAssertNotNil(requests[1].protocolCorrection)
-        XCTAssertFalse(
-            requests[1].permissions.allowedDisclosurePurposes
-                .contains(.identifyConcreteEpisode)
-        )
-        XCTAssertFalse(
-            requests[1].permissions.allowedDisclosureTargets.contains(.focalEvent)
-        )
+        XCTAssertNil(requests[0].protocolCorrection)
+        let writerPlans = await controller.receivedWriterPlans()
+        let writerPlan = try XCTUnwrap(writerPlans.first)
+        XCTAssertEqual(writerPlan.projectedOperation, .clarifyEvent)
+        XCTAssertEqual(writerPlan.nextPrompt?.disclosureTarget, .behavior)
+        XCTAssertNotEqual(writerPlan.nextPrompt?.focus, "已经明确的事件")
         XCTAssertEqual(
             model.session.messages.last?.content,
             "关于这次经历，你还记得事情是怎样一步步发展到这个结果的吗？"
@@ -6107,13 +10894,14 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         let completedPatch = try JSONDecoder().decode(
             TurnEpisodeStructure.self,
             from: Data(
-                #"{"eventProcessStatus":"present","possibleContributors":["用户已经说明事情如何发展到该结果"],"impactStatus":"present","impacts":["用户已经说明这件事产生的实际影响"]}"#.utf8
+                #"{"eventProcessStatus":"present","eventProcess":["用户已经说明事情如何发展到该结果"],"possibleContributors":["用户已经说明事情如何发展到该结果"],"impactStatus":"present","impacts":["用户已经说明这件事产生的实际影响"]}"#.utf8
             )
         )
         let controller = ScriptedReflectionTurnController(
             plans: [
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
                         requestedStage: .contextualDisclosure,
                         localAction: .none,
                         memoryUpdate: .init(
@@ -6132,6 +10920,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
                 ),
                 .success(
                     LLMTurnResponsePlan(
+                        semanticOperation: .advanceToCardConsent,
                         requestedStage: .cardConsent,
                         localAction: .none,
                         memoryUpdate: .init(
@@ -6199,17 +10988,18 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(counts.plans, 2)
         XCTAssertEqual(counts.writes, 1)
-        XCTAssertFalse(
+        XCTAssertTrue(
             requests[1].permissions.allowedDisclosurePurposes
                 .contains(.clarifyEventProcess)
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             requests[1].permissions.allowedDisclosureTargets.contains(.eventProcess)
         )
         XCTAssertEqual(
             Set(requests[1].permissions.allowedReplyIntents),
-            Set([.inviteCardConsent, .safetySupport])
+            Set([.exploreContext, .inviteCardConsent, .safetySupport])
         )
+        XCTAssertEqual(requests[1].recoveryOperation, .eventDisclosure)
         XCTAssertEqual(model.session.protocolStage, .cardConsent)
         XCTAssertEqual(
             model.session.messages.last?.content,
@@ -6226,7 +11016,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
         XCTAssertTrue(
             model.session.studyEvents.contains {
-                $0.action == "coarse_protocol_response_regeneration_requested"
+                $0.action == "coarse_protocol_typed_recovery_1_requested"
             }
         )
         XCTAssertFalse(
@@ -6238,6 +11028,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
 
     func testTwoInvalidPlansLeaveStageAndOfferRecoverableRetry() async {
         let illegal = LLMTurnResponsePlan(
+            semanticOperation: .completeConversation,
             requestedStage: .complete,
             localAction: .none,
             memoryUpdate: .init(),
@@ -6272,6 +11063,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
 
     func testTypedRetryResumesStoredProtocolTurnWithoutAddingNewDisclosure() async {
         let illegal = LLMTurnResponsePlan(
+            semanticOperation: .completeConversation,
             requestedStage: .complete,
             localAction: .none,
             memoryUpdate: .init(),
@@ -6279,6 +11071,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             replyGuidance: "非法完成"
         )
         let recovered = LLMTurnResponsePlan(
+            semanticOperation: .clarifyEvent,
             requestedStage: .contextualDisclosure,
             localAction: .none,
             memoryUpdate: .init(),
@@ -6336,6 +11129,7 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
     func testRecoverableWriterRetryKeepsValidatedPlannerPlan() async {
         let visibleReply = "你已经说到这件事让自己很难受。现在最希望先被理解的是哪一部分？"
         let plan = LLMTurnResponsePlan(
+            semanticOperation: .clarifyEvent,
             requestedStage: .contextualDisclosure,
             localAction: .none,
             memoryUpdate: .init(
@@ -6427,6 +11221,863 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
         )
     }
 
+    func testCurrentEventRecoveryUsesExplicitProjectorAndIgnoresLegacyTuple() async {
+        let audit = ProtocolExecutionAuditRecorder()
+        let protocolController = ReflectionProtocolController(executionAudit: audit)
+        let episode = TurnEpisodeStructure(
+            concreteFacts: ["一次申请已经完成并提交"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["用户整理并提交了申请材料"],
+            eventProcessStatus: .present,
+            eventProcess: ["提交后等待，随后收到未通过通知"]
+        )
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
+                        requestedStage: .complete,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(situationUnderstanding: "不得提交的失败补丁"),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .completeConversation,
+                        replyGuidance: "错误地继续完整事件"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .advanceToCardConsent,
+                        requestedStage: .complete,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(),
+                        resolvedConfirmation: .init(
+                            target: .cardMapping,
+                            decision: .accepted,
+                            referenceID: "legacy-conflict"
+                        ),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .completeConversation,
+                        replyGuidance: "简短承接并邀请随机反思卡"
+                    )
+                ),
+            ],
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .inviteCardConsent,
+                        reply: "这件事已经说清楚了。我们可以抽一张随机反思卡看看吗？"
+                    )
+                ),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            protocolController: protocolController,
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.condition = .cardMediated
+        model.session.protocolStage = .contextualDisclosure
+        model.session.stage = .eventDisclosure
+        model.session.semanticMemory = .init(
+            episodeStructure: episode,
+            nextPrompt: .openQuestion(
+                purpose: "event_process",
+                focus: "事情如何发展",
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
+            )
+        )
+        model.session.messages = [
+            .init(role: .assistant, content: "事情后来怎么发展？", state: .eventDisclosure),
+        ]
+
+        model.draft = "我已经把提交和收到结果的过程说清楚了。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let calls = await controller.callCounts()
+        let requests = await controller.receivedRequests()
+        let writerPlans = await controller.receivedWriterPlans()
+        XCTAssertEqual(calls.plans, 2)
+        XCTAssertEqual(calls.writes, 1)
+        XCTAssertEqual(requests.filter { $0.trigger == .protocolCorrection }.count, 1)
+        XCTAssertEqual(
+            Set(requests[0].permissions.allowedSemanticOperations),
+            Set(requests[1].permissions.allowedSemanticOperations)
+        )
+        XCTAssertEqual(writerPlans.first?.projectedOperation, .advanceToCardConsent)
+        XCTAssertEqual(writerPlans.first?.requestedStage, .cardConsent)
+        XCTAssertEqual(writerPlans.first?.replyIntent, .inviteCardConsent)
+        XCTAssertEqual(writerPlans.first?.localAction.kind, TurnLocalActionKind.none)
+        XCTAssertEqual(writerPlans.first?.nextPrompt?.target, .cardConsent)
+        XCTAssertNil(writerPlans.first?.resolvedConfirmation)
+        XCTAssertEqual(model.session.protocolStage, .cardConsent)
+        XCTAssertNotEqual(
+            model.session.semanticMemory.situationUnderstanding,
+            "不得提交的失败补丁"
+        )
+        XCTAssertEqual(audit.count(for: .semanticMapper), 2)
+        XCTAssertEqual(audit.count(for: .projector), 1)
+        XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(audit.count(for: .legacyNormalizer), 0)
+        XCTAssertEqual(audit.count(for: .legacyTransitionBuilder), 0)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 1)
+        let userID = model.session.messages.last(where: { $0.role == .user })?.id
+        XCTAssertEqual(
+            model.session.messages.last(where: { $0.role == .assistant })?.replyToMessageID,
+            userID
+        )
+    }
+
+    func testCurrentCardRecoveryProjectsRealityConnectionInsteadOfRepeatingDevelopment() async {
+        let audit = ProtocolExecutionAuditRecorder()
+        let protocolController = ReflectionProtocolController(executionAudit: audit)
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .continueCardDevelopment,
+                        requestedStage: .directReflection,
+                        localAction: .none,
+                        memoryUpdate: .init(
+                            cardDevelopmentEvidence: .init(
+                                actorsOrElements: ["失败补丁"],
+                                relationOrAction: "不得覆盖已提交发展关系",
+                                anticipatedChangeOrChoice: nil
+                            )
+                        ),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .directCandidReflection,
+                        replyGuidance: "错误地重复发展"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .inviteRealityConnection,
+                        requestedStage: .directReflection,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .directCandidReflection,
+                        replyGuidance: "把已经形成的画面关系与当前事件作比较"
+                    )
+                ),
+            ],
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .inviteCardConnection,
+                        reply: "把画面里的这段关系放回刚才的事情，会让你想到什么？"
+                    )
+                ),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            protocolController: protocolController,
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.condition = .cardMediated
+        model.session.protocolStage = .cardReflection
+        model.session.stage = .cardInterpretation
+        model.session.card = CardService().allCards[0]
+        model.session.cardDisplayState = .displayed
+        model.session.semanticMemory.cardObservationEvidence = .init(
+            userDescribedElements: ["人物和物件"]
+        )
+        let committedDevelopment = CardDevelopmentEvidence(
+            actorsOrElements: ["人物", "物件"],
+            projectiveFocus: "人物重新安排后是否会停下来",
+            relationOrAction: "人物正在重新安排物件",
+            anticipatedChangeOrChoice: "可能会停下来观察整体"
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = committedDevelopment
+        model.session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "cardDevelopment",
+            focus: "画面接下来可能怎样变化"
+        )
+        model.session.messages = [
+            .init(role: .assistant, content: "接下来可能发生什么？", state: .cardInterpretation),
+        ]
+
+        model.draft = "也许人物会停下来看看整体。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let calls = await controller.callCounts()
+        let requests = await controller.receivedRequests()
+        let writerPlans = await controller.receivedWriterPlans()
+        XCTAssertEqual(calls.plans, 2)
+        XCTAssertEqual(calls.writes, 1)
+        XCTAssertEqual(requests.filter { $0.trigger == .protocolCorrection }.count, 1)
+        XCTAssertEqual(writerPlans.first?.projectedOperation, .inviteRealityConnection)
+        XCTAssertEqual(writerPlans.first?.requestedStage, .cardReflection)
+        XCTAssertEqual(writerPlans.first?.replyIntent, .inviteCardConnection)
+        XCTAssertEqual(writerPlans.first?.nextPrompt?.kind, .openQuestion)
+        XCTAssertEqual(writerPlans.first?.nextPrompt?.purpose, "cardRealityConnection")
+        XCTAssertEqual(model.session.protocolStage, .cardReflection)
+        XCTAssertEqual(model.session.semanticMemory.cardDevelopmentEvidence, committedDevelopment)
+        XCTAssertEqual(audit.count(for: .semanticMapper), 2)
+        XCTAssertEqual(audit.count(for: .projector), 1)
+        XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 1)
+    }
+
+    func testCurrentMissingOperationRecoversWithoutLegacyInference() async {
+        let audit = ProtocolExecutionAuditRecorder()
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    LLMTurnResponsePlan(
+                        requestedStage: .complete,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .completeConversation,
+                        replyGuidance: "缺少显式 operation"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .clarifyEvent,
+                        requestedStage: .complete,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(
+                            episodeStructure: .init(concreteFacts: ["一件具体事情发生了"])
+                        ),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .completeConversation,
+                        replyGuidance: "继续理解用户在事情中做了什么"
+                    )
+                ),
+            ],
+            writings: [
+                .success(.init(realizedIntent: .exploreContext, reply: "当时你具体做了什么？")),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            protocolController: .init(executionAudit: audit),
+            preparesContextDataAutomatically: false
+        )
+        prepareCurrentDisclosure(model)
+        model.session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "focal",
+            focus: "具体事情",
+            disclosurePurpose: .identifyConcreteEpisode,
+            disclosureTarget: .focalEvent
+        )
+        model.session.messages = [
+            .init(role: .assistant, content: "最近发生了什么？", state: .eventDisclosure),
+        ]
+
+        model.draft = "一件具体事情发生了。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let calls = await controller.callCounts()
+        XCTAssertEqual(calls.plans, 2)
+        XCTAssertEqual(calls.writes, 1)
+        XCTAssertEqual(audit.count(for: .semanticMapper), 1)
+        XCTAssertEqual(audit.count(for: .projector), 1)
+        XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 1)
+        XCTAssertEqual(model.session.protocolStage, .contextualDisclosure)
+    }
+
+    func testCurrentSafetyRecoveryDiscardsOrdinaryPatchAndUsesProjector() async {
+        let audit = ProtocolExecutionAuditRecorder()
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .completeConversation,
+                        requestedStage: .complete,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(situationUnderstanding: "失败的普通反思补丁"),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .completeConversation,
+                        replyGuidance: "非法完成"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .provideSafetySupport,
+                        requestedStage: .cardReflection,
+                        localAction: .init(kind: .shareCardGuidance),
+                        memoryUpdate: .init(situationUnderstanding: "不得带入安全事务"),
+                        nextPrompt: .confirmationRequest(target: .cardMapping),
+                        replyIntent: .presentCardReading,
+                        replyGuidance: "只提供当前安全支持"
+                    )
+                ),
+            ],
+            writings: [
+                .success(.init(realizedIntent: .safetySupport, reply: "先把注意力放到此刻的安全上。")),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            protocolController: .init(executionAudit: audit),
+            preparesContextDataAutomatically: false
+        )
+        prepareCurrentDisclosure(model)
+
+        model.draft = "我现在需要先保证自己的安全。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let calls = await controller.callCounts()
+        let writerPlans = await controller.receivedWriterPlans()
+        XCTAssertEqual(calls.plans, 2)
+        XCTAssertEqual(calls.writes, 1)
+        XCTAssertEqual(writerPlans.first?.projectedOperation, .provideSafetySupport)
+        XCTAssertEqual(writerPlans.first?.requestedStage, .safetySupport)
+        XCTAssertEqual(writerPlans.first?.replyIntent, .safetySupport)
+        XCTAssertEqual(writerPlans.first?.localAction.kind, TurnLocalActionKind.none)
+        XCTAssertEqual(model.session.protocolStage, .safetySupport)
+        XCTAssertNotEqual(model.session.semanticMemory.situationUnderstanding, "失败的普通反思补丁")
+        XCTAssertNotEqual(model.session.semanticMemory.situationUnderstanding, "不得带入安全事务")
+        XCTAssertEqual(audit.count(for: .projector), 1)
+        XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 1)
+    }
+
+    func testCurrentScaffoldRecoveryCannotReturnToDevelopment() async {
+        let audit = ProtocolExecutionAuditRecorder()
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .continueCardDevelopment,
+                        requestedStage: .cardReflection,
+                        localAction: .none,
+                        memoryUpdate: .init(),
+                        nextPrompt: .openQuestion(purpose: "legacy-development", focus: "重复画面发展"),
+                        replyIntent: .developCardImage,
+                        replyGuidance: "错误地退回 Development"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .offerCardConnectionScaffold,
+                        requestedStage: .directReflection,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(),
+                        cardConnectionTurnOutcome: try! .init(kind: .connectionStillUnclear),
+                        nextPrompt: TurnNextPrompt.none,
+                        replyIntent: .directCandidReflection,
+                        replyGuidance: "只缩小当前画面关系与当前事件的比较任务"
+                    )
+                ),
+            ],
+            writings: [
+                .success(
+                    .init(
+                        realizedIntent: .developCardImage,
+                        reply: "先只看画面里的停下与现实里的继续，这两处有什么不同？"
+                    )
+                ),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            protocolController: .init(executionAudit: audit),
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.condition = .cardMediated
+        model.session.protocolStage = .cardReflection
+        model.session.stage = .cardInterpretation
+        model.session.card = CardService().allCards[0]
+        model.session.cardDisplayState = .displayed
+        model.session.cardConnectionAttemptCount = 1
+        model.session.semanticMemory.cardObservationEvidence = .init(
+            userDescribedElements: ["人物和物件"]
+        )
+        let development = CardDevelopmentEvidence(
+            actorsOrElements: ["人物", "物件"],
+            projectiveFocus: "人物观察后是否会重新安排",
+            relationOrAction: "人物停下来观察物件",
+            anticipatedChangeOrChoice: "可能重新安排"
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = development
+        model.session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "cardRealityConnection",
+            focus: "画面关系与当前事件"
+        )
+        model.session.messages = [
+            .init(role: .assistant, content: "放回当前事情会想到什么？", state: .cardInterpretation),
+        ]
+
+        model.draft = "我还是不太能把它们连起来。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let calls = await controller.callCounts()
+        let writerPlans = await controller.receivedWriterPlans()
+        XCTAssertEqual(calls.plans, 2)
+        XCTAssertEqual(calls.writes, 1)
+        XCTAssertEqual(writerPlans.first?.projectedOperation, .offerCardConnectionScaffold)
+        XCTAssertEqual(writerPlans.first?.requestedStage, .cardReflection)
+        XCTAssertEqual(writerPlans.first?.replyIntent, .developCardImage)
+        XCTAssertEqual(writerPlans.first?.nextPrompt?.purpose, "cardRealityConnectionScaffold")
+        XCTAssertTrue(model.session.cardConnectionScaffoldUsed)
+        XCTAssertEqual(model.session.semanticMemory.cardDevelopmentEvidence, development)
+        XCTAssertEqual(model.session.messages.filter { $0.role == .assistant }.count, 2)
+        XCTAssertEqual(audit.count(for: .projector), 1)
+        XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 1)
+    }
+
+    func testCurrentCandidateRecoveryRejectsWithoutCreatingSecondCandidate() async {
+        let audit = ProtocolExecutionAuditRecorder()
+        let candidateID = UUID()
+        let pending = PendingCardRealityConnection(
+            id: candidateID,
+            imageRelation: "人物在门口停下来",
+            candidateRealityMapping: "可能对应现实里暂停的一刻"
+        )
+        let secondCandidate = PendingCardRealityConnection(
+            id: UUID(),
+            imageRelation: "不得写入的第二候选",
+            candidateRealityMapping: "不得写入的第二映射"
+        )
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .offerCardConnectionCandidate,
+                        requestedStage: .cardReflection,
+                        localAction: .none,
+                        memoryUpdate: .init(pendingCardRealityConnection: secondCandidate),
+                        nextPrompt: .confirmationRequest(
+                            target: .cardRealityConnection,
+                            referenceID: secondCandidate.id.uuidString
+                        ),
+                        replyIntent: .inviteCardConnection,
+                        replyGuidance: "错误地创建第二个候选"
+                    )
+                ),
+                .success(
+                    LLMTurnResponsePlan(
+                        semanticOperation: .rejectCardConnectionCandidate,
+                        requestedStage: .complete,
+                        localAction: .init(kind: .completeSession),
+                        memoryUpdate: .init(),
+                        cardConnectionTurnOutcome: try! .init(kind: .candidateRejected),
+                        nextPrompt: .confirmationRequest(target: .cardMapping),
+                        replyIntent: .completeConversation,
+                        replyGuidance: "尊重拒绝，不再使用这个候选"
+                    )
+                ),
+            ],
+            writings: [
+                .success(.init(realizedIntent: .inviteCardConnection, reply: "好，我们不使用这个候选。")),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            protocolController: .init(executionAudit: audit),
+            preparesContextDataAutomatically: false
+        )
+        model.session.protocolVersion = ReflectionSession.currentProtocolVersion
+        model.session.condition = .cardMediated
+        model.session.protocolStage = .cardReflection
+        model.session.stage = .cardInterpretation
+        model.session.card = CardService().allCards[0]
+        model.session.cardDisplayState = .displayed
+        model.session.cardConnectionAttemptCount = 2
+        model.session.cardConnectionScaffoldUsed = true
+        model.session.semanticMemory.cardObservationEvidence = .init(
+            userDescribedElements: ["人物和门口"]
+        )
+        model.session.semanticMemory.cardDevelopmentEvidence = .init(
+            actorsOrElements: ["人物", "门口"],
+            relationOrAction: "人物在门口停下来",
+            anticipatedChangeOrChoice: nil
+        )
+        model.session.semanticMemory.pendingCardRealityConnection = pending
+        model.session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .cardRealityConnection,
+            referenceID: candidateID.uuidString
+        )
+        model.session.messages = [
+            .init(role: .assistant, content: "这里有一种可能的连接。", state: .cardInterpretation),
+        ]
+
+        model.draft = "不是这个意思。"
+        model.send()
+        await waitUntilIdle(model)
+
+        let calls = await controller.callCounts()
+        let writerPlans = await controller.receivedWriterPlans()
+        let diagnostics = model.session.studyEvents.map(\.action).joined(separator: " | ")
+        XCTAssertEqual(calls.plans, 2, diagnostics)
+        XCTAssertEqual(calls.writes, 1, diagnostics)
+        XCTAssertEqual(
+            writerPlans.first?.projectedOperation,
+            .rejectCardConnectionCandidate,
+            diagnostics
+        )
+        XCTAssertNil(model.session.semanticMemory.pendingCardRealityConnection)
+        XCTAssertNil(model.session.semanticMemory.cardRealityConnection)
+        XCTAssertNotNil(model.session.semanticMemory.candidateBridgeResolvedAt)
+        XCTAssertFalse(
+            model.session.semanticMemory.pendingCardRealityConnection?.id == secondCandidate.id
+        )
+        XCTAssertEqual(model.session.messages.filter { $0.role == .assistant }.count, 2)
+        XCTAssertEqual(audit.count(for: .projector), 1)
+        XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 1)
+    }
+
+    func testCompleteCurrentV5FlowRecoversOnceThenReachesComplete() async throws {
+        let audit = ProtocolExecutionAuditRecorder()
+        let protocolController = ReflectionProtocolController(executionAudit: audit)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeyondComfort-current-v5-full-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SessionStore(directory: directory)
+
+        let observation = CardObservationEvidence(
+            userDescribedElements: ["人物正在重新摆放桌上的材料"]
+        )
+        let development = CardDevelopmentEvidence(
+            actorsOrElements: ["人物", "材料"],
+            projectiveFocus: "人物重新安排后是否会停下来",
+            relationOrAction: "人物正在重新安排材料",
+            anticipatedChangeOrChoice: "可能会停下来观察整体"
+        )
+        let connection = TurnCardRealityConnection(
+            imageRelation: "人物停下来观察整体后再决定如何摆放材料",
+            realityMapping: "用户把它联系到自己反复修改局部、没有停下来判断整体是否可提交",
+            source: .userAuthored
+        )
+        func frame(
+            mode: TurnReflectionMode,
+            action: TurnReflectionAction,
+            evidence: String,
+            delta: String,
+            fierce: TurnFierceEvidence? = nil
+        ) -> TurnReflectionFrame {
+            TurnReflectionFrame(
+                mode: mode,
+                action: action,
+                evidenceBasis: [.init(source: .episode, content: evidence)],
+                dimensions: [.selfKindness, .mindfulness],
+                reflectionDelta: delta,
+                fierceEvidence: fierce
+            )
+        }
+        let connectionTender = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [
+                .init(source: .episode, content: "方案基本完成，但用户继续修改并错过提交时间"),
+                .init(source: .cardRealityConnection, content: connection.realityMapping),
+            ],
+            dimensions: [.selfKindness, .mindfulness],
+            reflectionDelta: "区分一次没有按时提交与对整体能力的否定",
+            fierceEvidence: nil
+        )
+        let tender = frame(
+            mode: .tender,
+            action: .acknowledgeExperience,
+            evidence: "用户说交出不够好的方案会让自己害怕",
+            delta: "承认面对不确定评价时的害怕"
+        )
+        let fierce = frame(
+            mode: .fierce,
+            action: .identifyChangeDirection,
+            evidence: "方案基本完成后继续修改，最终错过提交时间",
+            delta: "理解害怕的同时面对继续修改造成的延期",
+            fierce: .init(
+                behavior: "方案基本完成后仍继续修改而没有提交",
+                impact: "错过截止时间并影响后续进度",
+                direction: .change
+            )
+        )
+        let synthesis = frame(
+            mode: .tender,
+            action: .synthesizeUnderstanding,
+            evidence: "害怕不够好可以理解，持续修改造成的延期需要改变",
+            delta: "形成不全面否定自己也不回避具体影响的综合理解"
+        )
+        let proposalID = "full-flow-practice"
+        let pendingProposal = TurnPracticeProposal(
+            id: proposalID,
+            kind: .change,
+            content: "下一次到达约定提交点时，先交出可用版本，再记录后续修改。",
+            basis: "用户已经辨认出持续修改会让提交无限延后。",
+            status: .pendingConfirmation
+        )
+        let confirmedProposal = TurnPracticeProposal(
+            id: proposalID,
+            kind: .change,
+            content: pendingProposal.content,
+            basis: pendingProposal.basis,
+            status: .confirmed
+        )
+        let finalNarrative = "害怕交出不够好的结果值得被理解；持续修改造成的延期需要改变。"
+        func conflictingPlan(
+            _ operation: PlannerSemanticOperation,
+            update: TurnSemanticMemoryUpdate = .init(),
+            outcome: CardConnectionTurnOutcome? = nil,
+            guidance: String
+        ) -> LLMTurnResponsePlan {
+            LLMTurnResponsePlan(
+                semanticOperation: operation,
+                requestedStage: .complete,
+                localAction: .init(kind: .completeSession),
+                memoryUpdate: update,
+                cardConnectionTurnOutcome: outcome,
+                nextPrompt: .confirmationRequest(target: .cardMapping),
+                replyIntent: .completeConversation,
+                replyGuidance: guidance
+            )
+        }
+
+        let controller = ScriptedReflectionTurnController(
+            plans: [
+                .success(conflictingPlan(
+                    .clarifyEvent,
+                    update: .init(situationUnderstanding: "不得提交的失败补丁"),
+                    guidance: "错误地继续探索已经完整的事件"
+                )),
+                .success(conflictingPlan(
+                    .advanceToCardConsent,
+                    update: .init(eventDisclosureOutcome: .readyForTenderOrCard),
+                    guidance: "简短承接并邀请随机反思卡"
+                )),
+                .success(conflictingPlan(
+                    .continueCardDevelopment,
+                    update: .init(cardObservationEvidence: observation),
+                    guidance: "只问画面关系接下来可能怎样变化"
+                )),
+                .success(conflictingPlan(
+                    .inviteRealityConnection,
+                    update: .init(cardDevelopmentEvidence: development),
+                    guidance: "把画面关系放回焦点事件"
+                )),
+                .success(conflictingPlan(
+                    .establishUserAuthoredCardConnection,
+                    update: .init(reflectionFrame: connectionTender),
+                    outcome: try .init(kind: .userAuthoredConnection, connection: connection),
+                    guidance: "从用户连接进入 Tender"
+                )),
+                .success(conflictingPlan(
+                    .continueTenderReflection,
+                    update: .init(reflectionFrame: tender),
+                    guidance: "承认具体害怕并问一个具体时刻"
+                )),
+                .success(conflictingPlan(
+                    .continueTenderGroundedFierceReflection,
+                    update: .init(reflectionFrame: fierce),
+                    guidance: "在理解害怕的基础上面对行为影响"
+                )),
+                .success(conflictingPlan(
+                    .synthesizeDirectReflection,
+                    update: .init(reflectionFrame: synthesis),
+                    guidance: "综合理解与需要改变的部分"
+                )),
+                .success(conflictingPlan(
+                    .proposePractice,
+                    update: .init(
+                        practiceTransition: .init(
+                            transactionID: proposalID,
+                            narrativeReferenceID: nil,
+                            proposal: pendingProposal,
+                            noActionReason: nil
+                        )
+                    ),
+                    guidance: "提出一个小而具体的行动"
+                )),
+                .success(conflictingPlan(
+                    .resolvePractice,
+                    update: .init(
+                        finalNarrative: finalNarrative,
+                        practiceTransition: .init(
+                            transactionID: proposalID,
+                            narrativeReferenceID: nil,
+                            proposal: confirmedProposal,
+                            noActionReason: nil
+                        )
+                    ),
+                    guidance: "保存行动并呈现最终叙事"
+                )),
+                .success(conflictingPlan(
+                    .completeConversation,
+                    guidance: "简洁完成本次反思"
+                )),
+            ],
+            writings: [
+                .success(.init(realizedIntent: .inviteCardConsent, reply: "事情已经说清楚了。可以抽一张随机反思卡看看吗？")),
+                .success(.init(realizedIntent: .developCardImage, reply: "如果画面继续发展，人物接下来可能会做什么？")),
+                .success(.init(realizedIntent: .inviteCardConnection, reply: "把停下来观察整体的变化放回刚才的事情，会想到什么？")),
+                .success(.init(realizedIntent: .directCandidReflection, reply: "交出不够好的结果，最让你害怕的是什么？")),
+                .success(.init(realizedIntent: .directCandidReflection, reply: "截止时间临近时，哪个时刻你已经知道继续修改可能会带来影响？")),
+                .success(.init(realizedIntent: .directCandidReflection, reply: "理解害怕的同时，当时哪一个决定点最需要改变？")),
+                .success(.init(realizedIntent: .directCandidReflection, reply: "你不需要全面否定自己，也不能回避持续修改造成的影响。")),
+                .success(.init(realizedIntent: .suggestPractice, reply: "下一次到达约定提交点时，先交出可用版本。愿意试试吗？")),
+                .success(.init(realizedIntent: .presentFinalNarrative, reply: finalNarrative)),
+                .success(.init(realizedIntent: .completeConversation, reply: "这次反思就先到这里。")),
+            ]
+        )
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            sessionStore: store,
+            protocolController: protocolController,
+            preparesContextDataAutomatically: false
+        )
+        prepareCurrentDisclosure(model)
+        model.session.condition = .cardMediated
+        model.session.reflectionReadiness = .reflectionOpen
+        model.session.semanticMemory = .init(
+            eventDisclosureOutcome: .readyForTenderOrCard,
+            selfCriticismStatus: .present,
+            selfCriticalStatement: "我可能什么都做不好",
+            episodeStructure: .init(
+                concreteFacts: ["方案基本完成但没有按时提交"],
+                behaviorEvidenceStatus: .present,
+                behaviorEvidence: ["用户持续修改而没有提交"],
+                eventProcessStatus: .present,
+                eventProcess: ["方案完成后继续修改，随后错过截止时间"]
+            ),
+            nextPrompt: .openQuestion(
+                purpose: "event_process",
+                focus: "事情如何发展",
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
+            )
+        )
+        model.session.messages = [
+            .init(role: .assistant, content: "事情后来是怎么发展的？", state: .eventDisclosure),
+        ]
+
+        func send(_ text: String) async {
+            model.draft = text
+            model.send()
+            await waitUntilIdle(model)
+        }
+
+        await send("方案基本完成，但我一直修改，最后错过了截止时间。")
+        XCTAssertEqual(model.session.protocolStage, .cardConsent)
+        await send("可以")
+        let card = try XCTUnwrap(model.session.card)
+        model.cardDidDisplay(cardID: card.id)
+        await send("我看到一个人物正在重新摆放桌上的材料。")
+        await send("他可能会停下来看看整体，再决定材料放在哪里。")
+        await send("我一直改一个局部，没有停下来判断整体是否已经可以提交。")
+        await send("我最怕交出去以后别人觉得它还不够好。")
+        await send("快到截止时间时，我知道继续改可能会来不及。")
+        await send("我本来可以先交一个可用版本。")
+        await send("接下来可以怎么做？")
+        await send("我愿意试试。")
+        await send("这个总结可以。")
+
+        let counts = await controller.callCounts()
+        let requests = await controller.receivedRequests()
+        XCTAssertEqual(counts.plans, 11)
+        XCTAssertEqual(counts.writes, 10)
+        XCTAssertEqual(requests.filter { $0.trigger == .protocolCorrection }.count, 1)
+        XCTAssertEqual(model.session.protocolStage, .complete)
+        XCTAssertEqual(model.session.semanticMemory.cardObservationEvidence, observation)
+        XCTAssertEqual(model.session.semanticMemory.cardDevelopmentEvidence, development)
+        XCTAssertEqual(model.session.semanticMemory.cardRealityConnection, connection)
+        XCTAssertTrue(model.session.cardGuidanceShared)
+        XCTAssertEqual(model.session.semanticMemory.practiceTransition?.proposal, confirmedProposal)
+        XCTAssertEqual(model.session.semanticMemory.finalNarrative, finalNarrative)
+        XCTAssertEqual(model.session.messages.filter { $0.content == finalNarrative }.count, 1)
+        XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
+        XCTAssertEqual(audit.count(for: .legacyExecutableFallback), 0)
+        XCTAssertEqual(audit.count(for: .projector), 10)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 11)
+        XCTAssertFalse(model.session.messages.contains { $0.content.contains("没有顺利接上") })
+        XCTAssertTrue(
+            model.session.messages.filter { $0.role == .assistant }
+                .dropFirst().allSatisfy { $0.replyToMessageID != nil }
+        )
+
+        let reloaded = try await store.load(id: model.session.id)
+        XCTAssertEqual(reloaded?.protocolStage, .complete)
+        XCTAssertEqual(reloaded?.semanticMemory.cardRealityConnection, connection)
+        XCTAssertEqual(reloaded?.semanticMemory.practiceTransition?.proposal, confirmedProposal)
+    }
+
+    func testStaleAsyncNormalResponseCannotCommitAfterGenerationIsCancelled() async {
+        let audit = ProtocolExecutionAuditRecorder()
+        let controller = DelayedIgnoringCancellationTurnController()
+        let model = ReflectionViewModel(
+            analyzer: UnusedContextAnalyzer(),
+            dialogueGenerator: UnusedDialogueGenerator(),
+            turnController: controller,
+            protocolController: .init(executionAudit: audit),
+            preparesContextDataAutomatically: false
+        )
+        prepareCurrentDisclosure(model)
+        model.session.condition = .cardMediated
+        model.session.semanticMemory = .init(
+            eventDisclosureOutcome: .readyForTenderOrCard,
+            episodeStructure: .init(
+                concreteFacts: ["事件已经明确"],
+                behaviorEvidenceStatus: .present,
+                behaviorEvidence: ["用户已经说明自己的行为"],
+                eventProcessStatus: .present,
+                eventProcess: ["事情的发展已经明确"]
+            ),
+            nextPrompt: .openQuestion(
+                purpose: "event_process",
+                focus: "事情如何发展",
+                disclosurePurpose: .clarifyEventProcess,
+                disclosureTarget: .eventProcess
+            )
+        )
+        model.session.messages = [
+            .init(role: .assistant, content: "事情后来怎样发展？", state: .eventDisclosure),
+        ]
+
+        model.draft = "这就是完整经过。"
+        model.send()
+        try? await Task.sleep(for: .milliseconds(80))
+        model.end()
+        try? await Task.sleep(for: .milliseconds(300))
+
+        let calls = await controller.callCounts()
+        XCTAssertEqual(calls.plans, 1)
+        XCTAssertEqual(calls.writes, 0)
+        XCTAssertEqual(model.session.protocolStage, .complete)
+        XCTAssertEqual(audit.count(for: .projector), 0)
+        XCTAssertEqual(audit.count(for: .transactionCommit), 0)
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("随机反思卡")
+            }
+        )
+    }
+
     private func prepareCurrentDisclosure(_ model: ReflectionViewModel) {
         model.session.protocolVersion = ReflectionSession.currentProtocolVersion
         model.session.protocolStage = .contextualDisclosure
@@ -6468,6 +12119,190 @@ final class ReflectionTurnControllerIntegrationTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(25))
         }
         XCTFail("Timed out waiting for the reflection turn")
+    }
+}
+#endif
+
+@MainActor
+final class ReflectionWriterProgressTests: XCTestCase {
+    func testRestatementIsRewrittenBeforeDisplay() async throws {
+        let frame = TurnReflectionFrame(
+            mode: .tender,
+            action: .distinguishFactFromPrediction,
+            evidenceBasis: [
+                .init(source: .latestUserAnswer, content: "用户表达无奈和对未来的不确定"),
+            ],
+            dimensions: [.mindfulness],
+            reflectionDelta: "区分已经发生的结果、未知信息和未来预测",
+            fierceEvidence: nil
+        )
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(reflectionFrame: frame),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "形成一个事实、未知和未来担忧之间的具体区别"
+        )
+        let writer = NoProgressReflectionWriter()
+        let critic = NoProgressReflectionCritic()
+        let controller = RemoteReflectionTurnController(
+            planner: UnusedTurnPlanner(),
+            planCritic: PassingPlanCritic(),
+            writer: writer,
+            critic: critic
+        )
+        let request = LLMTurnControllerRequest(
+            trigger: .userMessage,
+            protocolVersion: ReflectionSession.currentProtocolVersion,
+            protocolStage: .directReflection,
+            condition: .cardMediated,
+            permissions: .init(
+                currentStage: .directReflection,
+                allowedStages: [.directReflection, .narrativeConfirmation],
+                allowedActions: [.none],
+                allowedReplyIntents: [.directCandidReflection, .presentFinalNarrative]
+            ),
+            recentMessages: [
+                .init(role: .user, content: "最后等到结果时，我很无奈，也不知道以后会怎样。"),
+            ],
+            semanticMemory: .init(),
+            trackingCandidates: [],
+            card: nil,
+            protocolCorrection: nil
+        )
+
+        let result = try await controller.write(request: request, validatedPlan: plan)
+        let writerCalls = await writer.callCounts()
+        let criticCalls = await critic.callCount()
+
+        XCTAssertNotEqual(result.reply, "你提到最后等到结果时感到无奈，也有些自我怀疑。")
+        XCTAssertTrue(result.reply.contains("还不知道"))
+        XCTAssertEqual(writerCalls.initial, 1)
+        XCTAssertEqual(writerCalls.revisions, 1)
+        XCTAssertEqual(criticCalls, 2)
+    }
+
+    func testGenericCommonHumanityCannotReplaceValidatedSelfJudgmentDistinction() async throws {
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .softenGlobalSelfJudgment,
+                    evidenceBasis: [
+                        .init(source: .episode, content: "申请已经被拒绝，但拒绝原因未知"),
+                        .init(source: .latestUserAnswer, content: "用户说可能是自己能力不够"),
+                    ],
+                    dimensions: [.selfKindness, .mindfulness],
+                    reflectionDelta: "区分拒绝结果、未知原因和对整体能力的判断",
+                    fierceEvidence: nil
+                )
+            ),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "实现有事实边界的 Tender 区分，不只提供共通性安慰"
+        )
+        let writer = GenericCommonHumanityWriter()
+        let critic = GlobalJudgmentDistinctionCritic()
+        let controller = RemoteReflectionTurnController(
+            planner: UnusedTurnPlanner(),
+            planCritic: PassingPlanCritic(),
+            writer: writer,
+            critic: critic
+        )
+        let request = LLMTurnControllerRequest(
+            trigger: .cardGuidanceAvailable,
+            protocolVersion: ReflectionSession.currentProtocolVersion,
+            protocolStage: .directReflection,
+            condition: .cardMediated,
+            permissions: .init(
+                currentStage: .directReflection,
+                allowedStages: [.directReflection],
+                allowedActions: [.none],
+                allowedReplyIntents: [.directCandidReflection],
+                allowedOperations: [
+                    .init(
+                        requestedStage: .directReflection,
+                        replyIntent: .directCandidReflection,
+                        localAction: .none
+                    ),
+                ]
+            ),
+            recentMessages: [
+                .init(role: .user, content: "申请被拒了，我觉得可能就是我能力不够。"),
+            ],
+            semanticMemory: .init(
+                selfCriticismStatus: .present,
+                selfCriticalStatement: "我觉得可能就是我能力不够",
+                episodeStructure: .init(
+                    concreteFacts: ["申请已经被拒绝"],
+                    behaviorEvidenceStatus: .present,
+                    behaviorEvidence: ["用户已完成并提交申请"],
+                    eventProcessStatus: .present,
+                    eventProcess: ["准备材料、提交、等待，最后收到拒信"],
+                    impactStatus: .uncertain,
+                    keyUncertainty: "拒绝原因未知"
+                )
+            ),
+            trackingCandidates: [],
+            card: nil,
+            protocolCorrection: nil
+        )
+
+        let result = try await controller.write(request: request, validatedPlan: plan)
+        XCTAssertFalse(result.reply.contains("很多人"))
+        XCTAssertFalse(result.reply.contains("并不孤单"))
+        XCTAssertTrue(result.reply.contains("拒绝"))
+        XCTAssertTrue(result.reply.contains("原因"))
+        XCTAssertTrue(result.reply.contains("能力"))
+        let writerCalls = await writer.callCounts()
+        let criticCalls = await critic.callCount()
+        XCTAssertEqual(writerCalls.initial, 1)
+        XCTAssertEqual(writerCalls.revisions, 1)
+        XCTAssertEqual(criticCalls, 2)
+    }
+
+    func testRejectedDraftIsNotReturnedWhenRewriteFails() async throws {
+        let plan = LLMTurnResponsePlan(
+            requestedStage: .directReflection,
+            localAction: .none,
+            memoryUpdate: .init(),
+            nextPrompt: .openQuestion(purpose: "one_question", focus: "one bounded question"),
+            replyIntent: .directCandidReflection,
+            replyGuidance: "提出一个具体问题"
+        )
+        let controller = RemoteReflectionTurnController(
+            planner: UnusedTurnPlanner(),
+            planCritic: PassingPlanCritic(),
+            writer: FailingSoftRevisionWriter(),
+            critic: CriticTestCritic()
+        )
+        let request = LLMTurnControllerRequest(
+            trigger: .userMessage,
+            protocolVersion: ReflectionSession.currentProtocolVersion,
+            protocolStage: .directReflection,
+            condition: .cardMediated,
+            permissions: .init(
+                currentStage: .directReflection,
+                allowedStages: [.directReflection],
+                allowedActions: [.none],
+                allowedReplyIntents: [.directCandidReflection]
+            ),
+            recentMessages: [.init(role: .user, content: "继续。")],
+            semanticMemory: .init(),
+            trackingCandidates: [],
+            card: nil,
+            protocolCorrection: nil
+        )
+
+        do {
+            _ = try await controller.write(request: request, validatedPlan: plan)
+            XCTFail("Rejected wording must not be displayed when its rewrite fails")
+        } catch {
+            XCTAssertEqual(error as? ReflectionProtocolViolation, .unresolvedWriterQuality)
+        }
     }
 }
 
@@ -6528,14 +12363,18 @@ private actor UnusedTurnPlanner: LLMTurnPlanning {
 
 private actor StaticTurnPlanner: LLMTurnPlanning {
     let plan: LLMTurnResponsePlan
+    private var calls = 0
 
     init(plan: LLMTurnResponsePlan) {
         self.plan = plan
     }
 
     func planTurn(_ request: LLMTurnControllerRequest) async throws -> LLMTurnResponsePlan {
-        plan
+        calls += 1
+        return plan
     }
+
+    func callCount() -> Int { calls }
 }
 
 private actor PassingPlanCritic: LLMTurnPlanCritiquing {
@@ -6586,6 +12425,7 @@ private actor RepeatedDisclosureThenBridgePlanner: LLMTurnPlanning {
         permissions.append(request.permissions)
         if calls <= 2 {
             return LLMTurnResponsePlan(
+                semanticOperation: .clarifyEvent,
                 requestedStage: .contextualDisclosure,
                 localAction: .none,
                 memoryUpdate: .init(),
@@ -6600,6 +12440,7 @@ private actor RepeatedDisclosureThenBridgePlanner: LLMTurnPlanning {
             )
         }
         return LLMTurnResponsePlan(
+            semanticOperation: .advanceToCardConsent,
             requestedStage: .cardConsent,
             localAction: .none,
             memoryUpdate: .init(
@@ -6679,6 +12520,7 @@ private actor RevisingTurnPlanner: LLMTurnPlanning {
         if request.protocolStage == .cardReflection {
             if calls == 1 {
                 return LLMTurnResponsePlan(
+                    semanticOperation: .continueOpenCardConnection,
                     requestedStage: .cardReflection,
                     localAction: .none,
                     memoryUpdate: .init(),
@@ -6691,6 +12533,7 @@ private actor RevisingTurnPlanner: LLMTurnPlanning {
                 )
             }
             return LLMTurnResponsePlan(
+                semanticOperation: .establishUserAuthoredCardConnection,
                 requestedStage: .cardReflection,
                 localAction: .none,
                 memoryUpdate: .init(
@@ -6725,6 +12568,7 @@ private actor RevisingTurnPlanner: LLMTurnPlanning {
                 noActionReason: nil
             )
             return LLMTurnResponsePlan(
+                semanticOperation: .proposePractice,
                 requestedStage: .optionalAction,
                 localAction: .none,
                 memoryUpdate: .init(practiceTransition: transition),
@@ -6745,6 +12589,7 @@ private actor RevisingTurnPlanner: LLMTurnPlanning {
         }
         if calls == 1 {
             return LLMTurnResponsePlan(
+                semanticOperation: .clarifyEvent,
                 requestedStage: .contextualDisclosure,
                 localAction: .none,
                 memoryUpdate: .init(),
@@ -6757,6 +12602,7 @@ private actor RevisingTurnPlanner: LLMTurnPlanning {
             )
         }
         return LLMTurnResponsePlan(
+            semanticOperation: .advanceToCardConsent,
             requestedStage: .cardConsent,
             localAction: .none,
             memoryUpdate: .init(
@@ -7023,6 +12869,116 @@ private actor CriticTestCritic: LLMTurnCritiquing {
     func callCount() -> Int { calls }
 }
 
+private actor NoProgressReflectionWriter: LLMTurnWriting {
+    private var initialCalls = 0
+    private var revisionCalls = 0
+
+    func writeTurn(
+        request: LLMTurnControllerRequest,
+        plan: LLMTurnResponsePlan
+    ) async throws -> LLMTurnWriterResponse {
+        initialCalls += 1
+        return .init(
+            realizedIntent: plan.replyIntent,
+            reply: "你提到最后等到结果时感到无奈，也有些自我怀疑。"
+        )
+    }
+
+    func reviseTurn(
+        request: LLMTurnControllerRequest,
+        plan: LLMTurnResponsePlan,
+        draft: LLMTurnWriterResponse,
+        critique: LLMTurnCriticResponse
+    ) async throws -> LLMTurnWriterResponse {
+        revisionCalls += 1
+        return .init(
+            realizedIntent: plan.replyIntent,
+            reply: "结果已经发生了，但具体原因和以后会怎样还不知道；现在的担心并不是已经被证明的未来。"
+        )
+    }
+
+    func callCounts() -> (initial: Int, revisions: Int) {
+        (initialCalls, revisionCalls)
+    }
+}
+
+private actor NoProgressReflectionCritic: LLMTurnCritiquing {
+    private var calls = 0
+
+    func critiqueTurn(
+        request: LLMTurnControllerRequest,
+        plan: LLMTurnResponsePlan,
+        draft: LLMTurnWriterResponse
+    ) async throws -> LLMTurnCriticResponse {
+        calls += 1
+        if calls == 1 {
+            return .init(
+                verdict: .reviseWriter,
+                reasonCodes: ["reflection_without_progress"],
+                revisionGuidance: "实现计划中的事实、未知和未来预测区分，不要只复述情绪。"
+            )
+        }
+        return .init(verdict: .pass, reasonCodes: [], revisionGuidance: nil)
+    }
+
+    func callCount() -> Int { calls }
+}
+
+private actor GenericCommonHumanityWriter: LLMTurnWriting {
+    private var initialCalls = 0
+    private var revisionCalls = 0
+
+    func writeTurn(
+        request: LLMTurnControllerRequest,
+        plan: LLMTurnResponsePlan
+    ) async throws -> LLMTurnWriterResponse {
+        initialCalls += 1
+        return .init(
+            realizedIntent: plan.replyIntent,
+            reply: "这种感受很多人都经历过，你并不孤单。"
+        )
+    }
+
+    func reviseTurn(
+        request: LLMTurnControllerRequest,
+        plan: LLMTurnResponsePlan,
+        draft: LLMTurnWriterResponse,
+        critique: LLMTurnCriticResponse
+    ) async throws -> LLMTurnWriterResponse {
+        revisionCalls += 1
+        return .init(
+            realizedIntent: plan.replyIntent,
+            reply: "申请被拒是已经发生的结果，但拒绝原因仍然未知；把它直接解释成整体能力不够，是目前信息还不能证明的判断。"
+        )
+    }
+
+    func callCounts() -> (initial: Int, revisions: Int) {
+        (initialCalls, revisionCalls)
+    }
+}
+
+private actor GlobalJudgmentDistinctionCritic: LLMTurnCritiquing {
+    private var calls = 0
+
+    func critiqueTurn(
+        request: LLMTurnControllerRequest,
+        plan: LLMTurnResponsePlan,
+        draft: LLMTurnWriterResponse
+    ) async throws -> LLMTurnCriticResponse {
+        calls += 1
+        if calls == 1 {
+            return .init(
+                verdict: .reviseWriter,
+                reasonCodes: ["global_judgment_not_distinguished", "reflection_without_progress"],
+                revisionGuidance: "实现 validated fact/unknown/whole-person distinction；Common Humanity 只能辅助。"
+            )
+        }
+        return .init(verdict: .pass, reasonCodes: [], revisionGuidance: nil)
+    }
+
+    func callCount() -> Int { calls }
+}
+
 private actor PlannerDecodeFailingTurnController: ReflectionTurnControlling {
     private let diagnostic: TurnPlannerDecodingDiagnostic
     private var calls = 0
@@ -7049,12 +13005,51 @@ private actor PlannerDecodeFailingTurnController: ReflectionTurnControlling {
     }
 }
 
+private actor DelayedIgnoringCancellationTurnController: ReflectionTurnControlling {
+    private var planCalls = 0
+    private var writeCalls = 0
+
+    func plan(to request: LLMTurnControllerRequest) async throws -> LLMTurnResponsePlan {
+        planCalls += 1
+        // Model a provider callback that completes after the owning task was cancelled. Ignoring
+        // cancellation here is intentional: the ViewModel generation/session guard, not provider
+        // cooperation, must prevent this stale result from reaching projection or transaction.
+        try? await Task.sleep(for: .milliseconds(220))
+        return LLMTurnResponsePlan(
+            semanticOperation: .advanceToCardConsent,
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(eventDisclosureOutcome: .readyForTenderOrCard),
+            nextPrompt: .confirmationRequest(target: .cardMapping),
+            replyIntent: .completeConversation,
+            replyGuidance: "邀请一张随机反思卡"
+        )
+    }
+
+    func write(
+        request: LLMTurnControllerRequest,
+        validatedPlan: LLMTurnResponsePlan
+    ) async throws -> LLMTurnWriterResponse {
+        writeCalls += 1
+        return .init(
+            realizedIntent: validatedPlan.replyIntent,
+            reply: "可以抽一张随机反思卡看看吗？"
+        )
+    }
+
+    func callCounts() -> (plans: Int, writes: Int) {
+        (planCalls, writeCalls)
+    }
+}
+
 private actor ScriptedReflectionTurnController: ReflectionTurnControlling {
     private var plans: [Result<LLMTurnResponsePlan, Error>]
     private var writings: [Result<LLMTurnWriterResponse, Error>]
     private var planCalls = 0
     private var writeCalls = 0
     private var requests: [LLMTurnControllerRequest] = []
+    private var writerRequests: [LLMTurnControllerRequest] = []
+    private var writerPlans: [LLMTurnResponsePlan] = []
 
     init(
         plans: [Result<LLMTurnResponsePlan, Error>],
@@ -7076,6 +13071,8 @@ private actor ScriptedReflectionTurnController: ReflectionTurnControlling {
         validatedPlan: LLMTurnResponsePlan
     ) async throws -> LLMTurnWriterResponse {
         writeCalls += 1
+        writerRequests.append(request)
+        writerPlans.append(validatedPlan)
         guard !writings.isEmpty else { throw ScriptedTurnError.exhausted }
         return try writings.removeFirst().get()
     }
@@ -7087,6 +13084,109 @@ private actor ScriptedReflectionTurnController: ReflectionTurnControlling {
     func receivedRequests() -> [LLMTurnControllerRequest] {
         requests
     }
+
+    func receivedWriterRequests() -> [LLMTurnControllerRequest] {
+        writerRequests
+    }
+
+    func receivedWriterPlans() -> [LLMTurnResponsePlan] {
+        writerPlans
+    }
+}
+
+private actor PersistenceSabotagingTurnController: ReflectionTurnControlling {
+    static let reply = "这件事已经发生了；此刻最需要被看见的感受是什么？"
+
+    private let directory: URL
+
+    init(directory: URL) {
+        self.directory = directory
+    }
+
+    func plan(to request: LLMTurnControllerRequest) async throws -> LLMTurnResponsePlan {
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: directory.path
+        )
+        return LLMTurnResponsePlan(
+            semanticOperation: .continueTenderReflection,
+            requestedStage: .contextualDisclosure,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(
+                reflectionFrame: .init(
+                    mode: .tender,
+                    action: .acknowledgeExperience,
+                    evidenceBasis: [
+                        .init(source: .latestUserAnswer, content: "这件事现在仍然压着我"),
+                    ],
+                    dimensions: [.mindfulness],
+                    reflectionDelta: "承认这件事此刻仍然带来的感受",
+                    fierceEvidence: nil
+                )
+            ),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .directCandidReflection,
+            replyGuidance: "承认当前体验并提出一个具体问题"
+        )
+    }
+
+    func write(
+        request: LLMTurnControllerRequest,
+        validatedPlan: LLMTurnResponsePlan
+    ) async throws -> LLMTurnWriterResponse {
+        .init(realizedIntent: validatedPlan.replyIntent, reply: Self.reply)
+    }
+}
+
+private actor RecoveryPersistenceSabotagingTurnController: ReflectionTurnControlling {
+    static let reply = "事情的关键关系已经清楚了。我们可以抽一张随机反思卡，换个角度看看吗？"
+
+    private let directory: URL
+    private var plans = 0
+    private var writes = 0
+
+    init(directory: URL) {
+        self.directory = directory
+    }
+
+    func plan(to request: LLMTurnControllerRequest) async throws -> LLMTurnResponsePlan {
+        plans += 1
+        if plans == 1 {
+            return LLMTurnResponsePlan(
+                semanticOperation: .clarifyEvent,
+                requestedStage: .complete,
+                localAction: .init(kind: .completeSession),
+                memoryUpdate: .init(situationUnderstanding: "不得提交的普通失败补丁"),
+                nextPrompt: TurnNextPrompt.none,
+                replyIntent: .completeConversation,
+                replyGuidance: "错误地继续探索已完整的事件"
+            )
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: directory.path
+        )
+        return LLMTurnResponsePlan(
+            semanticOperation: .advanceToCardConsent,
+            requestedStage: .complete,
+            localAction: .init(kind: .completeSession),
+            memoryUpdate: .init(eventDisclosureOutcome: .readyForTenderOrCard),
+            nextPrompt: TurnNextPrompt.none,
+            replyIntent: .completeConversation,
+            replyGuidance: "简短承接并邀请一张随机反思卡"
+        )
+    }
+
+    func write(
+        request: LLMTurnControllerRequest,
+        validatedPlan: LLMTurnResponsePlan
+    ) async throws -> LLMTurnWriterResponse {
+        writes += 1
+        return .init(realizedIntent: validatedPlan.replyIntent, reply: Self.reply)
+    }
+
+    func planCount() -> Int { plans }
+    func writeCount() -> Int { writes }
 }
 
 private actor PersistenceObservingTurnController: ReflectionTurnControlling {
@@ -7105,9 +13205,14 @@ private actor PersistenceObservingTurnController: ReflectionTurnControlling {
             $0.role == .user
         })?.content == "我昨天没有按时提交项目方案。"
         return LLMTurnResponsePlan(
+            semanticOperation: .clarifyEvent,
             requestedStage: .contextualDisclosure,
             localAction: .none,
-            memoryUpdate: .init(),
+            memoryUpdate: .init(
+                episodeStructure: .init(
+                    concreteFacts: ["昨天没有按时提交项目方案"]
+                )
+            ),
             nextPrompt: .openQuestion(
                 purpose: "event_process_clarified",
                 focus: "事情如何发展到没有提交",

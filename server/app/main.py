@@ -12,7 +12,7 @@ from . import config
 from .config import CONSENT_VERSION, MAX_SESSION_PAYLOAD_BYTES, validate_production_config
 from .database import Base, engine, get_db
 from .agent import complete_json
-from .prompt_registry import turn_prompt_chat
+from .prompt_registry import CURRENT_V5_CORE_PROMPT_VERSION, turn_prompt_chat
 from .models import ReflectionSession, SessionEvent, StudySchedule, User, utcnow
 from .providers import gateway
 from .schemas import (
@@ -250,13 +250,21 @@ async def llm_chat(item: LLMChatIn, _: User = Depends(current_user)) -> LLMChatO
 @app.post("/api/llm/turn", response_model=LLMChatOut)
 async def llm_turn(item: LLMTurnPromptIn, _: User = Depends(current_user)) -> LLMChatOut:
     """Build the versioned current TurnController prompt entirely on the server."""
-    task_names = {
-        "planner": "turn_controller_planner",
-        "plan_critic": "turn_controller_plan_critic",
-        "writer": "turn_controller_writer",
-        "writer_critic": "turn_controller_critic",
-        "writer_revision": "turn_controller_writer_revision",
-    }
+    if item.promptVersion == CURRENT_V5_CORE_PROMPT_VERSION:
+        task_names = {
+            "planner": "current_v5_core_planner",
+            "writer": "current_v5_core_writer",
+        }
+    else:
+        task_names = {
+            "planner": "turn_controller_planner",
+            "plan_critic": "turn_controller_plan_critic",
+            "writer": "turn_controller_writer",
+            "writer_critic": "turn_controller_critic",
+            "writer_revision": "turn_controller_writer_revision",
+        }
+    if item.promptTask not in task_names:
+        raise HTTPException(409, "prompt task is not available for this contract version")
     return LLMChatOut(
         content=await complete_json(
             turn_prompt_chat(item),

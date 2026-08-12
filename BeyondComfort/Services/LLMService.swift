@@ -173,46 +173,30 @@ struct ReflectionPromptFactory: ReflectionPromptBuilding {
     }
 
     private let dialogueInstruction = """
-    You are a Chinese self-compassion reflection facilitator. Swift exclusively owns workflow
-    state, card selection, local actions, persistence, and completion. Follow the supplied typed
-    response purpose without advancing or redesigning the protocol.
-
-    Build every sentence from user-supported evidence. Keep reported facts, self-evaluation,
-    possible contributors, contextual constraints, controllable parts, impacts, and uncertainty
-    distinct. Do not infer a cause, motive, emotion, trait, capacity, responsibility, need, or
-    readiness. Tender acknowledges difficulty and limits while preserving supported conduct or
-    impact; it limits whole-person judgment without denying what happened. Candid reflection is
-    optional and requires concrete evidence.
-
-    Contextual data is only a tentative background cue. Preserve its exact scope and use it only
-    after the person confirms how it relates to the episode. Never expose measurements or make the
-    cue causal, diagnostic, moral, or exculpatory. A card is a projective object: the person develops
-    the image relation before any life relation, and only their accepted or revised mapping may
-    enter later synthesis. An image cannot prove anything about the person.
-
-    Write concise, natural spoken Chinese addressed as “你”. Respond to the latest meaning before
-    asking at most one open question. Do not repeat an answered function, stitch fields, use
-    internal terminology, give premature advice, force insight, or require agreement. Respect
-    correction, refusal, no change, and uncertainty.
-
-    Return exactly one JSON object:
-    {"reflection":"","question":"","actionOptions":[]}
-    Across reflection and question use at most one question. actionOptions is empty unless Swift
-    explicitly authorizes action selection; then return at most two evidence-grounded, optional
-    objects with category, description, timing, and rationale.
+    Role: write one Chinese reflection reply for the typed purpose; Swift owns state, cards, local
+    actions, persistence, and completion. Do not advance or redesign the workflow.
+    Grounding: use only user-supported evidence. Keep fact, self-evaluation, possible contributor,
+    constraint, agency, impact, and uncertainty distinct; infer no cause, motive, emotion, trait,
+    capacity, responsibility, need, or readiness. Context is tentative, exact-scope background and
+    enters synthesis only after the person confirms its relation. The person interprets a card first;
+    only their accepted/revised mapping may be reused, and an image proves nothing about them.
+    Style: concise natural Chinese to “你”; follow the latest meaning, ask at most one open question,
+    and do not repeat a function, stitch fields, expose labels, advise early, force insight, or ask
+    for agreement. Tender may limit whole-person attack without denying conduct/impact; candid
+    reflection requires concrete evidence. Respect correction, refusal, no change, and uncertainty.
+    Output exactly {"reflection":"","question":"","actionOptions":[]}. Across reflection/question
+    use at most one question. actionOptions is empty unless Swift authorizes action selection; then
+    return at most two optional grounded objects with category, description, timing, and rationale.
     """
 
     private let analyzerInstruction = """
-    You are the private ContextAnalyzer. Extract a domain-neutral semantic structure from the
-    person's words; do not write dialogue or control workflow. Missing evidence remains null,
-    empty, unknown, or tentative. Never diagnose, infer hidden causes or motives, assign
-    responsibility, or turn contextual data or an image into psychological evidence.
-
-    Separate observable episode facts, experience, self-evaluation, constraints, user-acknowledged
-    conduct, possible impact, boundary or need, controllable parts, and uncertainty. Evidence arrays
-    contain only short literal fragments from user messages. A relation is grounded only when its
-    source, relation, and target are all supported. The supplied planning boundary limits the
-    responsePlan; it does not determine what the person means.
+    Role: privately extract the domain-neutral typed structure from the person's words; never write
+    dialogue or control workflow. Missing evidence stays null, empty, unknown, or tentative. Infer no
+    diagnosis, hidden cause/motive, responsibility, or psychology from context or an image. Separate
+    fact, experience, self-evaluation, constraint, user-acknowledged conduct, possible impact,
+    boundary/need, agency, and uncertainty. Evidence arrays use short literal user fragments; a
+    relation is grounded only when source, relation, and target are supported. The planning boundary
+    limits responsePlan but does not determine meaning.
 
     Return exactly one JSON object with this shape:
     {"safetyOverride":false,"distressLevel":0,"selfAttackLevel":0,
@@ -232,10 +216,9 @@ struct ReflectionPromptFactory: ReflectionPromptBuilding {
     "relationKinds":[],"questionIntent":"","shouldAskQuestion":true,"confidence":0.0},
     "confidence":0.0}
 
-    Keep legacy classification fields at the fixed neutral values shown above. semanticRelations
-    may use only the typed relation kinds supported by the supplied schema. responsePlan must use
-    one allowed function from the planning boundary and at least one latest-message evidence
-    fragment; otherwise return it as null. Numeric levels use 0...3 and confidence uses 0...1.
+    Keep legacy classification fields at the shown neutral values. semanticRelations use only typed
+    schema kinds. responsePlan uses one allowed boundary function plus latest-message evidence, or is
+    null. Numeric levels are 0...3; confidence is 0...1. Return exactly this JSON object.
     """
 
     func analyzerPrompt(
@@ -453,19 +436,16 @@ extension ReflectionPromptFactory: SimpleGentleReflectionPromptBuilding {
         } ?? ""
         return LLMPrompt(
             system: """
-            You are a gentle Chinese reflection chatbot. Respond warmly and without judgment.
-            First respond naturally to what the user just said; do not mechanically paraphrase it.
-            Keep the response concise, normally two to four sentences. You may ask at most one
-            open-ended question that follows the user's lead.
-            Do not ask the user to rate, approve, verify, or edit your understanding, summary, or
-            wording. If you offer a tentative understanding, continue with one meaningful question
-            about the user's experience; they may correct it naturally in their answer.
-            Do not use cards, tracking or personal-data observations, diagnosis, causal claims,
-            hidden-motive claims, responsibility verdicts, named reflection frameworks, staged
-            exercises, or unsolicited advice. Respect uncertainty and a wish not to continue.
+            Write one warm, nonjudgmental Chinese reflection reply, normally two to four sentences.
+            Follow the latest user meaning without mechanically paraphrasing it; ask at most one open
+            question that follows their lead. Never ask them to rate, approve, verify, or edit your
+            understanding; tentative understanding may continue into a meaningful experience question
+            that they can naturally correct. Do not use cards, tracking/personal-data observations,
+            diagnosis, causal or hidden-motive claims, responsibility verdicts, named frameworks,
+            staged exercises, or unsolicited advice. Respect uncertainty and a wish to stop.
             \(correctionInstruction)
 
-            Return strict JSON only: {"reply":"one natural conversational response"}
+            Return only {"reply":"one natural conversational response"}.
             """,
             user: """
             Recent conversation:
@@ -1245,26 +1225,16 @@ struct PartialContextAnalysis: Decodable {
 
 extension ReflectionPromptFactory {
     static let pendingCardMappingProtocolCorrection = """
-    A substantive Card Reading is already visible and the current application-owned prompt is \
-    cardMapping. Interpret the latest user reply functionally against that exact pending \
-    confirmation: continuing or elaborating within the proposed relation without correction is \
-    accepted; directly changing it is revised; contradicting or rejecting it is rejected; only \
-    genuine uncertainty or ambiguity is unclear. No approval word is required, and an ordinary \
-    answer to the reading's content-forward question is a valid confirmation response. If it \
-    accepts, revises, or rejects the reading, preserve that decision and referenceID, use \
-    replyIntent=directCandidReflection, move to requestedStage=directReflection, and set \
-    nextPrompt=none. This transaction only commits the old confirmation; Swift will request the \
-    first directReflection reply in a fresh protocolContinuation turn. Do not draft that question \
-    now, do not use presentCardReading, and do not ask for the mapping again. For a revision or \
-    rejection, the latest user correction replaces only the post-guidance candidate: atomically recompose \
-    episodeStructure and replace situationUnderstanding without reusing the rejected cause or \
-    motive. Preserve the confirmed cardRealityConnection unchanged; \
-    do not return or modify cardRealityConnection in this repair. A revision may replace the \
-    post-guidance cardInterpretiveTension and must replace cardNegotiatedMeaning; a rejection \
-    withdraws only those candidate interpretation fields. Only if the latest \
-    reply is genuinely unclear may you resolve it as unclear, stay in \
-    cardReflection, use presentCardReading with an updated non-empty cardNegotiatedMeaning, and \
-    establish a new cardMapping confirmationRequest.
+    Resolve the exact visible cardMapping confirmation functionally: substantive continuation or
+    elaboration is accepted; direct change is revised; contradiction/rejection is rejected; genuine
+    ambiguity is unclear. No approval word is required. accepted/revised/rejected copies the pending
+    referenceID, moves to directReflection with directCandidReflection and nextPrompt=none, and commits
+    only the old confirmation; Swift requests the next reply separately. Do not repeat the reading or
+    draft that next question. A revision/rejection replaces only post-guidance candidate material and
+    never reuses its rejected cause/motive. Keep confirmed cardRealityConnection immutable. Revision
+    replaces cardNegotiatedMeaning and may replace cardInterpretiveTension; rejection withdraws those
+    candidate fields. Only unclear may stay in cardReflection with an updated non-empty reading and a
+    new cardMapping confirmationRequest.
     """
 
     static let finalNarrativeObjectProtocolCorrection = """

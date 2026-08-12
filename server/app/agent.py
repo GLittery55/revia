@@ -14,6 +14,18 @@ from .schemas import LLMChatIn
 
 logger = logging.getLogger("uvicorn.error")
 
+
+# `/api/llm/turn` supplies these trusted task identities from the versioned prompt registry.
+# They are authoritative for routing and failure behavior; current contracts must never be
+# reclassified from prompt wording after the endpoint has already identified the task.
+_CURRENT_V5_TURN_CONTROLLER_TASKS = frozenset(
+    {
+        "current_v5_core_planner",
+        "current_v5_core_writer",
+    }
+)
+
+
 def _with_internal_instruction(
     item: LLMChatIn,
     *,
@@ -99,6 +111,10 @@ def _is_turn_controller_contract(item: LLMChatIn) -> bool:
     )
 
 
+def _is_trusted_turn_controller_task(agent_task: str) -> bool:
+    return agent_task in _CURRENT_V5_TURN_CONTROLLER_TASKS
+
+
 def _agent_task_for_request(item: LLMChatIn) -> str:
     """Classify internal work for operational logs without retaining reflection content."""
     system = "\n".join(message.content for message in item.messages if message.role == "system")
@@ -167,7 +183,10 @@ async def complete_json(item: LLMChatIn, *, agent_task_override: Optional[str] =
         # The coarse TurnController contract is intentionally not replaced by a semantic server
         # fallback. The iOS ProtocolController performs one constrained regeneration and otherwise
         # keeps the stage unchanged with a neutral technical message.
-        if _is_turn_controller_contract(item):
+        if (
+            _is_trusted_turn_controller_task(agent_task)
+            or _is_turn_controller_contract(item)
+        ):
             raise
         # The upstream providers can still be unavailable after bounded retries. Keep the
         # reflection usable with a contract-valid, deliberately modest local response. This
@@ -327,7 +346,11 @@ async def _complete_json_direct_contract(
         agent_task,
         selected_mode,
     )
-    return await _direct_completion(item, request_id=request_id)
+    return await _direct_completion(
+        item,
+        request_id=request_id,
+        agent_task=agent_task,
+    )
 
 
 def _embedded_conversation_turns(prompt: str) -> list[tuple[str, str]]:
