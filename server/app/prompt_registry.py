@@ -11,7 +11,7 @@ from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
 TURN_PROMPT_VERSION = "turn-v4-server-v45"
-CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v100"
+CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v101"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -455,9 +455,11 @@ is saved only when volunteered and never delays completion.
 
 
 DIRECT_REFLECTION_MEMORY_CONTRACT = """
-Save one grounded reflectionFrame with a legal action and non-recap delta. Address an explicit
-selfCriticalStatement by distinguishing fact/inference or event/identity; never invent one. Tender
-has no fierceEvidence; Fierce uses supplied conduct/impact and caring direction.
+Save one grounded reflectionFrame with a legal action and non-recap delta. selfCriticalStatement is
+an exact user-authored evaluative conclusion or explicit self-directed blame, never the behavior or
+harm being evaluated. Tender preserves warranted responsibility and limits only unsupported scope;
+it does not excuse conduct. Tender has no fierceEvidence; Fierce uses supplied conduct/impact and
+caring direction.
 synthesizeUnderstanding may create one grounded action/noAction.
 """.strip()
 
@@ -651,7 +653,7 @@ CURRENT_V5_PLANNER_JSON_SHAPE = (
 # beside the compact top-level shape makes the sparse-patch contract explicit without restoring
 # the retired all-stage Planner tuple.
 CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE = (
-    '{"selfCriticalStatement":"exact grounded broad self-judgment when newly supplied",'
+    '{"selfCriticalStatement":"exact grounded self-judgment or explicit self-directed blame when newly supplied",'
     '"episodeStructure":{"concreteFacts":["grounded focal event"],'
     '"eventProcess":["grounded development"],'
     '"behaviorEvidence":["grounded action or omission"]}}'
@@ -1406,12 +1408,15 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "grounded items from the latest user message; Swift accumulates them with committed memory. A "
             "non-empty eventProcess or behaviorEvidence is enough; omit an unchanged relation and never "
             "emit status metadata or an empty list for it. The typed "
-            "self-criticism statement is separate from episode impacts: when the person states a broad "
-            "self-judgment, copy its exact grounded wording only to memoryUpdate.selfCriticalStatement, "
+            "self-criticism statement is separate from episode impacts: when the person states an evaluative "
+            "self-judgment or explicit self-directed blame, copy its exact grounded wording only to memoryUpdate.selfCriticalStatement, "
             "as a sibling of episodeStructure rather than a member inside it. Swift derives the persisted "
-            "presence summary. Never store an emotion, worry, self-evaluation, "
-            "repair response, or intended action as an episode impact; impacts are concrete consequences "
-            "of the focal event only. "
+            "presence summary. A concrete behavior such as ‘I said something hurtful’ is behaviorEvidence, not "
+            "selfCriticalStatement; do not turn the conduct into its own judgment endpoint. Never store a "
+            "free-floating emotion, worry, self-evaluation, repair response, or intended action as an episode "
+            "impact. An explicitly user-described effect on another person or relationship—such as the other "
+            "person becoming upset or the relationship remaining in conflict—is a concrete impact and must be "
+            "preserved without upgrading it into a verified mental state or causal claim. "
             "memoryUpdate fragment is: "
             + CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE
         )
@@ -1507,69 +1512,59 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             else " No new contextual tracking profile is available; omit contextualTrackingDecision."
         )
         return (
-            "Use Swift's read-only reflectionMode. Canonical lineage is cardRealityConnection -> selfCriticismLink -> "
-            "reflectionFrame -> optional fierceEvidence -> synthesis -> practice; never rebuild or reorder it. "
-            "selfCriticismLink carries relationship meaning, not Swift's stored protocol string. Prefer "
-            "{\"groundedDifficulty\":\"user-grounded difficulty or pattern\"}; a legacy plain relation is accepted. "
-            "Swift joins the grounded meaning to the current judgment and owns metadata. Card material, emotion, impact, or blockage "
-            "cannot replace this relationship. "
-            "EXPLORATORY. A user-grounded difficulty-to-judgment relation is enough; no cause or trigger precision is required. "
-            "Cumulative, gradual, situational, outcome-based, comparative, explicit-standard, and loose user-described relations "
-            "qualify. Greater specificity is not greater reflective value. Keep continueExploratoryReflection under the pre-turn "
-            "phase even when this answer completes the link. On completion, memoryUpdate contains the aligned link and no Tender "
-            "reflectionFrame; Swift commits the link and projects post-turn Tender, whose next Planner act forms the first bounded "
-            "Tender understanding. Continue Exploration only when the relation is absent, "
-            "rejected/revised, or merely assistant-inferred, using one easy clarification. Do not seek causes, Card meaning, advice, "
-            "action, or one precise onset. Tracking review should accompany the first eligible act but cannot delay a sufficient link. "
-            "referenceGuidance may only select an adjacent grounded question; it is never evidence. "
-            "CONTEXT AND EPISODE. Tracking is an optional, once-only event-context cue, never causation. Save a contextRelationship "
-            "only from the person's explicit relation, revision, rejection, or uncertainty. "
+            "Use Swift's read-only reflectionMode and preserve canonical lineage: cardRealityConnection -> "
+            "selfCriticismLink -> reflectionFrame -> optional fierceEvidence -> synthesis -> practice. "
+            "selfCriticismLink carries the user-grounded difficulty-to-judgment relationship, preferably "
+            "{\"groundedDifficulty\":\"difficulty or pattern\"}; Swift joins it to the current judgment and owns metadata. "
+            "EXPLORATORY. A user-grounded difficulty-to-judgment relation is enough; sufficiency, not maximum detail, "
+            "ends Exploration. Greater specificity is not greater reflective value. Cumulative, gradual, situational, "
+            "outcome-based, comparative, explicit-standard, and loose user-described relations all qualify without a cause, "
+            "trigger, or precise onset. Keep continueExploratoryReflection as the current act when its patch completes the link; "
+            "emit no Tender frame and let Swift project post-turn Tender. Continue only when the relation is absent, revised, "
+            "rejected, or assistant-inferred, with one easy clarification. Card, Tracking, referenceGuidance, emotion, impact, "
+            "and blockage cannot replace the link; Tracking cannot delay it. referenceGuidance may select an adjacent question "
+            "but is never evidence. CONTEXT AND EPISODE. Tracking is an optional, once-only event-context cue, never causation. "
+            "Save contextRelationship only from the person's "
+            "explicit relation, revision, rejection, or uncertainty. "
             + (
-                "The latest answer responds to the displayed contextual cue: save contextRelationship and keep the current "
-                "reflectionMode. If reflectionMode=tender and no committed Tender reflectionFrame exists, atomically provide the "
-                "first grounded Tender reflectionDelta in the same continueTenderReflection turn; the contextual relationship may "
-                "be included only when the person marked it related/partlyRelated and never as the sole cause. If Tender is already "
-                "committed, do not revise it merely because the cue was answered. Never choose progression solely from the cue answer. "
+                "This answer addresses the displayed cue: save contextRelationship without changing reflectionMode. If Tender has "
+                "no frame, atomically provide its first delta; use related context only as one condition. Do not revise committed "
+                "Tender or choose progression solely because the cue was answered. "
                 if is_answering_contextual_cue
                 else ""
             )
-            + "In direct Reflection, append to "
-            "episodeStructure only a newly user-grounded behavior, process, condition, consequence, constraint, or controllable part; "
-            "exclude Card, Tracking, reference guidance, model inference, emotion, self-evaluation, solutions, and the whole link. "
-            "TENDER. Form one bounded compassionate understanding that keeps the concrete difficulty, impact, limits, and responsibility "
-            "visible while limiting only the unsupported reach of the broader judgment. Invent no positive function, alternative cause, "
-            "or ability claim. Never replace the person's explanation with an exclusive formulation such as ‘不是 X，而是 Y’, or enlarge "
-            "workload, responsibility, motive, or circumstance beyond their own account. Context is at most one possible condition. Its "
-            "reflectionDelta is declarative, never a request for new material. The first proposal is not completion. "
-            "Tender completes when the person authors a bounded account, accepts or qualifies it, or declines; emotional improvement is "
-            "not required. Continue only to repair explicit rejection, misunderstanding, or material revision. Do not ask where the judgment "
-            "is weakest, what the distinction means, whether it feels less true, or confirm it again. Extra detail, distress, uncertainty, "
-            "'不知道/想不到', or an answer to a dangling question is not a revision. "
-            "At committed Tender and active Fierce boundaries, reflectionProgressionDecision is the sole semantic decision and semanticOperation is null. "
-            "Use one atomic shape: {\"meaning\":\"reviseTender\",\"candidateRef\":null,\"reflectionDelta\":\"revision\"}, "
-            "{\"meaning\":\"inspectReality\",\"candidateRef\":\"exact candidate id\",\"reflectionDelta\":null}, or "
-            "{\"meaning\":\"synthesize\",\"candidateRef\":null,\"reflectionDelta\":\"explicit synthesis\"}. "
-            "Delta is nonempty for revise/synthesize and null for inspect; never use memoryUpdate.reflectionFrame here. "
-            "Swift compiles these meanings into the existing operations. Natural or qualified acceptance of Tender does not by itself "
-            "complete reflection. Prefer inspectReality when any committed user evidence contains "
-            "a meaningful behavior, impact, responsibility, boundary, support, repair, protection, or change direction still worth examining. "
-            "One grounded fact suffices; two facts, causality, or a user-proposed action are not required. responseFocus asks only for "
-            "confirmation, revision, rejection, or qualification of that concrete candidate. Use synthesize only when no such part remains. "
-            "FIERCE. Use only reflectionProgressionDecision; omit semanticOperation and reflectionFrame. Keep the exact "
-            "latestAnswerContext.referenceID only as read-only context. If one clarification remains, return "
-            "{\"meaning\":\"clarifyFierce\"} plus one concrete responseFocus. A grounded/qualified direction returns "
-            "{\"meaning\":\"completeFierce\",\"reflectionDelta\":\"bounded understanding\","
-            "\"fierceDirection\":\"repair|protect|change\"} and empty "
-            "responseFocus. Decline/no meaningful direction returns synthesize with an explicit delta. Grounded repair/protect/change "
-            "ends Fierce; ask no more. Swift opens Synthesis. Protection is user-authored; non-user material cannot ground Fierce or Action. "
-            "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed context in one revisable delta; add no "
-            "interpretation or action. First Synthesis requires an explicit nonempty Planner synthesisDelta. It may preserve the accepted "
-            "Tender/Fierce meaning but must express the integrated understanding rather than copy the committed reflectionDelta exactly; "
-            "Swift never fills it. A committed Synthesis changes only for explicit correction/qualification. Natural acceptance, "
-            "acknowledgment, or readiness chooses proposePractice immediately; require no action wording or second confirmation. "
-            "PRACTICE. Propose one small executable reality experiment grounded by one exact groundedRealityCandidates.id as basis; "
-            "the person need not invent it. noAction requires refusal or no responsible concrete step. resolvePractice supplies only "
-            "acceptance/revision/decline; Swift compiles Final Narrative from committed Synthesis and resolved Action and owns protocol metadata. "
+            + "Always emit every new user-grounded episode fact in the same turn, whatever progression does. Include behavior, "
+            "process, condition, consequence, constraint, or controllable part; exclude Card, Tracking, guidance, inference, "
+            "free-floating emotion, self-evaluation, solutions, and the whole link. A user-described effect on a person or relationship "
+            "is an impact, including an emotional effect; preserve its uncertainty. "
+            "TENDER. Form a bounded compassionate understanding that keeps difficulty, impact, limits, and responsibility visible "
+            "while limiting only unsupported judgment scope. Do not substitute a cause, ability claim, positive function, or ‘不是 X，"
+            "而是 Y’. For behavior-specific remorse/blame, use compassionate accountability: keep conduct and impact at their actual "
+            "scope; add no global verdict, loss-of-control, unintended-act, hidden-motive, excuse, or opposite positive. Its "
+            "reflectionDelta is declarative and requests no new material. The first proposal is not completion. Tender completes on a user-authored account, "
+            "acceptance/qualification, or decline; emotional improvement is not required. Only "
+            "explicit rejection, misunderstanding, or material revision continues it. Extra detail, distress, uncertainty, '不知道/想不到', "
+            "or a dangling-question answer is not revision; do not reconfirm or challenge where the judgment is weakest. "
+            "At committed Tender/active Fierce, reflectionProgressionDecision alone owns meaning and semanticOperation is null. Use "
+            "{\"meaning\":\"reviseTender\",\"reflectionDelta\":\"revision\"}, "
+            "{\"meaning\":\"inspectReality\",\"candidateRef\":\"exact id\"}, or "
+            "{\"meaning\":\"synthesize\",\"reflectionDelta\":\"explicit synthesis\"}; omit reflectionFrame. "
+            "After accepted Tender, inspectReality is preferred when any committed behavior, impact, responsibility, boundary, support, "
+            "repair, protection, or change remains meaningful. One fact suffices; no causal pair or proposed action is required. "
+            "responseFocus asks only to confirm, revise, reject, or qualify that candidate; synthesize only when none remains. "
+            "FIERCE. Keep latestAnswerContext.referenceID read-only. The active candidate anchors inquiry but does not erase other "
+            "canonical user-authored evidence. Before clarifying, inspect the committed episode, user-authored Reality Connection, "
+            "confirmed context, and latest answer. Any connected repair/protect/change direction completes Fierce without repetition. "
+            "One concrete impact is enough; do not subdivide, rank, or redefine it. Return clarifyFierce plus one concrete responseFocus "
+            "only if clarification remains; otherwise completeFierce with nonempty reflectionDelta and fierceDirection, or synthesize "
+            "with an explicit delta on decline/no direction. Grounded repair/protect/change ends Fierce; Swift opens Synthesis. "
+            "Protection must be user-authored; non-user material cannot ground Fierce or Action. "
+            "SYNTHESIS. Integrate only canonical link, Tender, grounded/declined Fierce, and confirmed context. First Synthesis requires "
+            "an explicit nonempty delta; Swift never fills it. It may preserve accepted Tender/Fierce meaning but cannot copy the "
+            "committed delta verbatim. Revise committed Synthesis only for explicit correction/qualification; "
+            "natural acceptance/readiness chooses proposePractice without a second confirmation. "
+            "PRACTICE. Propose one small executable experiment grounded by one exact candidate id. noAction requires refusal or no "
+            "responsible concrete step. Swift compiles the resolved action and committed Synthesis into Final Narrative. "
             + grounded_candidate_contract
             + " "
             "context patch is: "
@@ -1883,7 +1878,8 @@ an actual Tracking relationship. The Planner may select one supplied, temporally
 profile as a contextual cue for the person to evaluate, but must not assert that it is related or
 causal. memoryUpdate is sparse: omit unchanged fields and never overwrite evidence with
 empty/default values. selfCriticalStatement is the sole writable self-criticism evidence: copy the
-exact nonempty new broad self-judgment, never an inferred trait; Swift derives presence.
+exact nonempty new evaluative self-judgment or explicit self-directed blame, never an inferred trait
+and never the concrete behavior or harm being evaluated; Swift derives presence.
 invalidatedInterpretations contains only assistant interpretations explicitly rejected by the person;
 append that correction and never reuse it as evidence.
 
@@ -1979,17 +1975,14 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         "protection, reminder, motivation, or hidden benefit unless the person explicitly authored that exact function."
     )
     tender_language_contract = (
-        "Realize the one committed bounded compassionate understanding without making the person argue against themselves. The visible Tender "
-        "content is declarative, never a request for new material. Briefly acknowledge "
-        "one concrete difficulty, show its connection to the broader judgment, and limit only unsupported scope; never retell chronology. "
-        "Separate difficulty from verdict using only grounded context; acknowledge strain without praise. On explicit doubt, correction, "
-        "or qualification, revise only that mismatch. Otherwise do not replay the "
-        "understanding or ask for its weakness, meaning, emotional effect, truth level, or another confirmation. If a responseFocus is "
-        "question-shaped, ignore its inquiry and render the grounded bounded proposition instead. Invalid Tender functions include asking "
-        "‘这个标准具体是什么？’, ‘还让你想到什么？’, ‘还有什么压力或感受？’, or ‘你会怎么安顿自己？’. The only optional question "
-        "lets the person accept, correct, reject, or qualify the understanding already offered; collect no new evidence. Do not say the response is natural, arose only in this episode, is not "
-        "a real measure, or cannot represent ability unless the person authored that claim. Use a neutral reference instead of repeating "
-        "self-critical wording."
+        "Realize one declarative bounded understanding; request no new material and never retell chronology. Name one concrete "
+        "difficulty and its grounded connection to the judgment, then limit only unsupported scope without praise. Revise only an "
+        "explicit rejection, correction, or qualification. Otherwise do not replay it or ask about weakness, meaning, emotion, truth, "
+        "standards, more pressures, or another confirmation. A question-shaped responseFocus cannot reopen inquiry; at most invite "
+        "acceptance, correction, rejection, or qualification. Do not assert that the response is natural, episode-only, unreal, or "
+        "unrepresentative of ability unless user-authored. Refer neutrally instead of repeating self-criticism. For behavior-specific "
+        "remorse/blame, keep warranted conduct, responsibility, and impact visible; never call it uncontrolled, unintended, protective, "
+        "excusable, or evidence of an unaffected ability or positive self."
     )
     tender_language_contract += unsupported_positive_function_contract
     tender_language_contract += (
@@ -2151,12 +2144,15 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "When this directive opens Fierce from Tender, responseFocus is the exact Swift-validated groundedRealityCandidate content. "
             "When request.reflectionMode is fierce and this directive contains no new reflectionFrame, the inquiry is legally continuing: "
             "latestAnswerContext.referenceID preserves that same candidate and responseFocus identifies the one remaining clarification. "
-            "Use the latest answer and only that candidate to ask about one narrow reality-facing part; do not imply that a direction has "
-            "already formed, switch candidates, recap Tender, or expose the reference. This may be one behavior, impact, boundary, support condition, repair, protection, or possible "
+            "Use the active candidate only to anchor a genuinely unresolved question; do not expose the reference. The Planner has already "
+            "considered other committed evidence before authorizing this question, so use the latest answer and candidate to ask about one "
+            "narrow reality-facing part; do not imply that a direction has already formed, switch the inquiry topic, or recap Tender. This may be one behavior, impact, boundary, support condition, repair, protection, or possible "
             "change; a tentative relation between two facts is optional, never required. Make the question answerable by confirming, "
             "revising, rejecting, or qualifying that concrete part. Keep it compact, without a ‘you said/mentioned’ preface or chronology recap. Name the actual "
             "action, condition, person, or result; do not ask the person to identify an abstract issue, "
-            "responsibility, boundary, need, behavior pattern, or change from scratch. Do not use protocol or therapy language such as "
+            "responsibility, boundary, need, behavior pattern, or change from scratch. Once an impact has been named, do not ask the person "
+            "to rank its parts, choose which consequence matters more, restate it more specifically, or define ordinary words such as "
+            "sadness, disappointment, delay, or conflict. Do not use protocol or therapy language such as "
             "whole-person judgment, reality tension, something worth facing, or a handling approach worth revisiting. When a complete "
             "Fierce frame is present, reflect only the direction the person has now grounded. That direction completes Fierce: do not ask "
             "another Fierce question, request more detail, or open a second repair/protect/change direction. Use one short natural bridge that "

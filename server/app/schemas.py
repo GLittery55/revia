@@ -728,17 +728,33 @@ def _canonicalize_current_v5_progression_syntax(decoded: dict[str, Any]) -> dict
                 if isinstance(legacy_frame, dict)
                 else None
             )
+            legacy_fierce = (
+                legacy_frame.get("fierceEvidence")
+                if isinstance(legacy_frame, dict)
+                else None
+            )
+            legacy_direction = (
+                legacy_fierce.get("direction")
+                if isinstance(legacy_fierce, dict)
+                else None
+            )
             # The colocated field is canonical. If it is absent, move the unique old semantic
             # alias once; if present (including null/empty), discard the legacy competitor.
             if "reflectionDelta" not in decision and legacy_delta is not None:
                 decision["reflectionDelta"] = legacy_delta
-            if "reflectionDelta" in decision:
-                memory.pop("reflectionFrame", None)
             if meaning == "completeFierce":
-                # Direction/delta are model meaning. Candidate and evidence identity are compiled
-                # deterministically from Swift-owned pre-turn state and cannot compete here.
+                # Direction and delta are colocated Planner meaning. A former full frame is a
+                # decode-only alias: move its one explicit direction before removing that
+                # duplicate container. The canonical owner still wins whenever it is present,
+                # including an explicit null; the backend never chooses a direction itself.
+                if "fierceDirection" not in decision and legacy_direction is not None:
+                    decision["fierceDirection"] = legacy_direction
                 decision.pop("candidateRef", None)
                 decision.pop("groundedEvidence", None)
+            if "reflectionDelta" in decision or (
+                meaning == "completeFierce" and "fierceDirection" in decision
+            ):
+                memory.pop("reflectionFrame", None)
     return projected
 
 

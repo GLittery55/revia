@@ -505,8 +505,68 @@ func decodeCurrentV5PlannerWireOutput(
 ) throws -> CurrentV5PlannerOutput {
     let wire = try JSONDecoder().decode(CurrentV5PlannerWireOutput.self, from: data)
     let supplied = wire.semanticOperation.flatMap(PlannerSemanticOperation.init(rawValue:))
+    var semanticPatch = wire.semanticEvidencePatch.compiled(
+        canonicalSelfCriticalStatement: canonicalSelfCriticalStatement
+    )
+    var progression = wire.reflectionProgressionDecision
+
+    // Providers may still serialize an older separated Reflection shape. When the semantic act
+    // has exactly one interpretation, compile that shape here instead of making transport syntax
+    // a user-visible failure. This compiler never invents a delta, direction, candidate, or next
+    // phase: it only colocates meaning already supplied by the model. Ambiguous shapes remain
+    // unresolved for the Gate/correction path.
+    if progression == nil {
+        let contribution = semanticPatch.reflectionContribution
+        let delta = contribution?.reflectionDelta?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let nonemptyDelta = delta?.isEmpty == false ? delta : nil
+        let direction = contribution?.fierceEvidence?.direction
+        let focus = wire.responseFocus.trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeFierceShape =
+            allowedSemanticOperations.contains(.continueTenderGroundedFierceReflection)
+            && !allowedSemanticOperations.contains(.continueTenderReflection)
+
+        if (supplied == .continueTenderGroundedFierceReflection
+                || supplied == nil && activeFierceShape),
+           let nonemptyDelta,
+           let direction {
+            progression = CurrentV5ReflectionProgressionDecision(
+                meaning: .completeFierce,
+                candidateRef: nil,
+                reflectionDelta: nonemptyDelta,
+                fierceDirection: direction
+            )
+        } else if activeFierceShape,
+                  (supplied == .continueTenderGroundedFierceReflection || supplied == nil),
+                  nonemptyDelta == nil,
+                  direction == nil,
+                  !focus.isEmpty {
+            progression = CurrentV5ReflectionProgressionDecision(
+                meaning: .clarifyFierce,
+                candidateRef: nil
+            )
+        } else if supplied == .synthesizeDirectReflection,
+                  let nonemptyDelta,
+                  direction == nil {
+            progression = CurrentV5ReflectionProgressionDecision(
+                meaning: .synthesize,
+                candidateRef: nil,
+                reflectionDelta: nonemptyDelta
+            )
+        } else if supplied == .continueTenderReflection,
+                  allowedSemanticOperations.count > 1,
+                  let nonemptyDelta,
+                  direction == nil {
+            progression = CurrentV5ReflectionProgressionDecision(
+                meaning: .reviseTender,
+                candidateRef: nil,
+                reflectionDelta: nonemptyDelta
+            )
+        }
+    }
+
     let operation: PlannerSemanticOperation
-    if let progression = wire.reflectionProgressionDecision {
+    if let progression {
         let compiled = progression.meaning.compiledOperation
         guard allowedSemanticOperations.contains(compiled) else {
             throw CurrentV5RemoteContractError.plannerContractInvalid
@@ -520,10 +580,7 @@ func decodeCurrentV5PlannerWireOutput(
     } else {
         throw CurrentV5RemoteContractError.plannerContractInvalid
     }
-    var semanticPatch = wire.semanticEvidencePatch.compiled(
-        canonicalSelfCriticalStatement: canonicalSelfCriticalStatement
-    )
-    if let progression = wire.reflectionProgressionDecision {
+    if let progression {
         switch progression.meaning {
         case .inspectReality, .clarifyFierce:
             // An inquiry has no Reflection conclusion. Redundant legacy content cannot become a
@@ -551,7 +608,7 @@ func decodeCurrentV5PlannerWireOutput(
         semanticOperation: operation,
         semanticEvidencePatch: semanticPatch,
         responseFocus: wire.responseFocus,
-        reflectionProgressionDecision: wire.reflectionProgressionDecision
+        reflectionProgressionDecision: progression
     )
 }
 
@@ -1753,7 +1810,7 @@ enum CurrentV5RemoteContractError: Error {
 }
 
 enum CurrentV5ServerPrompt {
-    static let version = "turn-v5-core-server-v100"
+    static let version = "turn-v5-core-server-v101"
 }
 
 private struct CurrentV5PlannerPayload: Encodable {
@@ -2049,6 +2106,19 @@ struct CurrentV5SwiftTurnGate: Sendable {
         let candidates = CurrentV5GroundedRealityCandidate.projected(
             from: session.semanticMemory
         )
+        let candidateEvidence = CurrentV5GroundedRealityCandidate.projected(
+            from: session.semanticMemory,
+            applying: output.semanticEvidencePatch.memoryUpdate
+        ).filter { candidate in
+            // A current-turn Reflection conclusion cannot establish its own provenance. Newly
+            // supplied episode/context fields and committed user-evidence lineage remain valid;
+            // a new uncommitted reflectionFrame and a non-user-authored Card mapping do not.
+            let committedReflectionEvidence = candidate.source != .reflectionEvidence
+                || candidates.contains(where: { $0.id == candidate.id })
+            let userAuthoredCardEvidence = candidate.source != .cardRealityConnection
+                || [.userAuthored, .userRevised].contains(candidate.cardAuthorship)
+            return committedReflectionEvidence && userAuthoredCardEvidence
+        }
         switch progression.meaning {
         case .reviseTender:
             guard progression.fierceDirection == nil else { throw invalid() }
@@ -2105,7 +2175,12 @@ struct CurrentV5SwiftTurnGate: Sendable {
                   let latestAnswer = latestUnansweredUserContent(in: session) else {
                 throw invalid()
             }
-            let evidence = [candidate.content, latestAnswer].reduce(into: [String]()) {
+            // The active candidate anchors the inquiry but is not a lifetime evidence silo.
+            // Completion may use any already committed user-authored reality material plus sparse
+            // evidence from this turn, so a previously stated repair/protect/change direction
+            // does not have to be repeated in the person's final answer.
+            let evidence = ([candidate.content, latestAnswer] + candidateEvidence.map(\.content))
+                .reduce(into: [String]()) {
                 if !$0.contains($1) { $0.append($1) }
             }
             return ResolvedReflectionProgression(

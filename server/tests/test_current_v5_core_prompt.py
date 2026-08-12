@@ -339,6 +339,49 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             clarified["semanticEvidencePatch"]["memoryUpdate"],
         )
 
+    def test_complete_fierce_moves_unique_legacy_direction_before_removing_frame(self) -> None:
+        legacy_payload = {
+            "semanticOperation": "continueTenderGroundedFierceReflection",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "reflectionFrame": {
+                        "reflectionDelta": "已经说出的伤害需要被回应",
+                        "fierceEvidence": {"direction": "repair"},
+                    }
+                }
+            },
+            "reflectionProgressionDecision": {"meaning": "completeFierce"},
+            "responseFocus": "",
+        }
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(legacy_payload, ensure_ascii=False)
+            )
+        )
+        decision = canonical["reflectionProgressionDecision"]
+        self.assertEqual(decision["reflectionDelta"], "已经说出的伤害需要被回应")
+        self.assertEqual(decision["fierceDirection"], "repair")
+        self.assertNotIn(
+            "reflectionFrame",
+            canonical["semanticEvidencePatch"]["memoryUpdate"],
+        )
+
+        canonical_owner = dict(legacy_payload)
+        canonical_owner["reflectionProgressionDecision"] = {
+            "meaning": "completeFierce",
+            "reflectionDelta": "以原子内容为准",
+            "fierceDirection": "protect",
+        }
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(canonical_owner, ensure_ascii=False)
+            )
+        )
+        self.assertEqual(
+            canonical["reflectionProgressionDecision"]["fierceDirection"],
+            "protect",
+        )
+
     def test_card_connection_transport_never_derives_outcome_metadata(self) -> None:
         payload = {
             "semanticOperation": "continueOpenCardConnection",
@@ -1064,7 +1107,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             / "BeyondComfortTests/Fixtures/current-v5-planner-output-v40.json"
         )
         validate_current_v5_planner_contract(fixture_path.read_text(encoding="utf-8"))
-        self.assertEqual(CURRENT_V5_CORE_PROMPT_VERSION, "turn-v5-core-server-v100")
+        self.assertEqual(CURRENT_V5_CORE_PROMPT_VERSION, "turn-v5-core-server-v101")
 
     def test_initial_synthesis_requires_explicit_non_replayed_delta(self) -> None:
         request = self.request()
@@ -1096,9 +1139,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         )
         prompt = messages.system
 
-        self.assertIn("nonempty Planner synthesisDelta", prompt)
-        self.assertIn("may preserve the accepted Tender/Fierce meaning", prompt)
-        self.assertIn("rather than copy the committed reflectionDelta exactly", prompt)
+        self.assertIn("explicit nonempty delta", prompt)
+        self.assertIn("may preserve accepted Tender/Fierce meaning", prompt)
+        self.assertIn("cannot copy the committed delta verbatim", prompt)
         self.assertIn("Swift never fills it", prompt)
         self.assertIn("explicit synthesis", prompt)
 
@@ -1919,25 +1962,25 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Form one bounded compassionate understanding", planner_prompt)
+        self.assertIn("Form a bounded compassionate understanding", planner_prompt)
         self.assertIn("dimensions may contain", planner_prompt)
         self.assertIn("selfKindness/commonHumanity/mindfulness", planner_prompt)
         self.assertIn("The first proposal is not completion", planner_prompt)
-        self.assertIn("authors a bounded account, accepts or qualifies it", planner_prompt)
+        self.assertIn("user-authored account", planner_prompt)
+        self.assertIn("acceptance/qualification", planner_prompt)
         self.assertIn("emotional improvement is not required", planner_prompt)
-        self.assertIn("Do not ask where the judgment is weakest", planner_prompt)
-        self.assertIn("what the distinction means", planner_prompt)
-        self.assertIn("Continue only to repair explicit rejection", planner_prompt)
-        self.assertIn("Prefer inspectReality when any committed user evidence", planner_prompt)
-        self.assertIn("One grounded fact suffices", planner_prompt)
-        self.assertIn("two facts, causality, or a user-proposed action are not required", planner_prompt)
-        self.assertIn("confirmation, revision, rejection, or qualification", planner_prompt)
-        self.assertIn("Use synthesize only when no such part remains", planner_prompt)
+        self.assertIn("do not reconfirm or challenge where the judgment is weakest", planner_prompt)
+        self.assertIn("explicit rejection, misunderstanding, or material revision", planner_prompt)
+        self.assertIn("inspectReality is preferred when any committed", planner_prompt)
+        self.assertIn("One fact suffices", planner_prompt)
+        self.assertIn("no causal pair or proposed action is required", planner_prompt)
+        self.assertIn("confirm, revise, reject, or qualify", planner_prompt)
+        self.assertIn("synthesize only when none remains", planner_prompt)
         self.assertIn("non-user material cannot ground Fierce or Action", planner_prompt)
-        self.assertIn("Use only reflectionProgressionDecision", planner_prompt)
+        self.assertIn("reflectionProgressionDecision alone owns meaning", planner_prompt)
         self.assertIn("latestAnswerContext.referenceID", planner_prompt)
-        self.assertIn('"meaning":"clarifyFierce"', planner_prompt)
-        self.assertIn('"meaning":"completeFierce"', planner_prompt)
+        self.assertIn("Return clarifyFierce", planner_prompt)
+        self.assertIn("completeFierce with nonempty reflectionDelta", planner_prompt)
         self.assertNotIn("acknowledgeExperience", planner_prompt)
         self.assertNotIn("connectCommonHumanity", planner_prompt)
 
@@ -1972,16 +2015,15 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("without making the person argue against themselves", writer_prompt)
-        self.assertIn("show its connection to the broader judgment", writer_prompt)
+        self.assertIn("one declarative bounded understanding", writer_prompt)
+        self.assertIn("grounded connection to the judgment", writer_prompt)
         self.assertIn("never retell chronology", writer_prompt)
-        self.assertIn("revise only that mismatch", writer_prompt)
-        self.assertIn("do not replay the understanding", writer_prompt)
-        self.assertIn("ask for its weakness, meaning, emotional effect", writer_prompt)
-        self.assertIn("Do not say the response is natural", writer_prompt)
-        self.assertIn("is not a real measure", writer_prompt)
-        self.assertIn("revise only that mismatch", writer_prompt)
-        self.assertIn("Use a neutral reference instead of repeating", writer_prompt)
+        self.assertIn("Revise only an explicit rejection", writer_prompt)
+        self.assertIn("do not replay it", writer_prompt)
+        self.assertIn("ask about weakness, meaning, emotion", writer_prompt)
+        self.assertIn("Do not assert that the response is natural", writer_prompt)
+        self.assertIn("unreal, or unrepresentative of ability", writer_prompt)
+        self.assertIn("Refer neutrally instead of repeating", writer_prompt)
         self.assertIn("Never assign a difficulty, painful experience, self-critical thought", writer_prompt)
         self.assertIn("hidden benefit", writer_prompt)
         self.assertIn("operation contract outranks it", writer_prompt)
@@ -2010,21 +2052,26 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ).system
 
         self.assertIn("The first proposal is not completion", planner_prompt)
-        self.assertIn("authors a bounded account, accepts or qualifies it", planner_prompt)
+        self.assertIn("user-authored account", planner_prompt)
+        self.assertIn("acceptance/qualification", planner_prompt)
         self.assertIn("emotional improvement is not required", planner_prompt)
-        self.assertIn("Do not ask where the judgment is weakest", planner_prompt)
-        self.assertIn("Continue only to repair explicit rejection", planner_prompt)
-        self.assertIn("One grounded fact suffices", planner_prompt)
-        self.assertIn("two facts, causality, or a user-proposed action are not required", planner_prompt)
-        self.assertIn("confirmation, revision, rejection, or qualification", planner_prompt)
-        self.assertIn("concrete candidate", planner_prompt)
-        self.assertIn("reflectionDelta\":null", planner_prompt)
-        self.assertIn("A grounded/qualified direction returns", planner_prompt)
-        self.assertIn("Use only reflectionProgressionDecision", planner_prompt)
-        self.assertIn("Protection is user-authored", planner_prompt)
+        self.assertIn("do not reconfirm or challenge where the judgment is weakest", planner_prompt)
+        self.assertIn("explicit rejection, misunderstanding, or material revision", planner_prompt)
+        self.assertIn("One fact suffices", planner_prompt)
+        self.assertIn("no causal pair or proposed action is required", planner_prompt)
+        self.assertIn("confirm, revise, reject, or qualify", planner_prompt)
+        self.assertIn("exact id", planner_prompt)
+        self.assertIn("reflectionProgressionDecision alone owns meaning", planner_prompt)
+        self.assertIn("Protection must be user-authored", planner_prompt)
         self.assertIn("Grounded repair/protect/change ends Fierce", planner_prompt)
-        self.assertIn("ask no more", planner_prompt)
+        self.assertIn("completes Fierce without repetition", planner_prompt)
         self.assertIn("Swift opens Synthesis", planner_prompt)
+        self.assertIn("active candidate anchors inquiry", planner_prompt)
+        self.assertIn("does not erase other canonical user-authored evidence", planner_prompt)
+        self.assertIn("One concrete impact is enough", planner_prompt)
+        self.assertIn("effect on a person or relationship is an impact", planner_prompt)
+        self.assertIn("compassionate accountability", planner_prompt)
+        self.assertIn("add no global verdict, loss-of-control", planner_prompt)
         self.assertIn("Swift recovers the active candidate", planner_prompt)
         self.assertNotIn('"groundedEvidence":"exact user-grounded direction"', planner_prompt)
         self.assertIn("support/provision maps to protect", planner_prompt)
@@ -2099,7 +2146,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("one user-grounded Protect, Provide, Repair, or Motivate inquiry", opening_writer_prompt)
         self.assertIn("Keep the committed Tender understanding present", opening_writer_prompt)
         self.assertIn("responseFocus is the exact Swift-validated groundedRealityCandidate content", opening_writer_prompt)
-        self.assertIn("Use the latest answer and only that candidate to ask about one narrow reality-facing part", opening_writer_prompt)
+        self.assertIn("use the latest answer and candidate to ask about one narrow reality-facing part", opening_writer_prompt)
         self.assertIn("a tentative relation between two facts is optional, never required", opening_writer_prompt)
         self.assertIn("confirming, revising, rejecting, or qualifying", opening_writer_prompt)
         self.assertIn("without a ‘you said/mentioned’ preface or chronology recap", opening_writer_prompt)
@@ -2170,8 +2217,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("memoryUpdate.selfCriticalStatement", event_prompt)
         self.assertIn("as a sibling of episodeStructure", event_prompt)
         self.assertNotIn("selfCriticismStatus", event_prompt)
-        self.assertIn("Never store an emotion, worry, self-evaluation", event_prompt)
-        self.assertIn("impacts are concrete consequences", event_prompt)
+        self.assertIn("Never store a free-floating emotion, worry, self-evaluation", event_prompt)
+        self.assertIn("effect on another person or relationship", event_prompt)
+        self.assertIn("is a concrete impact", event_prompt)
         self.assertNotIn("CARD CONNECTION SHAPE", event_prompt)
         self.assertNotIn("REFLECTION STRUCTURE", event_prompt)
         self.assertNotIn("OPTIONAL ACTION STRUCTURE", event_prompt)
@@ -2450,15 +2498,11 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertIn("cardRealityConnection -> selfCriticismLink", prompt)
         self.assertIn("A user-grounded difficulty-to-judgment relation is enough", prompt)
-        self.assertIn(
-            "On completion, memoryUpdate contains the aligned link and no Tender reflectionFrame",
-            prompt,
-        )
-        self.assertIn("next Planner act forms the first bounded Tender understanding", prompt)
+        self.assertIn("emit no Tender frame and let Swift project post-turn Tender", prompt)
         self.assertIn("Greater specificity is not greater reflective value", prompt)
-        self.assertIn("Do not seek causes, Card meaning, advice", prompt)
-        self.assertIn("referenceGuidance may only select an adjacent grounded question", prompt)
-        self.assertIn("it is never evidence", prompt)
+        self.assertIn("without a cause, trigger, or precise onset", prompt)
+        self.assertIn("referenceGuidance may select an adjacent question", prompt)
+        self.assertIn("but is never evidence", prompt)
 
     def test_writer_language_contract_follows_card_progression(self) -> None:
         request = self.request()
@@ -2936,11 +2980,11 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("colocates only reflectionDelta and fierceDirection", prompt)
         self.assertIn("latest user answer, and committed evidence lineage", prompt)
         self.assertIn("reflectionProgressionDecision is the sole meaning owner", prompt)
-        self.assertIn("Canonical lineage is cardRealityConnection -> selfCriticismLink", prompt)
+        self.assertIn("preserve canonical lineage: cardRealityConnection ->", prompt)
         self.assertIn("A user-grounded difficulty-to-judgment relation is enough", prompt)
         self.assertIn("invalidatedInterpretations", prompt)
-        self.assertIn("append to episodeStructure only a newly user-grounded", prompt)
-        self.assertIn("exclude Card, Tracking, reference guidance, model inference", prompt)
+        self.assertIn("Always emit every new user-grounded episode fact", prompt)
+        self.assertIn("exclude Card, Tracking, guidance, inference", prompt)
         self.assertIn("REFLECTION STRUCTURE", prompt)
 
     def test_self_criticism_link_transport_preserves_meaning_without_backend_compilation(self) -> None:
@@ -2963,12 +3007,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ).system
 
         self.assertIn(
-            "selfCriticismLink carries relationship meaning, not Swift's stored protocol string",
+            "selfCriticismLink carries the user-grounded difficulty-to-judgment relationship",
             prompt,
         )
-        self.assertIn("Canonical lineage", prompt)
-        self.assertIn("Swift joins the grounded meaning", prompt)
-        self.assertIn("Card material, emotion, impact, or blockage", prompt)
+        self.assertIn("canonical lineage", prompt)
+        self.assertIn("Swift joins it to the current judgment", prompt)
+        self.assertIn("emotion, impact, and blockage cannot replace the link", prompt)
 
         valid = {
             "semanticOperation": "continueTenderReflection",
@@ -3094,15 +3138,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Use only canonical link, Tender", planner_prompt)
-        self.assertIn("one revisable delta", planner_prompt)
-        self.assertIn("A committed Synthesis changes only for explicit correction/qualification", planner_prompt)
-        self.assertIn("changes only for explicit correction/qualification", planner_prompt)
-        self.assertIn("Natural acceptance, acknowledgment, or readiness chooses proposePractice immediately", planner_prompt)
-        self.assertIn("require no action wording or second confirmation", planner_prompt)
-        self.assertIn("one exact groundedRealityCandidates.id", planner_prompt)
-        self.assertIn("exact groundedRealityCandidates.id as basis", planner_prompt)
-        self.assertIn("owns protocol metadata", planner_prompt)
+        self.assertIn("Integrate only canonical link, Tender", planner_prompt)
+        self.assertIn("Revise committed Synthesis only for explicit correction/qualification", planner_prompt)
+        self.assertIn("natural acceptance/readiness chooses proposePractice", planner_prompt)
+        self.assertIn("without a second confirmation", planner_prompt)
+        self.assertIn("one exact candidate id", planner_prompt)
+        self.assertIn("Swift compiles the resolved action", planner_prompt)
 
         directive = {
             "semanticOperation": "synthesizeDirectReflection",
@@ -3168,11 +3209,11 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Use only canonical link, Tender", planner_prompt)
+        self.assertIn("Integrate only canonical link, Tender", planner_prompt)
         self.assertIn("grounded/declined Fierce", planner_prompt)
-        self.assertIn("Use synthesize only when no such part remains", planner_prompt)
-        self.assertIn("confirmed context in one revisable delta", planner_prompt)
-        self.assertIn("add no interpretation or action", planner_prompt)
+        self.assertIn("synthesize only when none remains", planner_prompt)
+        self.assertIn("confirmed context", planner_prompt)
+        self.assertIn("First Synthesis requires an explicit nonempty delta", planner_prompt)
 
         directive = {
             "semanticOperation": "synthesizeDirectReflection",
@@ -3468,10 +3509,10 @@ class CurrentV5CorePromptTests(unittest.TestCase):
                 temperature=0.2,
             )
         ).system
-        self.assertIn("latest answer responds to the displayed contextual cue", context_answer_prompt)
-        self.assertIn("atomically provide the first grounded Tender reflectionDelta", context_answer_prompt)
-        self.assertIn("If Tender is already committed, do not revise it", context_answer_prompt)
-        self.assertIn("never as the sole cause", context_answer_prompt)
+        self.assertIn("This answer addresses the displayed cue", context_answer_prompt)
+        self.assertIn("atomically provide its first delta", context_answer_prompt)
+        self.assertIn("Do not revise committed Tender", context_answer_prompt)
+        self.assertIn("use related context only as one condition", context_answer_prompt)
 
     def test_contextual_tracking_writer_fuses_sources_without_exposing_tracking(self) -> None:
         request = self.request()
@@ -3648,13 +3689,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("no cause or trigger precision", planner_prompt)
+        self.assertIn("without a cause, trigger, or precise onset", planner_prompt)
         self.assertIn("Cumulative, gradual, situational", planner_prompt)
         self.assertIn("Greater specificity is not greater reflective value", planner_prompt)
-        self.assertIn("Continue Exploration only when the relation is absent", planner_prompt)
-        self.assertIn("Tracking review should accompany the first eligible act", planner_prompt)
-        self.assertIn("memoryUpdate contains the aligned link and no Tender reflectionFrame", planner_prompt)
-        self.assertIn("next Planner act forms the first bounded Tender understanding", planner_prompt)
+        self.assertIn("Continue only when the relation is absent", planner_prompt)
+        self.assertIn("Tracking cannot delay it", planner_prompt)
+        self.assertIn("emit no Tender frame and let Swift project post-turn Tender", planner_prompt)
 
         directive = {
             "semanticOperation": "continueExploratoryReflection",
@@ -3788,10 +3828,10 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Its reflectionDelta is declarative, never a request for new material", planner_prompt)
+        self.assertIn("Its reflectionDelta is declarative and requests no new material", planner_prompt)
         self.assertIn("Extra detail, distress, uncertainty", planner_prompt)
         self.assertIn("'不知道/想不到'", planner_prompt)
-        self.assertIn("is not a revision", planner_prompt)
+        self.assertIn("is not revision", planner_prompt)
 
         directive = {
             "semanticOperation": "continueTenderReflection",
@@ -3820,11 +3860,10 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("content is declarative, never a request for new material", writer_prompt)
-        self.assertIn("ignore its inquiry", writer_prompt)
-        self.assertIn("还有什么压力或感受", writer_prompt)
-        self.assertIn("你会怎么安顿自己", writer_prompt)
-        self.assertIn("collect no new evidence", writer_prompt)
+        self.assertIn("one declarative bounded understanding; request no new material", writer_prompt)
+        self.assertIn("question-shaped responseFocus cannot reopen inquiry", writer_prompt)
+        self.assertIn("standards, more pressures", writer_prompt)
+        self.assertIn("at most invite acceptance, correction, rejection, or qualification", writer_prompt)
 
 
 if __name__ == "__main__":

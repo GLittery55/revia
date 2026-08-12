@@ -5108,6 +5108,139 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         XCTAssertTrue(CurrentV5WriterDirective(authorized: authorized).mayAskQuestion)
     }
 
+    func testWireCompilerRecoversLegacyFierceCompletionAndKeepsAllUserEvidence() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .fierce
+        session.semanticMemory.episodeStructure = .init(
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["我说了特别伤人的话"]
+        )
+        let repairDirection = "我们之间还有问题需要解决，不能直接不讲话"
+        session.semanticMemory.cardRealityConnection = .init(
+            imageRelation: "有些东西还留在房间里",
+            realityMapping: repairDirection,
+            source: .userAuthored
+        )
+        session.semanticMemory.reflectionFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [
+                .init(source: .episode, content: "我说了特别伤人的话"),
+                .init(source: .cardRealityConnection, content: repairDirection),
+            ],
+            dimensions: [],
+            reflectionDelta: "自责和这次行为造成的伤害有关，责任仍停留在这次行为及其影响",
+            fierceEvidence: nil
+        )
+        session.semanticMemory.nextPrompt = TurnNextPrompt.openQuestion(
+            purpose: "fierceReflection",
+            focus: "clarify_current_grounded_reality_direction"
+        ).assigningReferenceID("episodeStructure.behaviorEvidence.0")
+        session.messages = [ChatMessage(role: .user, content: "这些话让对方感到难过")]
+
+        let data = Data(
+            """
+            {
+              "semanticOperation": "continueTenderGroundedFierceReflection",
+              "semanticEvidencePatch": {
+                "memoryUpdate": {
+                  "episodeStructure": {
+                    "impacts": ["这些话让对方感到难过"]
+                  },
+                  "reflectionFrame": {
+                    "reflectionDelta": "已经造成的伤害需要被回应，关系中尚未解决的问题也需要处理",
+                    "fierceEvidence": {"direction": "repair"}
+                  }
+                }
+              },
+              "responseFocus": ""
+            }
+            """.utf8
+        )
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let compiled = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(compiled.reflectionProgressionDecision?.meaning, .completeFierce)
+        XCTAssertEqual(compiled.reflectionProgressionDecision?.fierceDirection, .repair)
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            compiled,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .synthesis)
+        XCTAssertEqual(
+            authorized.projectedPlan.memoryUpdate.episodeStructure?.impacts,
+            ["这些话让对方感到难过"]
+        )
+        let frame = try XCTUnwrap(authorized.projectedPlan.memoryUpdate.reflectionFrame)
+        XCTAssertEqual(frame.fierceEvidence?.direction, .repair)
+        XCTAssertTrue(frame.evidenceBasis.contains(
+            .init(source: .cardRealityConnection, content: repairDirection)
+        ))
+        XCTAssertTrue(frame.evidenceBasis.contains(
+            .init(source: .latestUserAnswer, content: "这些话让对方感到难过")
+        ))
+    }
+
+    func testWireCompilerRecoversUnambiguousActiveFierceClarification() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .fierce
+        session.semanticMemory.episodeStructure = .init(
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["临时接下了额外工作"]
+        )
+        session.semanticMemory.reflectionFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [.init(source: .episode, content: "临时接下了额外工作")],
+            dimensions: [],
+            reflectionDelta: "额外工作占用了原有安排，不能只从效率解释",
+            fierceEvidence: nil
+        )
+        session.semanticMemory.nextPrompt = TurnNextPrompt.openQuestion(
+            purpose: "fierceReflection",
+            focus: "clarify_current_grounded_reality_direction"
+        ).assigningReferenceID("episodeStructure.behaviorEvidence.0")
+        let data = Data(
+            """
+            {
+              "semanticOperation": "continueTenderGroundedFierceReflection",
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": "临时工作是否占用了原本留给自己任务的时间"
+            }
+            """.utf8
+        )
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let compiled = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(compiled.reflectionProgressionDecision?.meaning, .clarifyFierce)
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            compiled,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .fierce)
+        XCTAssertEqual(
+            authorized.projectedPlan.nextPrompt.referenceID,
+            "episodeStructure.behaviorEvidence.0"
+        )
+    }
+
     func testCompletionWriterDirectiveCannotReplayNarrativeOrPractice() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
