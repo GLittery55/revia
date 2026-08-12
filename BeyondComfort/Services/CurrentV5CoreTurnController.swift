@@ -148,17 +148,24 @@ struct CurrentV5PlannerOutput: Codable, Equatable, Sendable {
     /// operation vocabulary; a provider-supplied `semanticOperation` has no authority at that
     /// boundary. The decision is turn-local and is never persisted in semantic memory.
     let reflectionProgressionDecision: CurrentV5ReflectionProgressionDecision?
+    /// In-memory compiler provenance only. Remote current-v5 wire responses set this flag even
+    /// when the provider omitted the required phase outcome, allowing the Gate to reject that
+    /// omission. Directly compiled legacy/test objects remain compatible. This flag is never
+    /// encoded, persisted, or sent back to the model.
+    let phaseOutcomeContractApplied: Bool
 
     init(
         semanticOperation: PlannerSemanticOperation,
         semanticEvidencePatch: CurrentV5SemanticEvidencePatch,
         responseFocus: String = "",
-        reflectionProgressionDecision: CurrentV5ReflectionProgressionDecision? = nil
+        reflectionProgressionDecision: CurrentV5ReflectionProgressionDecision? = nil,
+        phaseOutcomeContractApplied: Bool = false
     ) {
         self.semanticOperation = semanticOperation
         self.semanticEvidencePatch = semanticEvidencePatch
         self.responseFocus = responseFocus
         self.reflectionProgressionDecision = reflectionProgressionDecision
+        self.phaseOutcomeContractApplied = phaseOutcomeContractApplied
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -183,22 +190,167 @@ struct CurrentV5PlannerOutput: Codable, Equatable, Sendable {
             CurrentV5ReflectionProgressionDecision.self,
             forKey: .reflectionProgressionDecision
         )
+        phaseOutcomeContractApplied = false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        try box.encode(semanticOperation, forKey: .semanticOperation)
+        try box.encode(semanticEvidencePatch, forKey: .semanticEvidencePatch)
+        try box.encode(responseFocus, forKey: .responseFocus)
+        try box.encodeIfPresent(
+            reflectionProgressionDecision,
+            forKey: .reflectionProgressionDecision
+        )
     }
 }
 
 enum CurrentV5ReflectionProgressionMeaning: String, Codable, Equatable, Sendable {
+    case continueExploration
+    case completeExploration
     case reviseTender
+    case clarifyTender
     case inspectReality
     case clarifyFierce
     case completeFierce
     case synthesize
+    case clarifySynthesis
+    case acceptSynthesis
 
     var compiledOperation: PlannerSemanticOperation {
         switch self {
-        case .reviseTender: .continueTenderReflection
+        case .continueExploration, .completeExploration: .continueExploratoryReflection
+        case .reviseTender, .clarifyTender: .continueTenderReflection
         case .inspectReality: .continueTenderGroundedFierceReflection
         case .clarifyFierce, .completeFierce: .continueTenderGroundedFierceReflection
-        case .synthesize: .synthesizeDirectReflection
+        case .synthesize, .clarifySynthesis: .synthesizeDirectReflection
+        case .acceptSynthesis: .proposePractice
+        }
+    }
+}
+
+/// Phase-local semantic result reported by the Planner. These values describe what the latest
+/// answer means; none of them is a workflow operation or a requested destination phase.
+enum CurrentV5ReflectionTurnOutcomeKind: String, Codable, Equatable, Sendable {
+    case explorationContinue
+    case explorationComplete
+    case tenderAccepted
+    case tenderRevised
+    case tenderNeedsClarification
+    case tenderOptedOut
+    case fierceNeedsClarification
+    case fierceDirectionFormed
+    case fierceNoDirection
+    case fierceOptedOut
+    case synthesisFormed
+    case synthesisAccepted
+    case synthesisRevised
+    case synthesisNeedsClarification
+    case synthesisOptedOut
+}
+
+enum CurrentV5RealityCandidateMeaning: String, Codable, Equatable, Sendable {
+    case behavior
+    case impact
+    case responsibility
+    case boundary
+    case support
+    case repair
+    case protect
+    case change
+}
+
+/// The Planner identifies one meaningful reality candidate; Swift verifies the stable reference
+/// and deterministically opens Fierce. A nil candidate is an explicit semantic judgment that no
+/// current reality material warrants Fierce, not an omitted protocol field.
+struct CurrentV5RealityCandidateSelection: Codable, Equatable, Sendable {
+    let reference: String
+    let meaning: CurrentV5RealityCandidateMeaning
+}
+
+/// Decode-only normalization for a semantic string returned directly, in a one-value list, or in
+/// a common one-owner object wrapper. Multiple distinct values stay unresolved for the Gate.
+private struct CurrentV5WireScalarText: Decodable {
+    let value: String?
+
+    init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(), single.decodeNil() {
+            value = nil
+            return
+        }
+        if let raw = try? decoder.singleValueContainer().decode(String.self) {
+            let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            value = clean.isEmpty ? nil : clean
+            return
+        }
+        if var list = try? decoder.unkeyedContainer() {
+            var candidates: [String] = []
+            while !list.isAtEnd {
+                guard let item = try? list.decode(CurrentV5WireScalarText.self) else {
+                    value = nil
+                    return
+                }
+                if let itemValue = item.value { candidates.append(itemValue) }
+            }
+            let unique = Set(candidates)
+            value = unique.count == 1 ? candidates.first : nil
+            return
+        }
+        if let object = try? decoder.container(keyedBy: CurrentV5WireCodingKey.self) {
+            let names = [
+                "text", "value", "content", "delta", "reflectionDelta", "tenderDelta",
+                "synthesisDelta", "fierceDelta", "understanding",
+            ]
+            let candidates = names.compactMap { name -> String? in
+                guard let key = CurrentV5WireCodingKey(stringValue: name),
+                      object.contains(key),
+                      let decoded = try? object.decode(CurrentV5WireScalarText.self, forKey: key) else {
+                    return nil
+                }
+                return decoded.value
+            }
+            let unique = Set(candidates)
+            value = unique.count == 1 ? candidates.first : nil
+            return
+        }
+        value = nil
+    }
+}
+
+/// A deliberately flat transport object. Avoiding a discriminated union lets the syntax compiler
+/// accept sparse provider JSON and defer phase-specific completeness to Swift's semantic Gate.
+private struct CurrentV5ReflectionTurnOutcome: Decodable, Equatable, Sendable {
+    let outcome: CurrentV5ReflectionTurnOutcomeKind?
+    let tenderDelta: String?
+    let synthesisDelta: String?
+    let fierceDelta: String?
+    let realityCandidate: CurrentV5RealityCandidateSelection?
+    let fierceDirection: TurnFierceDirection?
+    let hasInvalidRealityCandidate: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case outcome, tenderDelta, synthesisDelta, fierceDelta, realityCandidate, fierceDirection
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        outcome = try? box.decode(CurrentV5ReflectionTurnOutcomeKind.self, forKey: .outcome)
+        tenderDelta = (try? box.decode(CurrentV5WireScalarText.self, forKey: .tenderDelta))?.value
+        synthesisDelta = (try? box.decode(CurrentV5WireScalarText.self, forKey: .synthesisDelta))?.value
+        fierceDelta = (try? box.decode(CurrentV5WireScalarText.self, forKey: .fierceDelta))?.value
+        fierceDirection = try? box.decode(TurnFierceDirection.self, forKey: .fierceDirection)
+
+        let candidateIsPresent = box.contains(.realityCandidate)
+            && (try? box.decodeNil(forKey: .realityCandidate)) != true
+        if candidateIsPresent {
+            realityCandidate = try? box.decode(
+                CurrentV5RealityCandidateSelection.self,
+                forKey: .realityCandidate
+            )
+            hasInvalidRealityCandidate = realityCandidate == nil
+        } else {
+            realityCandidate = nil
+            hasInvalidRealityCandidate = false
         }
     }
 }
@@ -244,10 +396,11 @@ private struct CurrentV5PlannerWireOutput: Decodable {
     let semanticEvidencePatch: CurrentV5WireSemanticEvidencePatch
     let responseFocus: String
     let reflectionProgressionDecision: CurrentV5ReflectionProgressionDecision?
+    let reflectionTurnOutcome: CurrentV5ReflectionTurnOutcome?
 
     private enum CodingKeys: String, CodingKey {
         case semanticOperation, semanticEvidencePatch, responseFocus
-        case reflectionProgressionDecision
+        case reflectionProgressionDecision, reflectionTurnOutcome
     }
 
     init(from decoder: Decoder) throws {
@@ -261,6 +414,10 @@ private struct CurrentV5PlannerWireOutput: Decodable {
         reflectionProgressionDecision = try? box.decodeIfPresent(
             CurrentV5ReflectionProgressionDecision.self,
             forKey: .reflectionProgressionDecision
+        )
+        reflectionTurnOutcome = try? box.decodeIfPresent(
+            CurrentV5ReflectionTurnOutcome.self,
+            forKey: .reflectionTurnOutcome
         )
     }
 }
@@ -508,7 +665,92 @@ func decodeCurrentV5PlannerWireOutput(
     var semanticPatch = wire.semanticEvidencePatch.compiled(
         canonicalSelfCriticalStatement: canonicalSelfCriticalStatement
     )
-    var progression = wire.reflectionProgressionDecision
+    var progression: CurrentV5ReflectionProgressionDecision?
+
+    // Current Reflection requests carry a phase-local semantic outcome rather than asking the
+    // model to select a workflow operation. This is the sole operation compiler for that outcome.
+    // The former progression object remains decode-only compatibility and has no equal authority
+    // when the canonical outcome is present.
+    if let outcome = wire.reflectionTurnOutcome,
+       let outcomeKind = outcome.outcome,
+       !outcome.hasInvalidRealityCandidate {
+        progression = switch outcomeKind {
+        case .explorationContinue:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .continueExploration,
+                candidateRef: nil
+            )
+        case .explorationComplete:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .completeExploration,
+                candidateRef: nil,
+                reflectionDelta: outcome.tenderDelta
+            )
+        case .tenderAccepted, .tenderRevised:
+            if let candidate = outcome.realityCandidate {
+                CurrentV5ReflectionProgressionDecision(
+                    meaning: .inspectReality,
+                    candidateRef: candidate.reference,
+                    reflectionDelta: outcomeKind == .tenderRevised
+                        ? outcome.tenderDelta
+                        : nil
+                )
+            } else {
+                CurrentV5ReflectionProgressionDecision(
+                    meaning: .synthesize,
+                    candidateRef: nil,
+                    reflectionDelta: outcome.synthesisDelta
+                )
+            }
+        case .tenderNeedsClarification:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .clarifyTender,
+                candidateRef: nil
+            )
+        case .tenderOptedOut:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .synthesize,
+                candidateRef: nil,
+                reflectionDelta: outcome.synthesisDelta
+            )
+        case .fierceNeedsClarification:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .clarifyFierce,
+                candidateRef: nil
+            )
+        case .fierceDirectionFormed:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .completeFierce,
+                candidateRef: nil,
+                reflectionDelta: outcome.fierceDelta,
+                fierceDirection: outcome.fierceDirection
+            )
+        case .fierceNoDirection, .fierceOptedOut:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .synthesize,
+                candidateRef: nil,
+                reflectionDelta: outcome.synthesisDelta
+            )
+        case .synthesisFormed, .synthesisRevised:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .synthesize,
+                candidateRef: nil,
+                reflectionDelta: outcome.synthesisDelta
+            )
+        case .synthesisNeedsClarification:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .clarifySynthesis,
+                candidateRef: nil
+            )
+        case .synthesisAccepted, .synthesisOptedOut:
+            CurrentV5ReflectionProgressionDecision(
+                meaning: .acceptSynthesis,
+                candidateRef: nil
+            )
+        }
+    } else {
+        progression = wire.reflectionProgressionDecision
+    }
 
     // Providers may still serialize an older separated Reflection shape. When the semantic act
     // has exactly one interpretation, compile that shape here instead of making transport syntax
@@ -582,11 +824,22 @@ func decodeCurrentV5PlannerWireOutput(
     }
     if let progression {
         switch progression.meaning {
-        case .inspectReality, .clarifyFierce:
+        case .continueExploration, .clarifyTender, .clarifyFierce, .clarifySynthesis,
+             .acceptSynthesis:
             // An inquiry has no Reflection conclusion. Redundant legacy content cannot become a
             // second contribution owner merely because the operation changes phase.
             semanticPatch.memoryUpdate.reflectionFrame = nil
             semanticPatch.reflectionContribution = nil
+        case .completeExploration:
+            semanticPatch.memoryUpdate.reflectionFrame = nil
+            semanticPatch.reflectionContribution = progression.reflectionDelta.map {
+                CurrentV5ReflectionContribution(reflectionDelta: $0)
+            }
+        case .inspectReality:
+            semanticPatch.memoryUpdate.reflectionFrame = nil
+            semanticPatch.reflectionContribution = progression.reflectionDelta.map {
+                CurrentV5ReflectionContribution(reflectionDelta: $0)
+            }
         case .completeFierce:
             // The Planner owns only completion meaning, direction, and delta. Candidate identity,
             // current user evidence, lineage, and the canonical frame are compiled later by Swift
@@ -608,7 +861,8 @@ func decodeCurrentV5PlannerWireOutput(
         semanticOperation: operation,
         semanticEvidencePatch: semanticPatch,
         responseFocus: wire.responseFocus,
-        reflectionProgressionDecision: progression
+        reflectionProgressionDecision: progression,
+        phaseOutcomeContractApplied: true
     )
 }
 
@@ -1602,6 +1856,8 @@ enum CurrentV5RecoveryPolicy: String, Codable, Equatable, Sendable {
 
 enum CurrentV5WriterReflectionRealization: String, Codable, Equatable, Sendable {
     case standard
+    case establishTenderUnderstanding
+    case openFierceInquiry
     case askFierceClarification
     case bridgeToSynthesis
 }
@@ -1631,6 +1887,10 @@ struct CurrentV5WriterDirective: Codable, Equatable, Sendable {
     ) {
         semanticOperation = authorized.operation
         reflectionRealization = switch authorized.reflectionProgressionMeaning {
+        case .completeExploration:
+            .establishTenderUnderstanding
+        case .inspectReality:
+            .openFierceInquiry
         case .clarifyFierce:
             .askFierceClarification
         case .completeFierce:
@@ -1639,7 +1899,7 @@ struct CurrentV5WriterDirective: Codable, Equatable, Sendable {
             .standard
         }
         mayAskQuestion = switch reflectionRealization {
-        case .askFierceClarification:
+        case .establishTenderUnderstanding, .openFierceInquiry, .askFierceClarification:
             true
         case .bridgeToSynthesis:
             false
@@ -1810,7 +2070,7 @@ enum CurrentV5RemoteContractError: Error {
 }
 
 enum CurrentV5ServerPrompt {
-    static let version = "turn-v5-core-server-v101"
+    static let version = "turn-v5-core-server-v104"
 }
 
 private struct CurrentV5PlannerPayload: Encodable {
@@ -2068,7 +2328,19 @@ struct CurrentV5SwiftTurnGate: Sendable {
             && session.semanticMemory.reflectionPhase == .fierce
             && session.semanticMemory.reflectionFrame != nil
             && !resolvesPresentedContextCue
-        let requiresDecision = hasCommittedTenderBoundary || hasActiveFierceBoundary
+        let hasExplorationBoundary =
+            session.protocolStage == .directReflection
+            && session.semanticMemory.reflectionPhase == .exploratory
+            && !resolvesPresentedContextCue
+        let hasSynthesisBoundary =
+            session.protocolStage == .directReflection
+            && session.semanticMemory.reflectionPhase == .synthesis
+            && !resolvesPresentedContextCue
+        let requiresDecision = output.phaseOutcomeContractApplied
+            && (hasExplorationBoundary
+                || hasCommittedTenderBoundary
+                || hasActiveFierceBoundary
+                || hasSynthesisBoundary)
 
         func invalid() -> CurrentV5CoreError {
             .projectionInvalid(
@@ -2086,9 +2358,14 @@ struct CurrentV5SwiftTurnGate: Sendable {
 
         let phase = session.semanticMemory.reflectionPhase
         let meaningIsAllowed: Bool = switch phase {
+        case .exploratory:
+            hasExplorationBoundary
+                && [.continueExploration, .completeExploration].contains(
+                    progression.meaning
+                )
         case .tender:
             hasCommittedTenderBoundary
-                && [.reviseTender, .inspectReality, .synthesize].contains(
+                && [.reviseTender, .clarifyTender, .inspectReality, .synthesize].contains(
                     progression.meaning
                 )
         case .fierce:
@@ -2097,9 +2374,10 @@ struct CurrentV5SwiftTurnGate: Sendable {
                     progression.meaning
                 )
         case .synthesis:
-            progression.meaning == .synthesize
-        case .exploratory:
-            false
+            hasSynthesisBoundary
+                && [.synthesize, .clarifySynthesis, .acceptSynthesis].contains(
+                    progression.meaning
+                )
         }
         guard meaningIsAllowed else { throw invalid() }
 
@@ -2120,6 +2398,43 @@ struct CurrentV5SwiftTurnGate: Sendable {
             return committedReflectionEvidence && userAuthoredCardEvidence
         }
         switch progression.meaning {
+        case .continueExploration:
+            guard progression.reflectionDelta == nil,
+                  progression.fierceDirection == nil,
+                  !output.responseFocus.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                  ).isEmpty else {
+                throw invalid()
+            }
+            return ResolvedReflectionProgression(
+                meaning: progression.meaning,
+                candidateReference: nil,
+                candidateContent: nil,
+                reflectionDelta: nil,
+                fierceDirection: nil,
+                fierceEvidenceBasis: []
+            )
+
+        case .completeExploration:
+            guard let delta = progression.reflectionDelta?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !delta.isEmpty,
+                  progression.fierceDirection == nil,
+                  CurrentV5SelfCriticismLineage.alignedLink(
+                    in: session.semanticMemory,
+                    applying: output.semanticEvidencePatch.memoryUpdate
+                  ) != nil else {
+                throw invalid()
+            }
+            return ResolvedReflectionProgression(
+                meaning: progression.meaning,
+                candidateReference: nil,
+                candidateContent: nil,
+                reflectionDelta: delta,
+                fierceDirection: nil,
+                fierceEvidenceBasis: []
+            )
+
         case .reviseTender:
             guard progression.fierceDirection == nil else { throw invalid() }
             return ResolvedReflectionProgression(
@@ -2127,6 +2442,23 @@ struct CurrentV5SwiftTurnGate: Sendable {
                 candidateReference: nil,
                 candidateContent: nil,
                 reflectionDelta: progression.reflectionDelta,
+                fierceDirection: nil,
+                fierceEvidenceBasis: []
+            )
+
+        case .clarifyTender:
+            guard progression.reflectionDelta == nil,
+                  progression.fierceDirection == nil,
+                  !output.responseFocus.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                  ).isEmpty else {
+                throw invalid()
+            }
+            return ResolvedReflectionProgression(
+                meaning: progression.meaning,
+                candidateReference: nil,
+                candidateContent: nil,
+                reflectionDelta: nil,
                 fierceDirection: nil,
                 fierceEvidenceBasis: []
             )
@@ -2141,7 +2473,10 @@ struct CurrentV5SwiftTurnGate: Sendable {
                 meaning: progression.meaning,
                 candidateReference: candidate.id,
                 candidateContent: candidate.content,
-                reflectionDelta: nil,
+                // tenderRevised may atomically preserve the person's material correction while
+                // the same accepted outcome opens a grounded Fierce inquiry. An accepted,
+                // unchanged Tender carries no delta here.
+                reflectionDelta: progression.reflectionDelta,
                 fierceDirection: nil,
                 fierceEvidenceBasis: []
             )
@@ -2202,6 +2537,39 @@ struct CurrentV5SwiftTurnGate: Sendable {
                 fierceDirection: nil,
                 fierceEvidenceBasis: []
             )
+
+        case .clarifySynthesis:
+            guard progression.reflectionDelta == nil,
+                  progression.fierceDirection == nil,
+                  session.semanticMemory.reflectionFrame?.action == .synthesizeUnderstanding,
+                  !output.responseFocus.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                  ).isEmpty else {
+                throw invalid()
+            }
+            return ResolvedReflectionProgression(
+                meaning: progression.meaning,
+                candidateReference: nil,
+                candidateContent: nil,
+                reflectionDelta: nil,
+                fierceDirection: nil,
+                fierceEvidenceBasis: []
+            )
+
+        case .acceptSynthesis:
+            guard progression.reflectionDelta == nil,
+                  progression.fierceDirection == nil,
+                  session.semanticMemory.reflectionFrame?.action == .synthesizeUnderstanding else {
+                throw invalid()
+            }
+            return ResolvedReflectionProgression(
+                meaning: progression.meaning,
+                candidateReference: nil,
+                candidateContent: nil,
+                reflectionDelta: nil,
+                fierceDirection: nil,
+                fierceEvidenceBasis: []
+            )
         }
     }
 
@@ -2216,9 +2584,20 @@ struct CurrentV5SwiftTurnGate: Sendable {
         var patch = output.semanticEvidencePatch
         guard let progression else { return patch }
         switch progression.meaning {
-        case .inspectReality, .clarifyFierce:
+        case .continueExploration, .clarifyTender, .clarifyFierce, .clarifySynthesis,
+             .acceptSynthesis:
             patch.memoryUpdate.reflectionFrame = nil
             patch.reflectionContribution = nil
+        case .completeExploration:
+            patch.memoryUpdate.reflectionFrame = nil
+            patch.reflectionContribution = CurrentV5ReflectionContribution(
+                reflectionDelta: progression.reflectionDelta
+            )
+        case .inspectReality:
+            patch.memoryUpdate.reflectionFrame = nil
+            patch.reflectionContribution = progression.reflectionDelta.map {
+                CurrentV5ReflectionContribution(reflectionDelta: $0)
+            }
         case .completeFierce:
             patch.memoryUpdate.reflectionFrame = nil
             patch.reflectionContribution = CurrentV5ReflectionContribution(
@@ -2274,9 +2653,12 @@ struct CurrentV5SwiftTurnGate: Sendable {
                 operation: operation,
                 memoryUpdate: update,
                 responseFocus: responseFocus,
-                hasReflectionContribution:
-                    semanticPatch.reflectionContribution?.hasSemanticContent == true
-                    || semanticPatch.memoryUpdate.reflectionFrame != nil,
+                hasReflectionContribution: operation == .continueExploratoryReflection
+                    ? progression?.meaning == .completeExploration
+                        && update.reflectionFrame != nil
+                    : semanticPatch.reflectionContribution?.hasSemanticContent == true
+                        || semanticPatch.memoryUpdate.reflectionFrame != nil,
+                reflectionProgressionMeaning: progression?.meaning,
                 inspectedRealityCandidateReference: {
                     if progression?.meaning == .inspectReality {
                         return progression?.candidateReference
@@ -2315,8 +2697,11 @@ struct CurrentV5SwiftTurnGate: Sendable {
     ) -> String {
         guard let progression else { return output.responseFocus }
         switch progression.meaning {
-        case .reviseTender, .synthesize:
+        case .continueExploration, .reviseTender, .clarifyTender, .synthesize,
+             .clarifySynthesis:
             return output.responseFocus
+        case .completeExploration, .acceptSynthesis:
+            return ""
         case .inspectReality:
             // The exact canonical reality candidate, rather than a second free-form Planner
             // instruction, is the only Writer focus for opening Fierce.
@@ -2504,7 +2889,19 @@ struct CurrentV5SwiftTurnGate: Sendable {
             let delta = clean(contribution.reflectionDelta)
             switch operation {
             case .continueExploratoryReflection:
-                break
+                if let delta {
+                    // Exploration completion may carry the minimum LLM-authored Tender handoff.
+                    // Swift still owns phase, frame action, and provenance; this prevents a second
+                    // Planner turn from having to rediscover the first bounded understanding.
+                    update.reflectionFrame = TurnReflectionFrame(
+                        mode: .tender,
+                        action: .softenGlobalSelfJudgment,
+                        evidenceBasis: evidence,
+                        dimensions: contribution.dimensions,
+                        reflectionDelta: delta,
+                        fierceEvidence: nil
+                    )
+                }
             case .continueTenderReflection:
                 if let delta {
                     update.reflectionFrame = TurnReflectionFrame(
@@ -2519,7 +2916,23 @@ struct CurrentV5SwiftTurnGate: Sendable {
                     )
                 }
             case .continueTenderGroundedFierceReflection:
-                if let fierce = contribution.fierceEvidence,
+                if session.semanticMemory.reflectionPhase == .tender,
+                   contribution.fierceEvidence == nil,
+                   let delta {
+                    // A user revision and the decision to inspect one reality candidate can be
+                    // one semantic turn. Preserve that revised bounded understanding while Swift
+                    // opens Fierce; do not require another confirmation round.
+                    update.reflectionFrame = TurnReflectionFrame(
+                        mode: .tender,
+                        action: .softenGlobalSelfJudgment,
+                        evidenceBasis: evidence,
+                        dimensions: contribution.dimensions.isEmpty
+                            ? session.semanticMemory.reflectionFrame?.dimensions ?? []
+                            : contribution.dimensions,
+                        reflectionDelta: delta,
+                        fierceEvidence: nil
+                    )
+                } else if let fierce = contribution.fierceEvidence,
                    let direction = fierce.direction,
                    let delta {
                     let action: TurnReflectionAction = switch direction {
@@ -2556,10 +2969,17 @@ struct CurrentV5SwiftTurnGate: Sendable {
             }
         }
         if operation == .continueExploratoryReflection {
-            // Exploration owns only the grounded difficulty-to-judgment relationship. A proposed
-            // next-phase Tender frame is redundant syntax and cannot become part of this act; the
-            // first Tender understanding is created by the following Tender turn.
-            update.reflectionFrame = nil
+            let hasAtomicTenderHandoff = clean(
+                patch.reflectionContribution?.reflectionDelta
+            ) != nil && CurrentV5SelfCriticismLineage.alignedLink(
+                in: session.semanticMemory,
+                applying: update
+            ) != nil
+            if !hasAtomicTenderHandoff {
+                // A raw/misplaced Tender frame cannot become part of an incomplete Exploration
+                // act. Only the compiled phase-outcome handoff with an aligned link survives.
+                update.reflectionFrame = nil
+            }
         }
 
         if let contribution = patch.practiceContribution {
@@ -2809,6 +3229,7 @@ private struct CurrentV5CanonicalProjector {
         memoryUpdate: TurnSemanticMemoryUpdate,
         responseFocus: String,
         hasReflectionContribution: Bool,
+        reflectionProgressionMeaning: CurrentV5ReflectionProgressionMeaning?,
         inspectedRealityCandidateReference: String?,
         session: ReflectionSession
     ) throws -> ProjectedExecutableTurnPlan {
@@ -3867,10 +4288,19 @@ private struct CurrentV5CanonicalProjector {
                 )
             }
             if candidateHasGroundedSelfCriticismLink(memoryUpdate) {
-                // The current act completes Exploration and commits only its grounded link. The
-                // following Tender turn owns the first bounded compassionate understanding.
+                // The current act remains Exploration, while its phase-local completion outcome
+                // carries the minimum LLM-authored Tender handoff. Swift establishes the canonical
+                // frame and post-turn phase without relabeling the act as a Tender operation.
                 var canonicalUpdate = memoryUpdate
-                canonicalUpdate.reflectionFrame = nil
+                if hasReflectionContribution {
+                    canonicalUpdate.reflectionFrame = try protocolShapedTenderFrame(
+                        from: memoryUpdate
+                    )
+                } else {
+                    // Decode-only compatibility for a saved/legacy current-v5 turn. New phase
+                    // outcomes always supply the initial Tender delta atomically.
+                    canonicalUpdate.reflectionFrame = nil
+                }
                 canonicalUpdate.reflectionPhase = .tender
                 return make(
                     stage: .directReflection,
@@ -3878,7 +4308,12 @@ private struct CurrentV5CanonicalProjector {
                     update: canonicalUpdate,
                     next: memoryUpdate.contextCueOffered == true
                         ? question("contextRelationship", "assess_contextual_cue_relation")
-                        : question("tenderReflection", "form_first_bounded_tender_understanding")
+                        : question(
+                            "tenderReflection",
+                            hasReflectionContribution
+                                ? "respond_to_or_revise_bounded_tender_understanding"
+                                : "form_first_bounded_tender_understanding"
+                        )
                 )
             }
             return make(
@@ -3933,6 +4368,24 @@ private struct CurrentV5CanonicalProjector {
                     )
                 )
             }
+            if CurrentV5CapabilitySet.hasCommittedTenderUnderstanding(in: session),
+               !hasReflectionContribution {
+                // The phase-local outcome says the person's response still needs one bounded
+                // clarification. Preserve the committed Tender frame and ask only that question;
+                // absence of a new frame is not a malformed protocol transaction.
+                var canonicalUpdate = memoryUpdate
+                canonicalUpdate.reflectionFrame = nil
+                canonicalUpdate.reflectionPhase = .tender
+                return make(
+                    stage: .directReflection,
+                    intent: .directCandidReflection,
+                    update: canonicalUpdate,
+                    next: question(
+                        "tenderReflection",
+                        "clarify_current_bounded_tender_understanding"
+                    )
+                )
+            }
             let frame = try protocolShapedTenderFrame(from: memoryUpdate)
             var canonicalUpdate = memoryUpdate
             canonicalUpdate.reflectionFrame = frame
@@ -3957,8 +4410,7 @@ private struct CurrentV5CanonicalProjector {
                     failure: .reflectionPhaseMismatch
                 )
             }
-            if session.semanticMemory.reflectionPhase == .tender,
-               !hasReflectionContribution {
+            if session.semanticMemory.reflectionPhase == .tender {
                 // Entering Fierce opens the inquiry; it does not require the answer to that inquiry
                 // to have already been committed. Keep the grounded Tender frame in semantic memory
                 // and let the next user answer form Protect/Provide/Repair/Motivate evidence.
@@ -3971,10 +4423,19 @@ private struct CurrentV5CanonicalProjector {
                             : .structuralPreconditionFailed
                     )
                 }
+                var canonicalUpdate = memoryUpdate
+                if hasReflectionContribution {
+                    canonicalUpdate.reflectionFrame = try protocolShapedTenderFrame(
+                        from: memoryUpdate
+                    )
+                } else {
+                    canonicalUpdate.reflectionFrame = nil
+                }
+                canonicalUpdate.reflectionPhase = .fierce
                 return make(
                     stage: .directReflection,
                     intent: .directCandidReflection,
-                    update: settingReflectionPhase(.fierce),
+                    update: canonicalUpdate,
                     next: question(
                         "fierceReflection",
                         "discover_what_needs_protection_support_repair_or_change",
@@ -4049,6 +4510,25 @@ private struct CurrentV5CanonicalProjector {
                         failure: .structuralPreconditionFailed
                     )
                 }
+            }
+            if session.semanticMemory.reflectionPhase == .synthesis,
+               session.semanticMemory.reflectionFrame?.action == .synthesizeUnderstanding,
+               !hasReflectionContribution,
+               reflectionProgressionMeaning == .clarifySynthesis {
+                // A phase-local clarification outcome keeps the committed Synthesis intact. It
+                // does not require the Planner to serialize the same frame again.
+                var canonicalUpdate = memoryUpdate
+                canonicalUpdate.reflectionFrame = nil
+                canonicalUpdate.reflectionPhase = .synthesis
+                return make(
+                    stage: .directReflection,
+                    intent: .directCandidReflection,
+                    update: canonicalUpdate,
+                    next: question(
+                        "synthesisReflection",
+                        "clarify_current_synthesis"
+                    )
+                )
             }
             let frame = try protocolShapedSynthesisFrame(from: memoryUpdate)
             var canonicalUpdate = memoryUpdate

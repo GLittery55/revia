@@ -11,7 +11,7 @@ from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
 TURN_PROMPT_VERSION = "turn-v4-server-v45"
-CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v101"
+CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v104"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -643,7 +643,7 @@ PLANNER_JSON_SHAPE = """{"semanticOperation":"","requestedStage":"","localAction
 # The rebuilt v5 Planner cannot express workflow instructions. Swift derives stage, prompt,
 # confirmation, local capabilities, and user-visible intent from the one semantic operation.
 CURRENT_V5_PLANNER_JSON_SHAPE = (
-    '{"semanticOperation":null,"reflectionProgressionDecision":null,'
+    '{"semanticOperation":null,"reflectionProgressionDecision":null,"reflectionTurnOutcome":null,'
     '"semanticEvidencePatch":{"memoryUpdate":{},'
     '"cardConnectionEvidence":null,"contextualTrackingDecision":null},'
     '"responseFocus":""}'
@@ -701,19 +701,18 @@ def _planner_base_structural_contract(request: dict[str, Any]) -> str:
 def _reflection_frame_contract(*, sparse_tender_lineage: bool) -> str:
     if sparse_tender_lineage:
         return """
-Reflection output carries meaning only. Exploration emits selfCriticismLink and no reflectionFrame.
+Reflection output carries meaning only. Exploration reports reflectionTurnOutcome, emits
+selfCriticismLink, and may colocate only the initial Tender delta; it never emits a protocol frame.
 Tender/Synthesis meaning uses reflectionFrame.reflectionDelta except at committed Tender or active
-Fierce progression, where reflectionProgressionDecision is the sole meaning owner. Fierce completion
-colocates only reflectionDelta and fierceDirection in that decision. Swift recovers the active candidate,
-latest user answer, and committed evidence lineage. responseFocus is only a
-current-turn Writer presentation instruction: it is never persistent evidence and Swift never
-uses it as a reflectionDelta fallback. Never copy an Assistant question, earlier reply, or Writer
-instruction into reflectionDelta. Optional new user-grounded evidence is
-reflectionFrame.evidenceBasis=["exact user-grounded proposition"]. dimensions may contain
-selfKindness/commonHumanity/mindfulness. Never also emit a reflectionFrame for a Fierce progression
-decision. behavior/impact are retired at that boundary; support/provision maps to protect. Card,
-tracking, reference guidance, Assistant wording, and model inference are never Fierce evidence.
-Never emit mode, action, phase, source, or committed lineage; Swift supplies them and joins reality.
+Fierce, where reflectionTurnOutcome is the sole meaning owner. Fierce completion colocates only
+fierceDelta and fierceDirection there. Swift restores the active candidate, latest user answer, and committed evidence lineage.
+responseFocus is turn-local Writer guidance; Swift never uses it as a reflectionDelta fallback or evidence. Never copy an
+Assistant question, earlier reply, or Writer instruction into reflectionDelta. Optional new user
+evidence is reflectionFrame.evidenceBasis=["exact user-grounded proposition"]. dimensions may contain
+selfKindness/commonHumanity/mindfulness. Never also emit a reflectionFrame for a Reflection outcome.
+behavior/impact are retired there; support/provision maps to protect. Card, Tracking, reference
+guidance, Assistant wording, and model inference are never Fierce evidence. Never emit mode,
+action, phase, source, or lineage; Swift supplies protocol structure.
 """.strip()
 
     opening_contract = (
@@ -1453,6 +1452,8 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "solution, or action, and never emit outcome/source/status/confirmation/phase metadata."
         )
     if stage == "directReflection":
+        semantic_memory = request.get("semanticMemory")
+        semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
         contextual_profiles = request.get("contextualTrackingProfiles")
         contextual_profiles = (
             contextual_profiles if isinstance(contextual_profiles, list) else []
@@ -1473,8 +1474,9 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "evidence: "
             + _encoded(grounded_candidates)
             + ". Their field paths and provenance are facts; they are not preclassified as support, "
-            "responsibility, change, or importance. Use one exact candidate id only when its reality "
-            "content warrants inspectReality. A correction invalidates only the rejected relation at "
+            "responsibility, change, or importance. At committed Tender, select one exact reference "
+            "only when its reality content warrants a Fierce inquiry; Swift—not the Planner—compiles "
+            "that selection into the workflow. A correction invalidates only the rejected relation at "
             "its stated scope; it does not erase the candidate's underlying fact."
             if grounded_candidates
             else " No canonical grounded reality candidate is currently projected."
@@ -1511,65 +1513,120 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             if contextual_profiles
             else " No new contextual tracking profile is available; omit contextualTrackingDecision."
         )
+        reflection_mode = str(request.get("reflectionMode") or "")
+        has_frame = isinstance(semantic_memory.get("reflectionFrame"), dict)
+        phase_contract: str
+        if is_answering_contextual_cue:
+            phase_contract = (
+                "CONTEXT CUE ANSWER ONLY. Use the current phase's existing semantic operation and save only the "
+                "person's contextRelationship. Do not emit reflectionTurnOutcome, revise a committed frame, or "
+                "decide Reflection progression from this cue response."
+            )
+        elif reflection_mode == "exploratory":
+            phase_contract = (
+                "EXPLORATORY ONLY. Report reflectionTurnOutcome, not semanticOperation or progression. Decide "
+                "whether the person's own words now sufficiently connect the lived "
+                "difficulty with the self-critical judgment. Cumulative, gradual, situational, outcome-based, "
+                "comparative, explicit-standard, and loose relations are sufficient without a cause, trigger, or precise "
+                "onset. Greater specificity is not greater reflective value. selfCriticismLink carries this "
+                "user-grounded difficulty-to-judgment relationship, and Swift joins it to the current exact "
+                "self-critical statement. Attempts, effectiveness, accumulated blockage, and the later judgment "
+                "remain distinct unless the person connected them. Emotion, impact, blockage, Card, and Tracking "
+                "cannot replace the link, and Tracking cannot delay it. Use explorationContinue plus one easy "
+                "responseFocus only while the relation is absent, revised, rejected, or assistant-inferred. Once "
+                "sufficient, use explorationComplete, emit the grounded selfCriticismLink, and colocate one nonempty "
+                "tenderDelta containing the minimum bounded compassionate understanding needed for the handoff. Emit "
+                "no reflectionFrame. Swift commits the link, establishes the canonical Tender frame, and projects "
+                "post-turn Tender. referenceGuidance may select an adjacent question but is never evidence. Do not "
+                "create Fierce, Synthesis, or Action meaning."
+            )
+        elif reflection_mode == "tender" and not has_frame:
+            phase_contract = (
+                "FIRST TENDER ONLY. Form a bounded compassionate understanding as one declarative delta that keeps the "
+                "concrete difficulty, impact, limits, and warranted responsibility visible while limiting only "
+                "unsupported judgment scope. Emit continueTenderReflection with exactly one grounded "
+                "reflectionFrame.reflectionDelta. Do not ask the person to prove that their judgment is false and "
+                "do not emit a Reflection outcome yet."
+            )
+        elif reflection_mode == "tender":
+            phase_contract = (
+                "COMMITTED TENDER ONLY. Report what the latest response means in reflectionTurnOutcome; do not "
+                "choose semanticOperation or reflectionProgressionDecision. outcome is tenderAccepted for natural "
+                "acceptance or qualification, tenderRevised only for a material user correction (with tenderDelta), "
+                "tenderNeedsClarification only for genuine misunderstanding (with one concrete responseFocus), or "
+                "tenderOptedOut for an explicit wish to stop negotiating the understanding. For accepted/revised "
+                "Tender, inspect the read-only groundedRealityCandidates and select one realityCandidate when a "
+                "behavior, impact, responsibility, boundary, support condition, repair, protection, or change remains "
+                "meaningful. One concrete fact is enough; no causal pair and no already-proposed action is required. "
+                "The candidate carries its exact reference and one semantic meaning; Swift will enter Fierce "
+                "deterministically. Use null only after explicitly judging that none is meaningful. When candidate is "
+                "null, provide synthesisDelta so Swift can open Synthesis without inventing content. That explicit "
+                "Synthesis integrates only canonical link, Tender, any grounded/declined Fierce material, and "
+                "confirmed context. First Synthesis requires an explicit nonempty delta and must not copy the Tender "
+                "delta verbatim. Never reconfirm an accepted Tender "
+                "understanding."
+            )
+        elif reflection_mode == "fierce":
+            phase_contract = (
+                "ACTIVE FIERCE ONLY. Report the semantic state in reflectionTurnOutcome; do not choose "
+                "semanticOperation or reflectionProgressionDecision. Review the active candidate, all committed "
+                "user-authored episode/context material, and the latest answer. Any grounded repair, protect, or "
+                "change direction completes Fierce: use fierceDirectionFormed with fierceDirection and fierceDelta, "
+                "even when the latest short answer relies on a direction the person stated just before. Use "
+                "fierceNeedsClarification with one concrete responseFocus only when that direction is genuinely still "
+                "unclear. Use fierceNoDirection or fierceOptedOut with synthesisDelta when no direction exists or the "
+                "person declines. Do not ask for repetition, another impact, a more specific consequence, a plan, or "
+                "a second reality direction."
+            )
+        elif reflection_mode == "synthesis":
+            has_synthesis = (
+                isinstance(semantic_memory.get("reflectionFrame"), dict)
+                and semantic_memory["reflectionFrame"].get("action") == "synthesizeUnderstanding"
+            )
+            phase_contract = (
+                "SYNTHESIS ONLY. Report reflectionTurnOutcome, not semanticOperation or progression. Integrate only "
+                "canonical link, Tender, any grounded/declined Fierce work, and confirmed context. "
+                + (
+                    "A first Synthesis uses synthesisFormed with a nonempty synthesisDelta. "
+                    if not has_synthesis
+                    else "Classify the latest response as synthesisAccepted for natural acceptance/readiness, "
+                    "synthesisRevised only for a material correction with synthesisDelta, "
+                    "synthesisNeedsClarification only for genuine misunderstanding with one responseFocus, or "
+                    "synthesisOptedOut when the person declines further negotiation. Accepted/opted-out Synthesis "
+                    "includes the existing minimal practiceTransition proposal handoff so Swift opens Optional "
+                    "Action; it does not repeat or reconfirm Synthesis. "
+                )
+                + "Swift compiles the outcome. Do not reopen Tender or Fierce."
+            )
+        else:
+            phase_contract = "Use only the single current Reflection capability supplied by Swift."
+
+        contextual_patch_contract = (
+            " Context patch is: "
+            + CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE
+            + contextual_contract
+            if contextual_profiles or is_answering_contextual_cue
+            else contextual_contract
+        )
+
         return (
-            "Use Swift's read-only reflectionMode and preserve canonical lineage: cardRealityConnection -> "
-            "selfCriticismLink -> reflectionFrame -> optional fierceEvidence -> synthesis -> practice. "
-            "selfCriticismLink carries the user-grounded difficulty-to-judgment relationship, preferably "
-            "{\"groundedDifficulty\":\"difficulty or pattern\"}; Swift joins it to the current judgment and owns metadata. "
-            "EXPLORATORY. A user-grounded difficulty-to-judgment relation is enough; sufficiency, not maximum detail, "
-            "ends Exploration. Greater specificity is not greater reflective value. Cumulative, gradual, situational, "
-            "outcome-based, comparative, explicit-standard, and loose user-described relations all qualify without a cause, "
-            "trigger, or precise onset. Keep continueExploratoryReflection as the current act when its patch completes the link; "
-            "emit no Tender frame and let Swift project post-turn Tender. Continue only when the relation is absent, revised, "
-            "rejected, or assistant-inferred, with one easy clarification. Card, Tracking, referenceGuidance, emotion, impact, "
-            "and blockage cannot replace the link; Tracking cannot delay it. referenceGuidance may select an adjacent question "
-            "but is never evidence. CONTEXT AND EPISODE. Tracking is an optional, once-only event-context cue, never causation. "
-            "Save contextRelationship only from the person's "
-            "explicit relation, revision, rejection, or uncertainty. "
+            "Use Swift's read-only reflectionMode. You are given only the contract for that current phase; do not "
+            "plan the Reflection state machine. Always preserve every new user-grounded episode fact as a sparse "
+            "patch, including behavior, process, condition, consequence, constraint, controllable part, or impact. "
+            "Do not infer cause, motive, trait, diagnosis, responsibility, or a positive function. Tracking is an "
+            "optional, once-only event-context cue and never competes with lived evidence or gates progression. "
+            "Save contextRelationship only from the person's explicit relation, revision, rejection, or uncertainty. "
             + (
-                "This answer addresses the displayed cue: save contextRelationship without changing reflectionMode. If Tender has "
-                "no frame, atomically provide its first delta; use related context only as one condition. Do not revise committed "
-                "Tender or choose progression solely because the cue was answered. "
+                "This answer addresses the displayed contextual cue: save only the person's explicit relation, "
+                "revision, rejection, or uncertainty. Do not revise committed Tender or choose Reflection "
+                "progression solely because the cue was answered; use related context only as one condition, and "
+                "Tracking never changes Reflection progression. "
                 if is_answering_contextual_cue
                 else ""
             )
-            + "Always emit every new user-grounded episode fact in the same turn, whatever progression does. Include behavior, "
-            "process, condition, consequence, constraint, or controllable part; exclude Card, Tracking, guidance, inference, "
-            "free-floating emotion, self-evaluation, solutions, and the whole link. A user-described effect on a person or relationship "
-            "is an impact, including an emotional effect; preserve its uncertainty. "
-            "TENDER. Form a bounded compassionate understanding that keeps difficulty, impact, limits, and responsibility visible "
-            "while limiting only unsupported judgment scope. Do not substitute a cause, ability claim, positive function, or ‘不是 X，"
-            "而是 Y’. For behavior-specific remorse/blame, use compassionate accountability: keep conduct and impact at their actual "
-            "scope; add no global verdict, loss-of-control, unintended-act, hidden-motive, excuse, or opposite positive. Its "
-            "reflectionDelta is declarative and requests no new material. The first proposal is not completion. Tender completes on a user-authored account, "
-            "acceptance/qualification, or decline; emotional improvement is not required. Only "
-            "explicit rejection, misunderstanding, or material revision continues it. Extra detail, distress, uncertainty, '不知道/想不到', "
-            "or a dangling-question answer is not revision; do not reconfirm or challenge where the judgment is weakest. "
-            "At committed Tender/active Fierce, reflectionProgressionDecision alone owns meaning and semanticOperation is null. Use "
-            "{\"meaning\":\"reviseTender\",\"reflectionDelta\":\"revision\"}, "
-            "{\"meaning\":\"inspectReality\",\"candidateRef\":\"exact id\"}, or "
-            "{\"meaning\":\"synthesize\",\"reflectionDelta\":\"explicit synthesis\"}; omit reflectionFrame. "
-            "After accepted Tender, inspectReality is preferred when any committed behavior, impact, responsibility, boundary, support, "
-            "repair, protection, or change remains meaningful. One fact suffices; no causal pair or proposed action is required. "
-            "responseFocus asks only to confirm, revise, reject, or qualify that candidate; synthesize only when none remains. "
-            "FIERCE. Keep latestAnswerContext.referenceID read-only. The active candidate anchors inquiry but does not erase other "
-            "canonical user-authored evidence. Before clarifying, inspect the committed episode, user-authored Reality Connection, "
-            "confirmed context, and latest answer. Any connected repair/protect/change direction completes Fierce without repetition. "
-            "One concrete impact is enough; do not subdivide, rank, or redefine it. Return clarifyFierce plus one concrete responseFocus "
-            "only if clarification remains; otherwise completeFierce with nonempty reflectionDelta and fierceDirection, or synthesize "
-            "with an explicit delta on decline/no direction. Grounded repair/protect/change ends Fierce; Swift opens Synthesis. "
-            "Protection must be user-authored; non-user material cannot ground Fierce or Action. "
-            "SYNTHESIS. Integrate only canonical link, Tender, grounded/declined Fierce, and confirmed context. First Synthesis requires "
-            "an explicit nonempty delta; Swift never fills it. It may preserve accepted Tender/Fierce meaning but cannot copy the "
-            "committed delta verbatim. Revise committed Synthesis only for explicit correction/qualification; "
-            "natural acceptance/readiness chooses proposePractice without a second confirmation. "
-            "PRACTICE. Propose one small executable experiment grounded by one exact candidate id. noAction requires refusal or no "
-            "responsible concrete step. Swift compiles the resolved action and committed Synthesis into Final Narrative. "
+            + phase_contract
             + grounded_candidate_contract
-            + " "
-            "context patch is: "
-            + CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE
-            + contextual_contract
+            + contextual_patch_contract
         )
     if stage == "optionalAction":
         return (
@@ -1612,6 +1669,8 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             rejected_progression if isinstance(rejected_progression, dict) else {}
         )
         rejected_progression_meaning = str(rejected_progression.get("meaning") or "")
+        rejected_outcome = rejected_draft.get("reflectionTurnOutcome")
+        rejected_outcome = rejected_outcome if isinstance(rejected_outcome, dict) else {}
         semantic_memory = request.get("semanticMemory")
         semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
         committed_reflection = semantic_memory.get("reflectionFrame")
@@ -1649,31 +1708,50 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             "selfCriticalStatement; never substitute a nearby self-critical proposition."
             )
         elif projection_failure == "reflectionProgressionInvalid":
-            if str(request.get("reflectionMode") or "") == "fierce":
+            reflection_mode = str(request.get("reflectionMode") or "")
+            if reflection_mode == "exploratory":
                 exact_issue_repair = (
-                    " REQUIRED FIERCE PROGRESSION REPAIR: return exactly one reflectionProgressionDecision and omit "
-                    "semanticOperation and memoryUpdate.reflectionFrame. clarifyFierce keeps the exact "
-                    "active Swift-owned candidate, uses null delta/direction, and provides one concrete "
-                    "responseFocus. completeFierce colocates nonempty reflectionDelta and "
-                    "fierceDirection=repair|protect|change; responseFocus is empty. Swift recovers candidate identity "
-                    "and evidence from the active candidate, latest answer, and committed lineage. "
-                    "Use synthesize with candidateRef=null and an explicit delta only when the direction is declined "
-                    "or no meaningful Fierce direction remains."
+                    " REQUIRED EXPLORATION OUTCOME REPAIR: remain in the current Exploration transaction and "
+                    "return exactly one flat reflectionTurnOutcome. Re-evaluate the latest user's own words. When "
+                    "they sufficiently connect the lived difficulty with the current self-critical judgment, use "
+                    "explorationComplete, include one nonempty tenderDelta, and provide only the grounded side of "
+                    "memoryUpdate.selfCriticismLink; Swift attaches the exact canonical selfCriticalStatement. When "
+                    "that relation is genuinely still absent, revised, rejected, or assistant-inferred, use "
+                    "explorationContinue with one concrete responseFocus and omit tenderDelta. Do not return a "
+                    "Tender, Fierce, Synthesis, or Action outcome. Omit semanticOperation, "
+                    "reflectionProgressionDecision, and memoryUpdate.reflectionFrame."
+                )
+            elif reflection_mode == "fierce":
+                exact_issue_repair = (
+                    " REQUIRED FIERCE OUTCOME REPAIR: return exactly one flat reflectionTurnOutcome and omit "
+                    "semanticOperation, reflectionProgressionDecision, and memoryUpdate.reflectionFrame. Use "
+                    "fierceDirectionFormed with nonempty fierceDelta and fierceDirection=repair|protect|change "
+                    "when a direction is grounded; fierceNeedsClarification with one concrete responseFocus only "
+                    "when it is unresolved; otherwise fierceNoDirection/fierceOptedOut with synthesisDelta."
+                )
+            elif reflection_mode == "synthesis":
+                exact_issue_repair = (
+                    " REQUIRED SYNTHESIS OUTCOME REPAIR: return exactly one flat reflectionTurnOutcome and omit "
+                    "semanticOperation, reflectionProgressionDecision, and memoryUpdate.reflectionFrame. For the "
+                    "first Synthesis use synthesisFormed with one nonempty synthesisDelta. For an already committed "
+                    "Synthesis use synthesisAccepted for natural acceptance/readiness, synthesisRevised with a "
+                    "materially revised synthesisDelta, synthesisNeedsClarification with one concrete responseFocus, "
+                    "or synthesisOptedOut when the person declines further negotiation. Do not reopen Exploration, "
+                    "Tender, or Fierce."
                 )
             else:
                 exact_issue_repair = (
-                    " REQUIRED TENDER PROGRESSION REPAIR: return exactly one reflectionProgressionDecision. "
-                    "reviseTender and synthesize have candidateRef=null plus a nonempty colocated reflectionDelta. "
-                    "inspectReality uses one exact supplied groundedRealityCandidates.id and reflectionDelta=null. "
-                    "Omit semanticOperation and memoryUpdate.reflectionFrame because Swift compiles the decision."
+                    " REQUIRED TENDER OUTCOME REPAIR: return exactly one flat reflectionTurnOutcome. Use an exact "
+                    "realityCandidate reference when meaningful so Swift opens Fierce; use null only when none is "
+                    "meaningful and include synthesisDelta. A material revision uses tenderRevised+tenderDelta. "
+                    "Omit semanticOperation, reflectionProgressionDecision, and memoryUpdate.reflectionFrame."
                 )
         elif projection_failure == "fierceFrameIncomplete":
             exact_issue_repair = (
-                " REQUIRED FIERCE REPAIR: replace the partial frame with one atomic reflectionProgressionDecision. "
-                "Use completeFierce with nonempty reflectionDelta and fierceDirection when the latest answer grounds "
-                "a direction; otherwise use clarifyFierce with one responseFocus. Do not repeat candidateRef or "
-                "groundedEvidence; Swift recovers both from canonical state. Omit semanticOperation and "
-                "memoryUpdate.reflectionFrame; Swift constructs the existing Fierce frame and post-turn phase."
+                " REQUIRED FIERCE REPAIR: replace the partial frame with one flat reflectionTurnOutcome. Use "
+                "fierceDirectionFormed with nonempty fierceDelta and fierceDirection when the latest answer grounds "
+                "a direction; otherwise use fierceNeedsClarification with one responseFocus. Omit semanticOperation, "
+                "reflectionProgressionDecision, and memoryUpdate.reflectionFrame; Swift compiles the transaction."
             )
         elif "provideContextualTrackingDecision" in required_conditions:
             exact_issue_repair = (
@@ -1700,11 +1778,12 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         ):
             exact_issue_repair = (
                 " REQUIRED SYNTHESIS DISPOSITION REPAIR: re-evaluate only the latest answer against the already committed "
-                "Synthesis. If it naturally accepts, affirms, acknowledges, or is ready to continue, choose proposePractice now "
-                "and provide one complete semanticEvidencePatch.memoryUpdate.practiceTransition with proposal.content and "
-                "proposal.basis. If it explicitly doubts, corrects, rejects, or qualifies the "
-                "Synthesis, choose synthesizeDirectReflection and provide a materially different reflectionDelta grounded in "
-                "that latest answer. Do not paraphrase or replay the committed Synthesis, and do not require another confirmation."
+                "Synthesis. If it naturally accepts, affirms, acknowledges, or is ready to continue, return "
+                "reflectionTurnOutcome.outcome=synthesisAccepted plus one complete "
+                "semanticEvidencePatch.memoryUpdate.practiceTransition with proposal.content and proposal.basis. If it "
+                "explicitly doubts, corrects, rejects, or qualifies the Synthesis, return synthesisRevised with a materially "
+                "different synthesisDelta grounded in that latest answer. Omit semanticOperation, progression, and "
+                "reflectionFrame. Do not replay the committed Synthesis or require another confirmation."
             )
         if (
             not exact_issue_repair
@@ -1725,9 +1804,10 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             and projection_failure in synthesis_repair_failures
         ):
             exact_issue_repair = (
-                " REQUIRED SYNTHESIS REPAIR: keep semanticOperation=synthesizeDirectReflection and repair only "
+                " REQUIRED SYNTHESIS REPAIR: keep the phase-local reflectionTurnOutcome and repair only "
                 + field_path
-                + " according to its violation. Put the actual compact synthesis in semanticEvidencePatch.memoryUpdate.reflectionFrame.reflectionDelta; responseFocus is presentation guidance only. "
+                + " according to its violation. Put the actual compact synthesis in synthesisDelta and omit "
+                "semanticOperation, progression, and reflectionFrame; responseFocus is presentation guidance only. "
                 "Swift constructs mode, action, committed lineage, dimensions, and Fierce inheritance. The synthesis "
                 "must be explicitly supplied by the Planner and use only the committed "
                 "selfCriticismLink and Tender understanding; do not introduce a new interpretation, "
@@ -1764,9 +1844,10 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             + violation
             + "; issue.requiredConditions="
             + _encoded(required_conditions)
-            + ". Repair exactly one semantic act within the narrowed authoritative ALLOWED list above. At a Tender "
-            "progression boundary, reflectionProgressionDecision remains the sole semantic authority and Swift compiles "
-            "the operation. Otherwise, first determine whether "
+            + ". Repair exactly one semantic act within the narrowed authoritative ALLOWED list above. In Exploration, "
+            "committed Tender, active Fierce, or Synthesis, reflectionTurnOutcome remains the sole phase-local "
+            "semantic authority and Swift "
+            "compiles the operation. Otherwise, first determine whether "
             "the executable operation remains rejectedOperation. If it remains the same operation, repair only issue.fieldPath "
             "and the structural dependencies explicitly named by requiredConditions; preserve every other valid "
             "operation-owned field from request.correction.rejectedDraft and do not invent evidence. If the selected "
@@ -1808,55 +1889,56 @@ Development evidence is optional enrichment; do not withhold realityMapping beca
     semantic_memory = request.get("semanticMemory")
     semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
     reflection_mode = request.get("reflectionMode")
+    latest_answer_context = request.get("latestAnswerContext")
+    latest_answer_context = (
+        latest_answer_context if isinstance(latest_answer_context, dict) else {}
+    )
+    resolves_context_cue = latest_answer_context.get("purpose") == "contextRelationship"
+    uses_exploration_outcome = (
+        stage == "directReflection"
+        and reflection_mode == "exploratory"
+        and not resolves_context_cue
+    )
     uses_tender_progression = (
         stage == "directReflection"
         and reflection_mode == "tender"
         and isinstance(semantic_memory.get("reflectionFrame"), dict)
+        and not resolves_context_cue
     )
     uses_fierce_progression = (
         stage == "directReflection"
         and reflection_mode == "fierce"
         and isinstance(semantic_memory.get("reflectionFrame"), dict)
+        and not resolves_context_cue
     )
-    uses_synthesis_progression = (
+    uses_synthesis_outcome = (
         stage == "directReflection"
         and reflection_mode == "synthesis"
-        and "synthesizeDirectReflection" in allowed
+        and not resolves_context_cue
     )
-    uses_reflection_progression = uses_tender_progression or uses_fierce_progression
+    uses_reflection_outcome = (
+        uses_exploration_outcome
+        or uses_tender_progression
+        or uses_fierce_progression
+        or uses_synthesis_outcome
+    )
     authority_contract = (
-        "At this committed Tender boundary, choose exactly one reflectionProgressionDecision from "
-        "reviseTender, inspectReality, or synthesize and omit semanticOperation. Swift compiles that decision into one allowed operation."
-        if uses_tender_progression
-        else (
-            "At this active Fierce boundary, choose exactly one reflectionProgressionDecision from "
-            "clarifyFierce, completeFierce, or synthesize and omit semanticOperation. Swift compiles that decision into the existing operation."
-            if uses_fierce_progression
-            else (
-                "At committed Synthesis, an explicit correction or qualification uses "
-                "reflectionProgressionDecision={\"meaning\":\"synthesize\",\"reflectionDelta\":\"materially revised synthesis\"} "
-                "and omits semanticOperation. Natural acceptance/readiness uses semanticOperation=proposePractice and no progression decision."
-                if uses_synthesis_progression
-                else "Choose one allowed current act in semanticOperation."
-            )
-        )
+        "At this Reflection boundary, report exactly one phase-local reflectionTurnOutcome and omit "
+        "semanticOperation and reflectionProgressionDecision. Swift compiles the outcome into the unique operation."
+        if uses_reflection_outcome
+        else "Choose one allowed current act in semanticOperation."
     )
     output_operation_contract = (
-        "reflectionProgressionDecision is required and semanticOperation is null at this Reflection "
-        "boundary."
-        if uses_reflection_progression
-        else (
-            "For a Synthesis correction, reflectionProgressionDecision is required and semanticOperation is null; "
-            "for accepted Synthesis, semanticOperation=proposePractice and reflectionProgressionDecision is null."
-            if uses_synthesis_progression
-            else "semanticOperation is required and reflectionProgressionDecision is null."
-        )
+        "reflectionTurnOutcome is required; semanticOperation and reflectionProgressionDecision are null at this "
+        "Reflection boundary."
+        if uses_reflection_outcome
+        else "semanticOperation is required and reflectionProgressionDecision is null."
     )
     output_reflection_delta_contract = (
-        "At committed Tender or active Fierce progression, all progression meaning belongs only to "
-        "reflectionProgressionDecision; do not also emit semanticEvidencePatch.memoryUpdate.reflectionFrame. "
-        "responseFocus is Writer guidance only for reviseTender or clarifyFierce, and must be empty for completeFierce."
-        if uses_reflection_progression or uses_synthesis_progression
+        "At a phase-outcome boundary, all phase-local meaning belongs only to reflectionTurnOutcome; "
+        "do not also emit semanticEvidencePatch.memoryUpdate.reflectionFrame. responseFocus is Writer guidance "
+        "only for a genuine clarification and must be empty for a completed Fierce direction."
+        if uses_reflection_outcome
         else ""
     )
     system = f"""
@@ -1874,14 +1956,10 @@ Emit only the positive JSON shape below.
 EVIDENCE
 Use user messages and confirmed typed memory only. The latest answer may add several typed relations.
 Preserve uncertainty; infer no emotion, motive, personality, diagnosis, responsibility, causality, or
-an actual Tracking relationship. The Planner may select one supplied, temporally plausible Tracking
-profile as a contextual cue for the person to evaluate, but must not assert that it is related or
-causal. memoryUpdate is sparse: omit unchanged fields and never overwrite evidence with
+an actual Tracking relationship. memoryUpdate is sparse: omit unchanged fields and never overwrite with
 empty/default values. selfCriticalStatement is the sole writable self-criticism evidence: copy the
-exact nonempty new evaluative self-judgment or explicit self-directed blame, never an inferred trait
-and never the concrete behavior or harm being evaluated; Swift derives presence.
-invalidatedInterpretations contains only assistant interpretations explicitly rejected by the person;
-append that correction and never reuse it as evidence.
+exact new evaluative self-judgment or self-directed blame, never an inferred trait or concrete behavior.
+invalidatedInterpretations contains only explicitly rejected assistant interpretations; never reuse them.
 
 STAGE
 {_current_v5_stage_contract(request)}
@@ -2055,7 +2133,11 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "Handle the current Reality task. If the person has now offered a plausible reality-internal relation, "
             "preserve it without evaluating it, let the Card recede, and ask one neutral lived-reality Exploration "
             "question about whether and how the grounded difficulty became connected to the exact self-critical "
-            "statement. Do not ask for insight, fit, confirmation, lesson, or action. If their latest material remains "
+            "statement. In visible wording, name the concrete episode difficulty and refer neutrally to the existing "
+            "self-blame; ask only for the relationship between those two. A value, wish, regret, or desire mentioned in "
+            "the Card connection remains context rather than becoming the question target. The question seeks the "
+            "person's current relation, not an origin story about when or how a feeling, wish, or thought emerged. "
+            "Do not ask for insight, fit, confirmation, lesson, or action. If their latest material remains "
             "only an object or "
             "property correspondence, ask one concrete question entirely in lived-reality language about the focal "
             "episode; do not mention Card elements, similarity, correspondence, or metaphor. If they report no meaningful "
@@ -2104,7 +2186,10 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         "continueExploratoryReflection": (
             "Use the person's projective frame only to help them discover whether and how the exact self-critical "
             "statement became connected to the grounded difficulty. Do not fill a missing relation. Sufficiency, not "
-            "maximal specificity, is the stopping criterion. Cumulative, gradual, situational, outcome-based, comparative, "
+            "maximal specificity, is the stopping criterion. In visible wording, begin from the concrete episode and "
+            "refer neutrally to the current self-judgment; keep the Card image, metaphor, and projective frame internal. "
+            "Ask for only the missing difficulty-to-judgment relation in ordinary situation language. "
+            "Cumulative, gradual, situational, outcome-based, comparative, "
             "explicit-standard, and user-described loose relations are sufficient when they explain the connection in the "
             "person's own terms. Never convert a cumulative pattern into a demand for one moment, attempt, bug, step, or "
             "exact threshold. When the operation is legitimately still exploratory, ask one easy neutral question only for "
@@ -2129,8 +2214,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
                 + " This contextual question is the whole visible reply; continue Reflection after the person's appraisal. "
                 if selected_contextual_metric_ref and selected_contextual_metric
                 else (
-                    "Exploration has completed and the projected phase is Tender. Briefly carry forward only the grounded "
-                    "difficulty-to-judgment relationship and invite the person to continue; do not state a Tender distinction yet. "
+                    "Exploration has completed and Swift has established the initial Tender understanding from the "
+                    "phase outcome. Realize that bounded understanding once and invite correction or qualification. "
                     if projected_reflection_phase == "tender"
                     else "No contextual profile was selected; do not mention tracking or its review. "
                 )
@@ -2236,7 +2321,26 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "together. Do not ask another Fierce question, request a reason, implication, detail, confirmation, or action, and do not create "
             "the Synthesis yourself. Leave room only for a spontaneous correction; never expose route names."
         )
-    if reflection_realization == "askFierceClarification":
+    if (
+        reflection_realization == "establishTenderUnderstanding"
+        and not (selected_contextual_metric_ref and selected_contextual_metric)
+    ):
+        operation_contract = (
+            "Exploration is complete and Swift has atomically established the first Tender understanding. "
+            "Realize exactly the projected reflectionDelta as one bounded, declarative understanding that keeps the "
+            "concrete difficulty visible while limiting only unsupported judgment scope. Do not reopen Exploration, "
+            "ask for more evidence, or introduce Fierce, Synthesis, or Action. Give one natural opportunity to correct "
+            "or qualify this understanding; do not ask whether the self-criticism is false, weak, or less convincing."
+        )
+    elif reflection_realization == "openFierceInquiry":
+        operation_contract = (
+            "Swift has accepted the Tender response and opened Fierce around exactly the supplied grounded "
+            "reality candidate. Ask one concrete, easy question about that fact's possible behavior, impact, "
+            "responsibility, boundary, support, repair, protection, or change significance. Do not confirm, "
+            "restate, defend, or revise Tender; do not repeat the self-criticism or Card material; do not ask the "
+            "person to invent an abstract issue from scratch."
+        )
+    elif reflection_realization == "askFierceClarification":
         operation_contract = operation_contract + " " + (
             "This is the one authorized active-Fierce clarification. Ask only the concrete remaining "
             "question in responseFocus; do not close Fierce or bridge ahead."

@@ -3955,19 +3955,17 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             Data(
                 """
                 {
-                  "semanticOperation":"continueExploratoryReflection",
+                  "reflectionTurnOutcome":{
+                    "outcome":"explorationComplete",
+                    "tenderDelta":"目前能确定的是这段调试持续受阻，而不是对全部开发能力的结论"
+                  },
                   "semanticEvidencePatch":{"memoryUpdate":{
                     "selfCriticismLink":{
                       "reality":"反复修改以后问题仍然增加，项目一直无法推进",
                       "selfJudgment":"能力不够"
-                    },
-                    "reflectionFrame":{
-                      "evidenceBasis":["反复修改以后问题仍然增加，项目一直无法推进"],
-                      "dimensions":["mindfulness"],
-                      "reflectionDelta":"目前能确定的是这段调试持续受阻，而不是对全部开发能力的结论"
                     }
                   }},
-                  "responseFocus":"承接这个有限理解"
+                  "responseFocus":""
                 }
                 """.utf8
             ),
@@ -3995,6 +3993,10 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             "反复修改以后问题仍然增加，项目一直无法推进 -> 我感觉自己开发能力很差"
         )
         XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .tender)
+        XCTAssertEqual(
+            authorized.projectedPlan.memoryUpdate.reflectionFrame?.reflectionDelta,
+            "目前能确定的是这段调试持续受阻，而不是对全部开发能力的结论"
+        )
     }
 
     func testCurrentWireCompilerAcceptsTupleLinkAndIgnoresRedundantEndpoint() throws {
@@ -4002,7 +4004,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             Data(
                 """
                 {
-                  "semanticOperation":"continueExploratoryReflection",
+                  "reflectionTurnOutcome":{"outcome":"explorationContinue"},
                   "semanticEvidencePatch":{"memoryUpdate":{
                     "selfCriticismLink":["长期没有推进以后逐渐开始怀疑自己","模型改写的判断"]
                   }},
@@ -4025,7 +4027,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             Data(
                 """
                 {
-                  "semanticOperation":"continueExploratoryReflection",
+                  "reflectionTurnOutcome":{"outcome":"explorationContinue"},
                   "semanticEvidencePatch":{"memoryUpdate":{
                     "selfCriticismLink":{"providerSpecific":{"nested":true}}
                   }},
@@ -4247,7 +4249,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             Data(
                 """
                 {
-                  "semanticOperation":"proposePractice",
+                  "reflectionTurnOutcome":{"outcome":"synthesisAccepted"},
                   "semanticEvidencePatch":{"memoryUpdate":{"practiceTransition":{"proposal":{
                     "kind":"protect","content":"汇报前用一分钟核对图片版本",
                     "basis":"episodeStructure.behaviorEvidence.0","id":"model-id",
@@ -4413,7 +4415,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         )
     }
 
-    func testCardConsentAnswerUsesCorePlannerThenSwiftDrawsLocally() async throws {
+    func testUnambiguousCardConsentIsCommittedLocallyAndSwiftDrawsLocally() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeyondComfort-current-card-consent-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -4451,12 +4453,17 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         let corePlanCalls = await core.planCount()
         let coreWriteCalls = await core.writeCount()
         let legacyPlanCalls = await legacy.planCount()
-        XCTAssertEqual(corePlanCalls, 1)
+        XCTAssertEqual(corePlanCalls, 0)
         XCTAssertEqual(coreWriteCalls, 0)
         XCTAssertEqual(legacyPlanCalls, 0)
         XCTAssertEqual(model.session.protocolStage, .cardConsent)
         XCTAssertEqual(model.session.cardDisplayState, .selected)
         XCTAssertNotNil(model.session.card)
+        XCTAssertTrue(
+            model.session.studyEvents.contains {
+                $0.action == "card_consent_accepted_locally"
+            }
+        )
 
         let acceptedMessageID = model.session.messages.last(where: { $0.role == .user })?.id
         let cardID = try XCTUnwrap(model.session.card?.id)
@@ -6502,6 +6509,389 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         XCTAssertEqual(frame.fierceEvidence?.direction, .change)
     }
 
+    func testPhaseOutcomeAcceptedTenderWithCandidateDeterministicallyOpensFierce() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .tender
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            behaviorEvidence: ["我说了特别伤人的话"],
+            impacts: ["我们之间现在还有问题没有解决"]
+        )
+        session.semanticMemory.reflectionFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [
+                .init(source: .episode, content: "我说了特别伤人的话"),
+            ],
+            dimensions: [],
+            reflectionDelta: "说出伤人的话需要被认真看见，但不必再扩大成对整个人的判决",
+            fierceEvidence: nil
+        )
+        session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "tenderReflection",
+            focus: "respond_to_or_revise_bounded_tender_understanding"
+        )
+        session.messages = [ChatMessage(role: .user, content: "是的")]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "semanticOperation": null,
+              "reflectionProgressionDecision": null,
+              "reflectionTurnOutcome": {
+                "outcome": "tenderAccepted",
+                "realityCandidate": {
+                  "reference": "episodeStructure.behaviorEvidence.0",
+                  "meaning": "repair"
+                }
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed
+        )
+        XCTAssertEqual(planner.semanticOperation, .continueTenderGroundedFierceReflection)
+        XCTAssertEqual(planner.reflectionProgressionDecision?.meaning, .inspectReality)
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .fierce)
+        XCTAssertEqual(authorized.projectedPlan.nextPrompt.purpose, "fierceReflection")
+        XCTAssertEqual(
+            authorized.projectedPlan.nextPrompt.referenceID,
+            "episodeStructure.behaviorEvidence.0"
+        )
+        XCTAssertEqual(
+            CurrentV5WriterDirective(authorized: authorized).reflectionRealization,
+            .openFierceInquiry
+        )
+    }
+
+    func testPhaseOutcomeCompletesExplorationAndEstablishesFirstTenderAtomically() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "自己能力不够"
+        session.messages = [
+            ChatMessage(role: .user, content: "一直改但始终没推进以后，我就越来越觉得是自己能力不够")
+        ]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "explorationComplete",
+                "tenderDelta": "反复修改却没有推进是当前真实的困难；这段经历说明现在仍然卡着，但还不足以概括全部能力"
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {
+                "selfCriticismLink": "反复修改一直没有推进以后逐渐怀疑自己 -> 自己能力不够"
+              }},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "自己能力不够"
+        )
+        XCTAssertTrue(planner.phaseOutcomeContractApplied)
+        XCTAssertEqual(planner.reflectionProgressionDecision?.meaning, .completeExploration)
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.operation, .continueExploratoryReflection)
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .tender)
+        XCTAssertEqual(
+            authorized.projectedPlan.memoryUpdate.reflectionFrame?.reflectionDelta,
+            "反复修改却没有推进是当前真实的困难；这段经历说明现在仍然卡着，但还不足以概括全部能力"
+        )
+        XCTAssertEqual(
+            authorized.projectedPlan.nextPrompt.focus,
+            "respond_to_or_revise_bounded_tender_understanding"
+        )
+        XCTAssertEqual(
+            CurrentV5WriterDirective(authorized: authorized).reflectionRealization,
+            .establishTenderUnderstanding
+        )
+    }
+
+    func testObjectWrappedTenderDeltaReachesSwiftCompilerInsteadOfTransportFailure() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        session.messages = [
+            ChatMessage(
+                role: .user,
+                content: "我说了伤人的话，伤害到了她，也可能让我们的关系发生变化，所以我很自责"
+            )
+        ]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "explorationComplete",
+                "tenderDelta": {
+                  "reflectionDelta": "已经造成的伤害需要面对；这说明这次说话确实伤人，但不需要继续扩大成对整个人的惩罚"
+                }
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {
+                "selfCriticismLink": "说了伤人的话并影响关系以后感到自责 -> 我感觉很自责"
+              }},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "我感觉很自责"
+        )
+        XCTAssertEqual(planner.reflectionProgressionDecision?.meaning, .completeExploration)
+
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .tender)
+        XCTAssertEqual(
+            authorized.projectedPlan.memoryUpdate.reflectionFrame?.reflectionDelta,
+            "已经造成的伤害需要面对；这说明这次说话确实伤人，但不需要继续扩大成对整个人的惩罚"
+        )
+    }
+
+    func testAmbiguousWrappedTenderDeltaReachesGateInsteadOfTransportFailure() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "我感觉很自责"
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "explorationComplete",
+                "tenderDelta": {
+                  "text": "第一种理解",
+                  "reflectionDelta": "冲突的第二种理解"
+                }
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {
+                "selfCriticismLink": "说了伤人的话并影响关系以后感到自责 -> 我感觉很自责"
+              }},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed,
+            canonicalSelfCriticalStatement: "我感觉很自责"
+        )
+        XCTAssertEqual(planner.reflectionProgressionDecision?.meaning, .completeExploration)
+        XCTAssertNil(planner.reflectionProgressionDecision?.reflectionDelta)
+        XCTAssertThrowsError(
+            try CurrentV5SwiftTurnGate(
+                protocolController: ReflectionProtocolController()
+            ).authorize(
+                planner,
+                for: session,
+                allowedSemanticOperations: allowed
+            )
+        ) { error in
+            guard case CurrentV5CoreError.projectionInvalid(
+                .continueExploratoryReflection,
+                .reflectionProgressionInvalid
+            ) = error else {
+                return XCTFail("Expected the ambiguous delta to reach the semantic Gate, got \(error)")
+            }
+        }
+    }
+
+    func testRemoteExplorationCannotBypassRequiredPhaseOutcome() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .exploratory
+        session.semanticMemory.selfCriticalStatement = "自己能力不够"
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "semanticOperation": "continueExploratoryReflection",
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": "继续看看两者的关系"
+            }
+            """.data(using: .utf8)
+        )
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertThrowsError(
+            try CurrentV5SwiftTurnGate(
+                protocolController: ReflectionProtocolController()
+            ).authorize(
+                planner,
+                for: session,
+                allowedSemanticOperations: allowed
+            )
+        )
+    }
+
+    func testPhaseOutcomeRevisedTenderPreservesRevisionWhileOpeningFierce() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .tender
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            behaviorEvidence: ["我说了特别伤人的话"]
+        )
+        session.semanticMemory.reflectionFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [.init(source: .episode, content: "我说了特别伤人的话")],
+            dimensions: [],
+            reflectionDelta: "原来的有限理解",
+            fierceEvidence: nil
+        )
+        session.semanticMemory.nextPrompt = .openQuestion(
+            purpose: "tenderReflection",
+            focus: "respond_to_or_revise_bounded_tender_understanding"
+        )
+        session.messages = [ChatMessage(role: .user, content: "我想修正一下，但这句话确实需要道歉")]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "tenderRevised",
+                "tenderDelta": "我是在气头上说了伤人的话；情境不能抹掉伤害，道歉仍然是需要面对的部分",
+                "realityCandidate": {
+                  "reference": "episodeStructure.behaviorEvidence.0",
+                  "meaning": "repair"
+                }
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed
+        )
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .fierce)
+        XCTAssertEqual(
+            authorized.projectedPlan.memoryUpdate.reflectionFrame?.reflectionDelta,
+            "我是在气头上说了伤人的话；情境不能抹掉伤害，道歉仍然是需要面对的部分"
+        )
+        XCTAssertEqual(
+            authorized.projectedPlan.nextPrompt.referenceID,
+            "episodeStructure.behaviorEvidence.0"
+        )
+    }
+
+    func testPhaseOutcomeGroundedFierceDirectionDeterministicallyClosesFierce() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .directReflection
+        session.semanticMemory.reflectionPhase = .fierce
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            behaviorEvidence: ["我说了特别伤人的话"]
+        )
+        session.semanticMemory.reflectionFrame = TurnReflectionFrame(
+            mode: .tender,
+            action: .softenGlobalSelfJudgment,
+            evidenceBasis: [.init(source: .episode, content: "我说了特别伤人的话")],
+            dimensions: [],
+            reflectionDelta: "具体的话造成了伤害，但不继续扩大成整个人的判决",
+            fierceEvidence: nil
+        )
+        session.semanticMemory.nextPrompt = TurnNextPrompt.openQuestion(
+            purpose: "fierceReflection",
+            focus: "clarify_current_grounded_reality_direction"
+        ).assigningReferenceID("episodeStructure.behaviorEvidence.0")
+        session.messages = [
+            ChatMessage(role: .user, content: "我想和对方道歉，只是现在还说不出口")
+        ]
+        let allowed = CurrentV5CapabilitySet.allowedOperations(for: session)
+        let data = try XCTUnwrap(
+            """
+            {
+              "reflectionTurnOutcome": {
+                "outcome": "fierceDirectionFormed",
+                "fierceDelta": "当前已经形成了向对方道歉的修复方向",
+                "fierceDirection": "repair"
+              },
+              "semanticEvidencePatch": {"memoryUpdate": {}},
+              "responseFocus": ""
+            }
+            """.data(using: .utf8)
+        )
+
+        let planner = try decodeCurrentV5PlannerWireOutput(
+            data,
+            allowedSemanticOperations: allowed
+        )
+        XCTAssertEqual(planner.reflectionProgressionDecision?.meaning, .completeFierce)
+        let authorized = try CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        ).authorize(
+            planner,
+            for: session,
+            allowedSemanticOperations: allowed
+        )
+
+        XCTAssertEqual(authorized.projectedPlan.memoryUpdate.reflectionPhase, .synthesis)
+        XCTAssertEqual(authorized.projectedPlan.nextPrompt.purpose, "synthesisReflection")
+        XCTAssertEqual(
+            authorized.projectedPlan.memoryUpdate.reflectionFrame?.fierceEvidence?.direction,
+            .repair
+        )
+        XCTAssertEqual(
+            CurrentV5WriterDirective(authorized: authorized).reflectionRealization,
+            .bridgeToSynthesis
+        )
+    }
+
     func testTenderDimensionsArePlannerMetadataNotAReadinessGate() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
@@ -7850,11 +8240,6 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
                     responseFocus: "事件已经足够具体，简短承接并邀请随机反思卡"
                 ),
                 .init(
-                    semanticOperation: .acknowledgeCardConsent,
-                    semanticEvidencePatch: .init(),
-                    responseFocus: "用户接受抽卡"
-                ),
-                .init(
                     semanticOperation: .continueCardObservation,
                     semanticEvidencePatch: .init(
                         memoryUpdate: .init(
@@ -8135,7 +8520,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         XCTAssertEqual(model.session.protocolStage, .complete)
         let planCount = await core.planCount()
         let writeCount = await core.writeCount()
-        XCTAssertEqual(planCount, 16)
+        XCTAssertEqual(planCount, 15)
         XCTAssertEqual(writeCount, 15)
 
         let committedOperations = model.session.studyEvents.compactMap { event -> String? in
@@ -8146,7 +8531,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         XCTAssertEqual(
             committedOperations,
             [
-                "clarifyEvent", "clarifyEvent", "acknowledgeCardConsent",
+                "clarifyEvent", "clarifyEvent",
                 "continueCardObservation", "continueCardDevelopment",
                 "continueOpenCardConnection", "continueExploratoryReflection",
                 "continueExploratoryReflection", "continueTenderReflection",
