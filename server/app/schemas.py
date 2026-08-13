@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Literal, Optional, Union, get_args, get_origin
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from typing import Annotated, Any, Literal, Optional, Union, get_args, get_origin
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
 
 
 class RegisterIn(BaseModel):
@@ -119,8 +126,9 @@ class LLMChatOut(BaseModel):
 
 # The provider guarantees JSON syntax. This contract additionally guarantees that a current-v5
 # Planner response is decodable by the Swift `CurrentV5PlannerOutput` boundary before the API
-# returns HTTP 200. These models are transport validation only: they do not choose an operation,
-# interpret evidence, or replace the Swift capability/Gate checks.
+# returns HTTP 200. The backend also checks declared operation-specific semantic branches against
+# their branch-owned payload. It never chooses the branch, interprets user prose, or replaces the
+# Swift capability/Gate checks.
 class _CurrentV5ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -193,8 +201,41 @@ class CurrentV5ContextualTrackingDecision(_CurrentV5ContractModel):
 
 
 class CurrentV5CardConnectionEvidence(_CurrentV5ContractModel):
+    # Swift-facing evidence after the backend consumes the turn-local Reality decision branch.
     imageRelation: Optional[str] = None
     realityMapping: Optional[str] = None
+
+
+class CurrentV5RealityConnectionEstablished(_CurrentV5ContractModel):
+    branch: Literal["connectionEstablished"]
+    imageRelation: Optional[str] = None
+    realityMapping: str
+
+    @field_validator("realityMapping")
+    @classmethod
+    def require_nonempty_reality_mapping(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("realityMapping must be nonempty")
+        return value
+
+
+class CurrentV5RealityConnectionNeedsMoreExploration(_CurrentV5ContractModel):
+    branch: Literal["needsMoreExploration"]
+    imageRelation: Optional[str] = None
+    realityMapping: None = None
+
+
+CurrentV5RealityConnectionDecision = Annotated[
+    Union[
+        CurrentV5RealityConnectionEstablished,
+        CurrentV5RealityConnectionNeedsMoreExploration,
+    ],
+    Field(discriminator="branch"),
+]
+
+_CURRENT_V5_REALITY_CONNECTION_DECISION_ADAPTER = TypeAdapter(
+    CurrentV5RealityConnectionDecision
+)
 
 
 class CurrentV5PendingCardRealityConnection(_CurrentV5ContractModel):
@@ -231,6 +272,25 @@ class CurrentV5ReflectionFrame(_CurrentV5ContractModel):
     )
     reflectionDelta: Optional[str] = None
     fierceEvidence: Optional[CurrentV5FierceEvidence] = None
+
+
+class CurrentV5TenderReflectionEstablished(_CurrentV5ContractModel):
+    """Planner-owned decision for the one operation that establishes the first Tender frame."""
+
+    branch: Literal["tenderEstablished"]
+    reflectionDelta: str
+
+    @field_validator("reflectionDelta")
+    @classmethod
+    def require_nonempty_reflection_delta(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reflectionDelta must be nonempty")
+        return value
+
+
+_CURRENT_V5_TENDER_REFLECTION_DECISION_ADAPTER = TypeAdapter(
+    CurrentV5TenderReflectionEstablished
+)
 
 
 class CurrentV5PracticeProposal(_CurrentV5ContractModel):
@@ -371,7 +431,9 @@ _CURRENT_V5_NESTED_MEMORY_FIELDS: dict[str, frozenset[str]] = {
     ),
     "cardObservationEvidence": frozenset(CurrentV5CardObservationEvidence.model_fields),
     "cardDevelopmentEvidence": frozenset(CurrentV5CardDevelopmentEvidence.model_fields),
-    "reflectionFrame": frozenset(CurrentV5ReflectionFrame.model_fields),
+    # `branch` is a Planner-only operation decision. Ownership must preserve it until the
+    # operation-specific validator runs; the generic Swift-facing projection never retains it.
+    "reflectionFrame": frozenset(CurrentV5ReflectionFrame.model_fields) | {"branch"},
     "practiceTransition": frozenset(CurrentV5PracticeTransition.model_fields),
 }
 
@@ -565,6 +627,11 @@ def _canonicalize_current_v5_semantic_aliases(decoded: dict[str, Any]) -> dict[s
                 for key in ("imageRelation", "realityMapping")
                 if key in candidate
             }
+            # Decode-only legacy compatibility: a legacy envelope carrying an explicit mapping
+            # already has the unique established meaning. Current Planner output must still emit
+            # the branch in its canonical owner.
+            if "realityMapping" in semantic_connection:
+                semantic_connection["branch"] = "connectionEstablished"
     if semantic_connection:
         patch["cardConnectionEvidence"] = semantic_connection
     else:
@@ -995,6 +1062,174 @@ def _project_current_v5_decodable_contract(projected: dict[str, Any]) -> dict[st
     return decodable
 
 
+_CURRENT_V5_REALITY_CONNECTION_OPERATIONS = frozenset(
+    {"continueOpenCardConnection", "offerCardConnectionScaffold"}
+)
+
+
+def _enforce_current_v5_reality_connection_contract(
+    projected: dict[str, Any],
+) -> dict[str, Any]:
+    """Enforce the first operation-specific semantic transaction.
+
+    The branch is Planner-owned turn-local meaning. The backend verifies only that the declared
+    branch and its payload agree; it does not infer a connection from the user's prose or advance
+    the workflow. Swift continues to own the state transition from the canonical mapping.
+    """
+
+    raw_operation = projected.get("semanticOperation")
+    operation = _unwrap_current_v5_string_syntax(
+        raw_operation,
+        field_name="semanticOperation",
+    )
+    if operation not in _CURRENT_V5_REALITY_CONNECTION_OPERATIONS:
+        return projected
+    projected["semanticOperation"] = operation
+
+    patch = projected.get("semanticEvidencePatch")
+    evidence = patch.get("cardConnectionEvidence") if isinstance(patch, dict) else None
+    if not isinstance(evidence, dict):
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.cardConnectionEvidence",
+            violation="reality_connection_branch_required",
+        )
+
+    branch = _unwrap_current_v5_string_syntax(
+        evidence.get("branch"),
+        field_name="branch",
+    )
+    if branch not in {"connectionEstablished", "needsMoreExploration"}:
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.cardConnectionEvidence.branch",
+            violation="invalid_reality_connection_branch",
+        )
+    evidence["branch"] = branch
+
+    raw_image_relation = evidence.get("imageRelation")
+    if raw_image_relation is not None:
+        image_relation = _unwrap_current_v5_string_syntax(
+            raw_image_relation,
+            field_name="imageRelation",
+        )
+        if isinstance(image_relation, str) and image_relation.strip():
+            evidence["imageRelation"] = image_relation
+        else:
+            evidence.pop("imageRelation", None)
+
+    mapping_is_present = "realityMapping" in evidence
+    raw_mapping = evidence.get("realityMapping")
+    if branch == "connectionEstablished":
+        mapping = _unwrap_current_v5_string_syntax(
+            raw_mapping,
+            field_name="realityMapping",
+        )
+        if not isinstance(mapping, str) or not mapping.strip():
+            raise CurrentV5PlannerContractError(
+                field_path="semanticEvidencePatch.cardConnectionEvidence.realityMapping",
+                violation="required_for_connection_established",
+            )
+        evidence["realityMapping"] = mapping
+    elif mapping_is_present and raw_mapping is not None:
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.cardConnectionEvidence.realityMapping",
+            violation="must_be_null_for_needs_more_exploration",
+        )
+    else:
+        evidence.pop("realityMapping", None)
+
+    try:
+        _CURRENT_V5_REALITY_CONNECTION_DECISION_ADAPTER.validate_python(
+            {
+                key: evidence[key]
+                for key in ("branch", "imageRelation", "realityMapping")
+                if key in evidence
+            }
+        )
+    except ValidationError as error:
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.cardConnectionEvidence",
+            violation="invalid_reality_connection_payload",
+        ) from error
+    # Branch is a backend-consumed turn-local decision, not persisted evidence or Swift workflow
+    # state. The canonical response keeps only the existing Swift-compatible evidence surface.
+    evidence.pop("branch", None)
+    return projected
+
+
+def _enforce_current_v5_tender_reflection_contract(
+    projected: dict[str, Any],
+) -> dict[str, Any]:
+    """Require the first Tender meaning to be atomically bound to its operation.
+
+    Choosing ``continueTenderReflection`` means the Planner has finished Exploration and is
+    establishing the first bounded Tender understanding. The backend checks only that declared
+    meaning and its required delta agree. It does not decide that Tender is warranted, construct
+    the frame, or advance Reflection; those remain Swift responsibilities.
+    """
+
+    raw_operation = projected.get("semanticOperation")
+    operation = _unwrap_current_v5_string_syntax(
+        raw_operation,
+        field_name="semanticOperation",
+    )
+    if operation != "continueTenderReflection":
+        return projected
+    projected["semanticOperation"] = operation
+
+    patch = projected.get("semanticEvidencePatch")
+    memory = patch.get("memoryUpdate") if isinstance(patch, dict) else None
+    frame = memory.get("reflectionFrame") if isinstance(memory, dict) else None
+    if not isinstance(frame, dict):
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.reflectionFrame",
+            violation="tender_reflection_branch_required",
+        )
+
+    branch = _unwrap_current_v5_string_syntax(
+        frame.get("branch"),
+        field_name="branch",
+    )
+    if branch != "tenderEstablished":
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.reflectionFrame.branch",
+            violation="invalid_tender_reflection_branch",
+        )
+
+    reflection_delta = _unwrap_current_v5_string_syntax(
+        frame.get("reflectionDelta"),
+        field_name="reflectionDelta",
+    )
+    if not isinstance(reflection_delta, str) or not reflection_delta.strip():
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.reflectionFrame.reflectionDelta",
+            violation="required_for_tender_established",
+        )
+    if frame.get("fierceEvidence") is not None:
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.reflectionFrame.fierceEvidence",
+            violation="must_be_null_for_tender_established",
+        )
+
+    try:
+        _CURRENT_V5_TENDER_REFLECTION_DECISION_ADAPTER.validate_python(
+            {
+                "branch": branch,
+                "reflectionDelta": reflection_delta,
+            }
+        )
+    except ValidationError as error:
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.reflectionFrame",
+            violation="invalid_tender_reflection_payload",
+        ) from error
+
+    frame["reflectionDelta"] = reflection_delta
+    # The branch is turn-local Planner meaning, not persisted Reflection evidence. Preserve the
+    # existing Swift wire surface and let Swift construct provenance/mode/action from its state.
+    frame.pop("branch", None)
+    return projected
+
+
 def canonicalize_current_v5_planner_contract(
     content: str,
     *,
@@ -1002,11 +1237,10 @@ def canonicalize_current_v5_planner_contract(
 ) -> str:
     """Project every parseable object onto the Swift-decodable current-v5 sparse surface.
 
-    The backend owns JSON syntax, legacy alias movement, and removal of unowned metadata. It does
-    not veto a complete model turn because an optional field is malformed or ambiguous: the
-    smallest invalid optional portion is omitted and Swift's compiler/Gate remains the only
-    workflow and semantic authority. Only invalid JSON or a non-object root is a transport
-    contract failure.
+    The backend owns JSON syntax, legacy alias movement, and removal of unowned metadata. Ordinary
+    malformed optional syntax is removed at the smallest boundary. A declared operation-specific
+    semantic branch is different: its branch-owned payload must be atomic and internally consistent
+    before Swift receives it. Swift remains the sole workflow authority.
     """
 
     try:
@@ -1028,6 +1262,8 @@ def canonicalize_current_v5_planner_contract(
     _ = allowed_semantic_operations
     projected = _canonicalize_current_v5_semantic_aliases(projected)
     projected = _canonicalize_current_v5_progression_syntax(projected)
+    projected = _enforce_current_v5_reality_connection_contract(projected)
+    projected = _enforce_current_v5_tender_reflection_contract(projected)
     projected = _project_current_v5_decodable_contract(projected)
 
     try:

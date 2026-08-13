@@ -351,21 +351,21 @@ content. candidateBridgeResolvedAt is always null—Swift sets it internally.
 
 
 SELF_COMPASSION_RULES = """
-Tender grounds every reflection in one distinction. Its three dimensions are optional lenses, never
-forced questions. Keep fact/inference and event/identity distinct without praise,
-denial, excuse, or a positive opposite. Tender may stand alone. Self-criticism judges ability/character/
-worth; worry predicts; uncertainty marks missing information. Fierce optionally adds Tender-grounded candor
-only for supplied behavior, impact, boundary, support, or caring repair/protect/change; distress alone never requires it.
+Tender grounds reflection in one bounded fact/inference or event/identity distinction; dimensions are
+optional. Use no praise, denial, excuse, or positive opposite. Self-criticism judges ability/character/worth;
+worry predicts; uncertainty marks missing information. Tender stands alone only if no supplied unfinished/
+recurring reality remains. Otherwise Fierce uses supplied behavior, impact, boundary, support, or
+repair/protect/change; distress alone is insufficient.
 """.strip()
 
 
 CURRENT_V5_FIERCE_PURPOSE_CONTRACT = """
-Fierce establishes one user-grounded next direction for unresolved or recurring reality, not
-the meaning of a completed response. A finished apology, correction, or coping action alone is no candidate
-and is not repair/protection. inspectReality needs one fact about a next encounter, ongoing effect/
-relationship/constraint, help, or different response. No second fact, causality, or user-proposed action
-is required. Confirm, qualify, replace, or reject are valid. A stated or accepted direction completes
-Fierce. Action operationalizes later; Fierce adds no plan.
+Fierce finds one user-grounded direction for unfinished reality.
+Before Synthesis, review every groundedRealityCandidates item. If an item is still open—behavior, effect,
+relationship, constraint, boundary, help, or different response—inspectReality with its exact id.
+One fact suffices; no cause, responsibility, second fact, or action needed.
+Completed responses without ongoing effect do not qualify. Person may confirm/qualify/replace/reject;
+an accepted direction completes Fierce. Action follows.
 """.strip()
 
 
@@ -556,9 +556,9 @@ _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
     ),
     "cardReflection": CARD_STAGE_CONTRACT,
     "directReflection": (
-        "Goal: choose one grounded reflectionFrame. Tender may stand alone. Fierce is optional "
-        "and uses behavior/impact plus a caring repair/protect/change focus; never solicit "
-        "evidence. For whole-person judgment, distinguish fact/inference from identity and keep worry/"
+        "Goal: choose one grounded reflectionFrame. Tender stands alone only if no unfinished reality "
+        "remains; otherwise Fierce uses grounded behavior/impact and a repair/protect/change focus. "
+        "For whole-person judgment, distinguish fact/inference from identity and keep worry/"
         "uncertainty separate. Recap or Common Humanity alone is not a delta. v5 synthesis proposes one "
         "grounded action/noAction before final narrative."
     ),
@@ -691,6 +691,67 @@ CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE = (
     '"relationOrAction":"user-described relation or action",'
     '"anticipatedChangeOrChoice":"user-described possible change or choice"}}'
 )
+
+CURRENT_V5_REALITY_CONNECTION_CONTRACT = r'''
+REALITY CONNECTION DECISION
+For continueOpenCardConnection or offerCardConnectionScaffold, emit exactly one turn-local decision
+in semanticEvidencePatch.cardConnectionEvidence.
+
+Choose connectionEstablished as soon as the answer supplies a concrete user-authored relation,
+continuation, difference, or tension in the focal reality. The invitation supplies the link; no Card
+mention, image restatement, explicit comparison, or fit judgment is needed. Required examples:
+- “他已经完成了，但我还没完成还在刷视频”
+- “我也一直重复做同样的事”
+- “我没有画面里那么轻松，反而一直放不下来”
+
+Choose needsMoreExploration only when no such reality relation is present yet. “有点像” may need one
+concrete lived-reality question; “完全想不到有什么关系” may use the one authorized scaffold. An
+object/property correspondence by itself is also needsMoreExploration.
+
+offerCardConnectionCandidate is separate. If latest answer qualifies, use open/scaffold
+with connectionEstablished; never substitute the candidate operation.
+
+The branch and payload are one atomic semantic transaction:
+- connectionEstablished requires a nonempty realityMapping containing only the grounded relation.
+- needsMoreExploration requires realityMapping to be null or absent.
+- imageRelation is optional in either branch and appears only when the latest answer changes the image side.
+
+Complete established example:
+{"semanticOperation":"continueOpenCardConnection","reflectionProgressionDecision":null,
+"semanticEvidencePatch":{"memoryUpdate":{},"cardConnectionEvidence":
+{"branch":"connectionEstablished","realityMapping":"画面里的人已经完成了，而用户还有事情没完成却继续刷视频"},
+"contextualTrackingDecision":null},"responseFocus":"从用户已经形成的现实关系进入现实探索"}
+
+Complete needs-more-exploration example:
+{"semanticOperation":"continueOpenCardConnection","reflectionProgressionDecision":null,
+"semanticEvidencePatch":{"memoryUpdate":{},"cardConnectionEvidence":
+{"branch":"needsMoreExploration","realityMapping":null},"contextualTrackingDecision":null},
+"responseFocus":"只问一个具体、容易回答的现实问题"}
+'''.strip()
+
+CURRENT_V5_TENDER_REFLECTION_CONTRACT = r'''
+TENDER REFLECTION DECISION
+For continueTenderReflection, emit exactly one atomic turn-local decision in
+semanticEvidencePatch.memoryUpdate.reflectionFrame. This operation means Exploration is complete
+and the first bounded Tender understanding is established; if that understanding is not yet
+grounded, choose continueExploratoryReflection instead.
+
+The only legal branch is tenderEstablished. It requires a nonempty declarative reflectionDelta
+that keeps the concrete difficulty while limiting only the unsupported reach of the broader
+self-judgment. fierceEvidence must be null or absent. evidenceBasis and dimensions remain optional.
+The branch is decision syntax only; Backend consumes it and Swift constructs the committed frame.
+
+Complete example:
+{"semanticOperation":"continueTenderReflection","reflectionProgressionDecision":null,
+"semanticEvidencePatch":{"memoryUpdate":{"reflectionFrame":{"branch":"tenderEstablished",
+"evidenceBasis":["反复修改后问题仍没有解决 -> 觉得自己根本不适合开发"],
+"dimensions":["mindfulness"],"reflectionDelta":"反复修改仍没有解决，是这次真实的困难；它还不足以单独说明自己根本不适合开发"}},
+"cardConnectionEvidence":null,"contextualTrackingDecision":null},
+"responseFocus":"自然呈现这个有限理解，并给用户一次修订机会"}
+
+Invalid: continueTenderReflection with a missing/null/empty reflectionFrame or reflectionDelta.
+Never put the Tender meaning only in responseFocus.
+'''.strip()
 
 CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE = (
     'semanticEvidencePatch.contextualTrackingDecision={"metricEligibility":['
@@ -1467,17 +1528,12 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "or hanging, locate an uncertainty, or combine elements into a new interpretation. When latestAnswerContext.purpose="
             "cardDevelopment, choose continueCardDevelopment and extract any supplied evidence; Swift then opens Reality "
             "Connection after this one answer, including a simple possibility or inability to tell. Never seek another ambiguity "
-            "or enrich the image. REALITY CONNECTION: first ask one unpresupposed bridge placing the whole user-authored scene "
-            "beside the focal episode; do not state an analogy or preselect a similarity, difference, tension, element, or target. "
-            "While that invitation is active, judge only whether the answer gives a grounded relation, continuation, difference, "
-            "or tension inside the focal reality. The invitation supplies the conversational link: no Card mention, image "
-            "restatement, explicit comparison, or fit is required. Never judge Card fit. If the reality relation exists, keep the "
-            "current Reality act and emit its realityMapping. cardDevelopmentEvidence is optional enrichment, never a prerequisite; "
-            "Swift supplies the committed Card anchor. Emit imageRelation only when the latest user answer revises/adds the image "
-            "side. An object/property correspondence alone is not a reality relation; continue once in lived-reality language. "
-            "A first no-connection answer permits one scaffold using only user-authored image-side openness and no proposed reality "
-            "meaning. Establish and exit once the reality relation exists. Do not seek Card meaning, psychology, responsibility, "
-            "solution, or action, and never emit outcome/source/status/confirmation/phase metadata."
+            "or enrich the image. REALITY CONNECTION: first place the whole user-authored scene beside the focal episode without "
+            "proposing an analogy, element, or meaning. Then apply the Reality Connection Decision contract below. The invitation "
+            "already supplies the link, so no Card restatement, explicit comparison, or fit judgment is required. Development is "
+            "optional; Swift supplies the committed image anchor. Emit imageRelation only for a new image-side revision. A first "
+            "no-connection answer permits the one authorized scaffold. Do not seek Card meaning, psychology, responsibility, "
+            "solution, or action."
         )
     if stage == "directReflection":
         contextual_profiles = request.get("contextualTrackingProfiles")
@@ -1582,10 +1638,11 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "{\"meaning\":\"inspectReality\",\"candidateRef\":\"exact candidate id\",\"reflectionDelta\":null}, or "
             "{\"meaning\":\"synthesize\",\"candidateRef\":null,\"reflectionDelta\":\"explicit synthesis\"}. "
             "Delta is nonempty for revise/synthesize and null for inspect; never use memoryUpdate.reflectionFrame here. "
-            "Swift compiles these meanings into the existing operations. Natural or qualified acceptance of Tender does not by itself "
-            "complete reflection. "
+            "At committed Tender, revise only explicit rejection or material revision; otherwise apply "
+            "the Fierce review. Acceptance ends Tender negotiation, not reality review. "
             + CURRENT_V5_FIERCE_PURPOSE_CONTRACT
-            + " Synthesize only when no unfinished or recurring reality remains. FIERCE. Use only reflectionProgressionDecision; omit "
+            + " From Tender, synthesize only when no item qualifies or the person declines—not merely on acceptance. FIERCE. Use only "
+            "reflectionProgressionDecision; omit "
             "semanticOperation and reflectionFrame; keep latestAnswerContext.referenceID read-only. clarifyFierce requires responseFocus. "
             "A grounded direction returns "
             "{\"meaning\":\"completeFierce\",\"reflectionDelta\":\"bounded understanding\","
@@ -1833,19 +1890,18 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
     )
     card_connection_contract = ""
     if stage == "cardReflection":
-        card_connection_contract = """
-CARD CONNECTION SHAPE
-cardConnectionEvidence is null unless this turn contributes an image-side or reality-side relation. When present it
-contains only imageRelation and/or realityMapping. Never emit outcome kind, source, status, confirmation,
-phase, or transaction metadata. Swift merges this semantic evidence with committed user evidence and
-derives whether the current Card act completes, remains open, accepts, revises, or rejects a candidate.
-During an active Reality Connection invitation, a grounded reality-side relation, continuation, difference,
-or tension is enough for realityMapping even when the answer never mentions the Card. Do not judge Card fit.
-Development evidence is optional enrichment; do not withhold realityMapping because it is absent.
-"""
+        card_connection_contract = "\n" + CURRENT_V5_REALITY_CONNECTION_CONTRACT
     semantic_memory = request.get("semanticMemory")
     semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
     reflection_mode = request.get("reflectionMode")
+    tender_reflection_contract = (
+        "\n" + CURRENT_V5_TENDER_REFLECTION_CONTRACT
+        if stage == "directReflection"
+        and reflection_mode == "tender"
+        and not isinstance(semantic_memory.get("reflectionFrame"), dict)
+        and "continueTenderReflection" in allowed
+        else ""
+    )
     uses_tender_progression = (
         stage == "directReflection"
         and reflection_mode == "tender"
@@ -1922,7 +1978,7 @@ append that correction and never reuse it as evidence.
 
 STAGE
 {_current_v5_stage_contract(request)}
-{reflection_contract}{practice_contract}{card_connection_contract}
+{reflection_contract}{practice_contract}{card_connection_contract}{tender_reflection_contract}
 
 OUTPUT
 Return exactly one JSON object shaped as:

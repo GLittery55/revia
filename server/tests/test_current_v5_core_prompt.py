@@ -11,11 +11,14 @@ from app.prompt_registry import (
     CURRENT_V5_CORE_PROMPT_VERSION,
     CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE,
     CURRENT_V5_PLANNER_JSON_SHAPE,
+    CURRENT_V5_REALITY_CONNECTION_CONTRACT,
+    CURRENT_V5_TENDER_REFLECTION_CONTRACT,
     PLANNER_SEMANTIC_OPERATION_VALUES,
     TURN_PROMPT_VERSION,
     build_turn_messages,
 )
 from app.schemas import (
+    CurrentV5CardConnectionEvidence,
     CurrentV5PlannerContractError,
     CurrentV5PlannerContract,
     CurrentV5SemanticEvidencePatch,
@@ -93,6 +96,274 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             tuple(get_args(CurrentV5SemanticOperation)),
             tuple(PLANNER_SEMANTIC_OPERATION_VALUES),
         )
+        self.assertEqual(
+            set(CurrentV5CardConnectionEvidence.model_fields),
+            {"imageRelation", "realityMapping"},
+        )
+
+    def test_reality_connection_contract_is_explicit_and_operation_specific(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "cardReflection"
+        request["allowedSemanticOperations"] = ["continueOpenCardConnection"]
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn(CURRENT_V5_REALITY_CONNECTION_CONTRACT, prompt)
+        self.assertIn("Choose connectionEstablished as soon as", prompt)
+        self.assertIn("requires a nonempty realityMapping", prompt)
+        self.assertIn("requires realityMapping to be null or absent", prompt)
+        self.assertIn('"branch":"connectionEstablished"', prompt)
+        self.assertIn('"branch":"needsMoreExploration"', prompt)
+        self.assertIn("offerCardConnectionCandidate is separate", prompt)
+        self.assertIn("never substitute the candidate operation", prompt)
+
+        for established_answer in (
+            "他已经完成了，但我还没完成还在刷视频",
+            "我也一直重复做同样的事",
+            "我没有画面里那么轻松，反而一直放不下来",
+        ):
+            self.assertIn(established_answer, prompt)
+        for open_answer in ("有点像", "完全想不到有什么关系"):
+            self.assertIn(open_answer, prompt)
+
+    def test_reality_connection_established_requires_nonempty_mapping(self) -> None:
+        valid = {
+            "semanticOperation": "continueOpenCardConnection",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {},
+                "cardConnectionEvidence": {
+                    "branch": "connectionEstablished",
+                    "realityMapping": "他已经完成了，但我还没完成还在刷视频",
+                },
+            },
+            "responseFocus": "进入现实探索",
+        }
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(valid, ensure_ascii=False)
+            )
+        )
+        self.assertEqual(
+            canonical["semanticEvidencePatch"]["cardConnectionEvidence"],
+            {"realityMapping": "他已经完成了，但我还没完成还在刷视频"},
+        )
+
+        for invalid_mapping in (None, "", "   "):
+            invalid = json.loads(json.dumps(valid, ensure_ascii=False))
+            invalid["semanticEvidencePatch"]["cardConnectionEvidence"][
+                "realityMapping"
+            ] = invalid_mapping
+            with self.assertRaisesRegex(
+                CurrentV5PlannerContractError,
+                "required_for_connection_established",
+            ):
+                canonicalize_current_v5_planner_contract(
+                    json.dumps(invalid, ensure_ascii=False)
+                )
+
+    def test_tender_reflection_contract_is_explicit_and_operation_specific(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "tender"
+        request["allowedSemanticOperations"] = ["continueTenderReflection"]
+        request["semanticMemory"] = {
+            "selfCriticalStatement": "我根本不适合开发",
+            "selfCriticismLink": "反复修改仍没有解决 -> 我根本不适合开发",
+        }
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn(CURRENT_V5_TENDER_REFLECTION_CONTRACT, prompt)
+        self.assertIn("The only legal branch is tenderEstablished", prompt)
+        self.assertIn('"branch":"tenderEstablished"', prompt)
+        self.assertIn("requires a nonempty declarative reflectionDelta", prompt)
+        self.assertIn("Never put the Tender meaning only in responseFocus", prompt)
+
+    def test_tender_reflection_established_requires_atomic_nonempty_delta(self) -> None:
+        valid = {
+            "semanticOperation": "continueTenderReflection",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "reflectionFrame": {
+                        "branch": "tenderEstablished",
+                        "evidenceBasis": ["这次反复修改仍没有解决"],
+                        "dimensions": ["mindfulness"],
+                        "reflectionDelta": "这次问题没有解决，不足以单独说明整个人不适合开发",
+                    }
+                }
+            },
+            "responseFocus": "自然呈现这个有限理解",
+        }
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(valid, ensure_ascii=False)
+            )
+        )
+        frame = canonical["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"]
+        self.assertNotIn("branch", frame)
+        self.assertEqual(
+            frame["reflectionDelta"],
+            "这次问题没有解决，不足以单独说明整个人不适合开发",
+        )
+
+        wrapped = json.loads(json.dumps(valid, ensure_ascii=False))
+        wrapped["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"][
+            "reflectionDelta"
+        ] = {"content": "这次卡住是事实，但还不是对整体能力的结论", "confidence": "high"}
+        canonical_wrapped = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(wrapped, ensure_ascii=False)
+            )
+        )
+        self.assertEqual(
+            canonical_wrapped["semanticEvidencePatch"]["memoryUpdate"]
+            ["reflectionFrame"]["reflectionDelta"],
+            "这次卡住是事实，但还不是对整体能力的结论",
+        )
+
+        for invalid_delta in (None, "", "   "):
+            invalid = json.loads(json.dumps(valid, ensure_ascii=False))
+            invalid["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"][
+                "reflectionDelta"
+            ] = invalid_delta
+            with self.assertRaisesRegex(
+                CurrentV5PlannerContractError,
+                "required_for_tender_established",
+            ):
+                canonicalize_current_v5_planner_contract(
+                    json.dumps(invalid, ensure_ascii=False)
+                )
+
+    def test_tender_reflection_rejects_missing_branch_frame_and_fierce_payload(self) -> None:
+        base = {
+            "semanticOperation": "continueTenderReflection",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "reflectionFrame": {
+                        "branch": "tenderEstablished",
+                        "reflectionDelta": "这次没有解决，不等于整体能力已经被证明",
+                    }
+                }
+            },
+        }
+
+        for frame in (None, {}):
+            invalid = json.loads(json.dumps(base, ensure_ascii=False))
+            if frame is None:
+                invalid["semanticEvidencePatch"]["memoryUpdate"].pop(
+                    "reflectionFrame"
+                )
+                violation = "tender_reflection_branch_required"
+            else:
+                invalid["semanticEvidencePatch"]["memoryUpdate"][
+                    "reflectionFrame"
+                ] = frame
+                violation = "invalid_tender_reflection_branch"
+            with self.assertRaisesRegex(CurrentV5PlannerContractError, violation):
+                canonicalize_current_v5_planner_contract(
+                    json.dumps(invalid, ensure_ascii=False)
+                )
+
+        fierce = json.loads(json.dumps(base, ensure_ascii=False))
+        fierce["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"][
+            "fierceEvidence"
+        ] = {"direction": "change"}
+        with self.assertRaisesRegex(
+            CurrentV5PlannerContractError,
+            "must_be_null_for_tender_established",
+        ):
+            canonicalize_current_v5_planner_contract(
+                json.dumps(fierce, ensure_ascii=False)
+            )
+
+        unrelated = {
+            "semanticOperation": "continueExploratoryReflection",
+            "semanticEvidencePatch": {"memoryUpdate": {}},
+            "responseFocus": "继续澄清",
+        }
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(json.dumps(unrelated))
+        )
+        self.assertEqual(canonical["semanticOperation"], "continueExploratoryReflection")
+
+    def test_reality_connection_needs_more_exploration_forbids_mapping(self) -> None:
+        for operation in (
+            "continueOpenCardConnection",
+            "offerCardConnectionScaffold",
+        ):
+            for evidence in (
+                {"branch": "needsMoreExploration"},
+                {"branch": "needsMoreExploration", "realityMapping": None},
+            ):
+                payload = {
+                    "semanticOperation": operation,
+                    "semanticEvidencePatch": {
+                        "memoryUpdate": {},
+                        "cardConnectionEvidence": evidence,
+                    },
+                    "responseFocus": "只问一个具体的现实问题",
+                }
+                canonical = json.loads(
+                    canonicalize_current_v5_planner_contract(
+                        json.dumps(payload, ensure_ascii=False)
+                    )
+                )
+                canonical_evidence = canonical["semanticEvidencePatch"][
+                    "cardConnectionEvidence"
+                ]
+                self.assertNotIn("branch", canonical_evidence)
+                self.assertNotIn("realityMapping", canonical_evidence)
+
+        invalid = {
+            "semanticOperation": "continueOpenCardConnection",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {},
+                "cardConnectionEvidence": {
+                    "branch": "needsMoreExploration",
+                    "realityMapping": "我也一直重复做同样的事",
+                },
+            },
+        }
+        with self.assertRaisesRegex(
+            CurrentV5PlannerContractError,
+            "must_be_null_for_needs_more_exploration",
+        ):
+            canonicalize_current_v5_planner_contract(
+                json.dumps(invalid, ensure_ascii=False)
+            )
+
+    def test_reality_connection_operation_rejects_implicit_null_branch(self) -> None:
+        for evidence in (
+            None,
+            {},
+            {"branch": "unknown"},
+            {"realityMapping": "我也一直重复做同样的事"},
+        ):
+            payload = {
+                "semanticOperation": "continueOpenCardConnection",
+                "semanticEvidencePatch": {
+                    "memoryUpdate": {},
+                    "cardConnectionEvidence": evidence,
+                },
+            }
+            with self.assertRaises(CurrentV5PlannerContractError):
+                canonicalize_current_v5_planner_contract(
+                    json.dumps(payload, ensure_ascii=False)
+                )
 
     def test_sparse_card_development_continuation_crosses_transport_without_repeating_actors(self) -> None:
         payload = {
@@ -353,6 +624,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "semanticOperation": "continueOpenCardConnection",
             "semanticEvidencePatch": {
                 "cardConnectionEvidence": {
+                    "branch": "connectionEstablished",
                     "imageRelation": "一个人独自在房间里",
                     "realityMapping": "汇报失误后感到尴尬，想一个人待着",
                     "kind": "userAuthoredConnection",
@@ -688,7 +960,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "semanticEvidencePatch": {
                 "memoryUpdate": {
                     "reflectionFrame": {
+                        "branch": "tenderEstablished",
                         "action": "clarifyBoundaryOrNeed",
+                        "reflectionDelta": "问题仍未解决，但还不足以说明整个人不适合开发",
                     }
                 }
             },
@@ -706,7 +980,10 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertNotIn("action", tender_frame)
         self.assertNotIn("evidenceBasis", tender_frame)
         self.assertNotIn("dimensions", tender_frame)
-        self.assertNotIn("reflectionDelta", tender_frame)
+        self.assertEqual(
+            tender_frame["reflectionDelta"],
+            "问题仍未解决，但还不足以说明整个人不适合开发",
+        )
 
         synthesis = {
             "semanticOperation": "synthesizeDirectReflection",
@@ -995,7 +1272,11 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "semanticEvidencePatch": {
                 "memoryUpdate": {},
                 "cardConnectionEvidence": {
-                    "imageRelation": "画面里的人正在收拾东西",
+                    "branch": "connectionEstablished",
+                    "imageRelation": {
+                        "content": "画面里的人正在收拾东西",
+                        "confidenceLabel": "high",
+                    },
                     # Production incident: the provider returned a structured object where the
                     # wire contract accepts optional text. The backend must not turn this into 502.
                     "realityMapping": {
@@ -1342,7 +1623,15 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             Path(__file__).resolve().parents[2]
             / "BeyondComfortTests/Fixtures/current-v5-planner-output-v40.json"
         )
-        validate_current_v5_planner_contract(fixture_path.read_text(encoding="utf-8"))
+        # The shared fixture is the post-canonical Swift wire payload. Recreate the one
+        # Planner-only branch that exists before Backend validation and is consumed there.
+        raw_planner_payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        raw_planner_payload["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"][
+            "branch"
+        ] = "tenderEstablished"
+        validate_current_v5_planner_contract(
+            json.dumps(raw_planner_payload, ensure_ascii=False)
+        )
         self.assertEqual(
             CURRENT_V5_CORE_PROMPT_VERSION,
             "turn-v5-core-server-v100-fierce-action1-mandatory-card1",
@@ -1923,6 +2212,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "semanticEvidencePatch": {
                 "memoryUpdate": {
                     "reflectionFrame": {
+                        "branch": "tenderEstablished",
                         "mode": "tender",
                         "action": "softenGlobalSelfJudgment",
                         "evidenceBasis": [],
@@ -1966,15 +2256,13 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         missing_delta = json.loads(json.dumps(sparse_tender, ensure_ascii=False))
         del missing_delta["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"]["reflectionDelta"]
-        canonical_delta = json.loads(
+        with self.assertRaisesRegex(
+            CurrentV5PlannerContractError,
+            "required_for_tender_established",
+        ):
             canonicalize_current_v5_planner_contract(
                 json.dumps(missing_delta, ensure_ascii=False)
             )
-        )
-        self.assertNotIn(
-            "reflectionDelta",
-            canonical_delta["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"],
-        )
 
     def test_fierce_protocol_shape_accepts_behavior_or_impact_without_inventing_evidence(self) -> None:
         payload = {
@@ -2216,13 +2504,15 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Do not ask where the judgment is weakest", planner_prompt)
         self.assertIn("what the distinction means", planner_prompt)
         self.assertIn("Continue only to repair explicit rejection", planner_prompt)
-        self.assertIn("Fierce establishes one user-grounded next direction", planner_prompt)
-        self.assertIn("A finished apology, correction, or coping action", planner_prompt)
-        self.assertIn("alone is no candidate", planner_prompt)
-        self.assertIn("inspectReality needs one fact", planner_prompt)
-        self.assertIn("No second fact, causality, or user-proposed action", planner_prompt)
-        self.assertIn("Confirm, qualify, replace, or reject", planner_prompt)
-        self.assertIn("Synthesize only when no unfinished or recurring reality remains", planner_prompt)
+        self.assertIn("Fierce finds one user-grounded direction", planner_prompt)
+        self.assertIn("without ongoing effect do not qualify", planner_prompt)
+        self.assertIn("One fact suffices", planner_prompt)
+        self.assertIn("no cause, responsibility, second fact", planner_prompt)
+        self.assertIn("an accepted direction", planner_prompt)
+        self.assertIn("review every groundedRealityCandidates item", planner_prompt)
+        self.assertIn("Acceptance ends Tender negotiation, not reality review", planner_prompt)
+        self.assertIn("synthesize only when no item qualifies", planner_prompt)
+        self.assertIn("not merely on acceptance", planner_prompt)
         self.assertIn("non-user material cannot ground Fierce or Action", planner_prompt)
         self.assertIn("Use only reflectionProgressionDecision", planner_prompt)
         self.assertIn("latestAnswerContext.referenceID", planner_prompt)
@@ -2304,15 +2594,15 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("emotional improvement is not required", planner_prompt)
         self.assertIn("Do not ask where the judgment is weakest", planner_prompt)
         self.assertIn("Continue only to repair explicit rejection", planner_prompt)
-        self.assertIn("inspectReality needs one fact", planner_prompt)
-        self.assertIn("No second fact, causality, or user-proposed action", planner_prompt)
-        self.assertIn("Confirm, qualify, replace, or reject", planner_prompt)
+        self.assertIn("One fact suffices", planner_prompt)
+        self.assertIn("no cause, responsibility, second fact", planner_prompt)
+        self.assertIn("confirm/qualify/replace/reject", planner_prompt)
         self.assertIn("candidate", planner_prompt)
         self.assertIn("reflectionDelta\":null", planner_prompt)
         self.assertIn("A grounded direction returns", planner_prompt)
         self.assertIn("Use only reflectionProgressionDecision", planner_prompt)
         self.assertIn("Direction labels are internal", planner_prompt)
-        self.assertIn("A stated or accepted direction completes", planner_prompt)
+        self.assertIn("an accepted direction", planner_prompt)
         self.assertIn("ask no more", planner_prompt)
         self.assertIn("Swift opens Synthesis", planner_prompt)
         self.assertIn("Swift recovers the active candidate", planner_prompt)
@@ -2481,7 +2771,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
                 temperature=0.2,
             )
         ).system
-        self.assertIn("CARD CONNECTION SHAPE", card_prompt)
+        self.assertIn("REALITY CONNECTION DECISION", card_prompt)
         self.assertIn(CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE, card_prompt)
         self.assertNotIn("REFLECTION STRUCTURE", card_prompt)
         self.assertNotIn("reflectionFrame=", card_prompt)
@@ -2496,24 +2786,20 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("after this one answer", card_prompt)
         self.assertIn("simple possibility or inability to tell", card_prompt)
         self.assertIn("Never seek another ambiguity or enrich the image", card_prompt)
-        self.assertIn("REALITY CONNECTION: first ask one unpresupposed bridge", card_prompt)
-        self.assertIn("do not state an analogy", card_prompt)
-        self.assertIn("preselect a similarity, difference, tension", card_prompt)
-        self.assertIn("judge only whether the answer gives", card_prompt)
-        self.assertIn("relation, continuation, difference, or tension", card_prompt)
-        self.assertIn("no Card mention, image restatement", card_prompt)
-        self.assertIn("Never judge Card fit", card_prompt)
-        self.assertIn("cardDevelopmentEvidence is optional", card_prompt)
-        self.assertIn("Emit imageRelation only when the latest user answer", card_prompt)
-        self.assertIn("keep the current Reality act", card_prompt)
+        self.assertIn("REALITY CONNECTION: first place the whole user-authored scene", card_prompt)
+        self.assertIn("without proposing an analogy, element, or meaning", card_prompt)
+        self.assertIn("Choose connectionEstablished as soon as", card_prompt)
+        self.assertIn("concrete user-authored relation", card_prompt)
+        self.assertIn("continuation, difference, or tension", card_prompt)
+        self.assertIn("mention, image restatement, explicit comparison", card_prompt)
+        self.assertIn("Development is optional", card_prompt)
+        self.assertIn("Emit imageRelation only for a new image-side revision", card_prompt)
         self.assertIn("cardConnectionEvidence", card_prompt)
-        self.assertIn("object/property correspondence alone is not a reality relation", card_prompt)
-        self.assertIn("continue once in lived-reality language", card_prompt)
-        self.assertIn("one scaffold using only user-authored image-side openness", card_prompt)
-        self.assertIn("no proposed reality meaning", card_prompt)
-        self.assertIn("Establish and exit once the reality relation exists", card_prompt)
+        self.assertIn("object/property correspondence by itself", card_prompt)
+        self.assertIn("one authorized scaffold", card_prompt)
+        self.assertIn("connectionEstablished requires a nonempty realityMapping", card_prompt)
+        self.assertIn("needsMoreExploration requires realityMapping", card_prompt)
         self.assertIn("Do not seek Card meaning, psychology", card_prompt)
-        self.assertIn("never emit outcome/source/status/confirmation/phase metadata", card_prompt)
         self.assertNotIn("OPTIONAL ACTION STRUCTURE", card_prompt)
 
     def test_exploration_writer_has_no_default_recap_progress_question_scaffold(self) -> None:
@@ -3142,9 +3428,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertIn("cardConnectionEvidence", prompt)
         self.assertNotIn("REFLECTION STRUCTURE", prompt)
-        self.assertIn("Swift merges this semantic evidence with committed user evidence", prompt)
-        self.assertIn("derives whether the current Card act completes", prompt)
-        self.assertIn("Establish and exit once the reality relation exists", prompt)
+        self.assertIn("emit exactly one turn-local", prompt)
+        self.assertIn("Choose connectionEstablished as soon as", prompt)
+        self.assertIn("one atomic semantic transaction", prompt)
         self.assertIn("Do not seek Card meaning, psychology", prompt)
         self.assertIn("responsibility, solution, or action", prompt)
         self.assertNotIn("reflectionFrame", prompt)
@@ -3256,7 +3542,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Card material, emotion, impact, or blockage", prompt)
 
         valid = {
-            "semanticOperation": "continueTenderReflection",
+            "semanticOperation": "continueExploratoryReflection",
             "semanticEvidencePatch": {
                 "memoryUpdate": {
                     "selfCriticismLink": "实验修改后的不确定性被扩大成自己不适合科研",
@@ -3455,7 +3741,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertIn("Use only canonical link, Tender", planner_prompt)
         self.assertIn("grounded/declined Fierce", planner_prompt)
-        self.assertIn("Synthesize only when no unfinished or recurring reality remains", planner_prompt)
+        self.assertIn("review every groundedRealityCandidates item", planner_prompt)
+        self.assertIn("synthesize only when no item qualifies", planner_prompt)
         self.assertIn("confirmed context in one revisable delta", planner_prompt)
         self.assertIn("add no interpretation or action", planner_prompt)
 

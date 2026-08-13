@@ -331,10 +331,17 @@ class PromptRegistryTests(unittest.TestCase):
         planner = prompt_for("planner", request)
         critic = prompt_for("plan_critic", request)
         self.assertIn(SELF_COMPASSION_RULES, planner.system)
-        self.assertIn("Tender grounds every reflection", planner.system)
+        self.assertIn("Tender grounds reflection", planner.system)
         self.assertIn("Self-criticism judges", planner.system)
         self.assertIn("uncertainty marks", planner.system)
-        self.assertIn("Fierce optionally adds Tender-grounded candor", planner.system)
+        self.assertIn(
+            "Tender stands alone only if",
+            planner.system,
+        )
+        self.assertIn(
+            "Otherwise Fierce uses supplied behavior, impact, boundary",
+            planner.system,
+        )
         self.assertIn("synthesizeUnderstanding", planner.system)
         self.assertIn("before final narrative", planner.system)
         for code in (
