@@ -1407,7 +1407,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             transition["proposal"],
         )
 
-    def test_propose_practice_rejects_incomplete_or_no_action_payload(self) -> None:
+    def test_propose_practice_preserves_operation_and_omits_incomplete_payload(self) -> None:
         base = {
             "semanticOperation": "proposePractice",
             "semanticEvidencePatch": {
@@ -1429,39 +1429,76 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             invalid["semanticEvidencePatch"]["memoryUpdate"]["practiceTransition"][
                 "proposal"
             ].pop(missing)
-            invalid_cases.append((invalid, "required_for_propose_practice"))
+            invalid_cases.append((invalid, f"missing_{missing}"))
         for field_name in ("content", "basis"):
             for empty in (None, "", "   "):
                 invalid = json.loads(json.dumps(base, ensure_ascii=False))
                 invalid["semanticEvidencePatch"]["memoryUpdate"][
                     "practiceTransition"
                 ]["proposal"][field_name] = empty
-                invalid_cases.append((invalid, "required_for_propose_practice"))
+                invalid_cases.append((invalid, f"invalid_{field_name}_{empty!r}"))
 
         missing_transition = json.loads(json.dumps(base, ensure_ascii=False))
         missing_transition["semanticEvidencePatch"]["memoryUpdate"].pop(
             "practiceTransition"
         )
-        invalid_cases.append((missing_transition, "practice_proposal_required"))
+        invalid_cases.append((missing_transition, "missing_transition"))
 
         missing_proposal = json.loads(json.dumps(base, ensure_ascii=False))
         missing_proposal["semanticEvidencePatch"]["memoryUpdate"][
             "practiceTransition"
         ].pop("proposal")
-        invalid_cases.append((missing_proposal, "practice_proposal_required"))
+        invalid_cases.append((missing_proposal, "missing_proposal"))
 
-        no_action = json.loads(json.dumps(base, ensure_ascii=False))
-        no_action["semanticEvidencePatch"]["memoryUpdate"]["practiceTransition"][
-            "noActionReason"
-        ] = "userDeclined"
-        invalid_cases.append((no_action, "must_be_null_for_propose_practice"))
-
-        for invalid, violation in invalid_cases:
-            with self.subTest(violation=violation):
-                with self.assertRaisesRegex(CurrentV5PlannerContractError, violation):
+        for invalid, case in invalid_cases:
+            with self.subTest(case=case):
+                canonical = json.loads(
                     canonicalize_current_v5_planner_contract(
                         json.dumps(invalid, ensure_ascii=False)
                     )
+                )
+                self.assertEqual(canonical["semanticOperation"], "proposePractice")
+                self.assertNotIn(
+                    "practiceTransition",
+                    canonical["semanticEvidencePatch"]["memoryUpdate"],
+                )
+                self.assertEqual(canonical["responseFocus"], "呈现建议")
+
+    def test_propose_practice_preserves_explicit_no_action_conflict_for_swift_gate(self) -> None:
+        conflict = {
+            "semanticOperation": "proposePractice",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "practiceTransition": {
+                        "proposal": {
+                            "content": "短暂放松后回到论文",
+                            "basis": "episodeStructure.behaviorEvidence.0",
+                        },
+                        "noActionReason": "userDeclined",
+                    }
+                }
+            },
+            "responseFocus": "呈现建议",
+        }
+
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(conflict, ensure_ascii=False)
+            )
+        )
+
+        self.assertEqual(canonical["semanticOperation"], "proposePractice")
+        transition = canonical["semanticEvidencePatch"]["memoryUpdate"][
+            "practiceTransition"
+        ]
+        self.assertEqual(
+            transition["proposal"],
+            {
+                "content": "短暂放松后回到论文",
+                "basis": "episodeStructure.behaviorEvidence.0",
+            },
+        )
+        self.assertEqual(transition["noActionReason"], "userDeclined")
 
     def test_canonical_tracking_owner_wins_over_conflicting_misplaced_alias(self) -> None:
         decision = {
@@ -4518,6 +4555,14 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ).system
         normalized_planner_prompt = " ".join(planner_prompt.split())
         self.assertIn(CURRENT_V5_PROPOSE_PRACTICE_CONTRACT, planner_prompt)
+        self.assertIn('"semanticOperation":"proposePractice"', planner_prompt)
+        self.assertIn('"reflectionProgressionDecision":null', planner_prompt)
+        self.assertIn(
+            '"semanticEvidencePatch":{"memoryUpdate":{"practiceTransition"',
+            planner_prompt,
+        )
+        self.assertIn('"cardConnectionEvidence":null', planner_prompt)
+        self.assertIn('"contextualTrackingDecision":null', planner_prompt)
         self.assertIn("preserve the person's already-established reflection direction", normalized_planner_prompt)
         self.assertIn("only as concrete as the conversation safely supports", normalized_planner_prompt)
         self.assertIn("do not introduce an exact duration, frequency, location", normalized_planner_prompt)

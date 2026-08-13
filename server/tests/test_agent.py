@@ -1313,6 +1313,65 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         repair.assert_not_awaited()
 
+    async def test_parseable_propose_practice_without_payload_reaches_swift_gate(self) -> None:
+        incomplete_action = Completion(
+            (
+                '{"semanticOperation":"proposePractice",'
+                '"semanticEvidencePatch":{"memoryUpdate":{}},'
+                '"reflectionProgressionDecision":null,'
+                '"responseFocus":"提出一个可以调整的小行动"}'
+            ),
+            "deepseek",
+            "deepseek-v4-pro",
+            finish_reason="stop",
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": "CURRENT V5 TURN REQUEST JSON:\n"
+                + json.dumps(
+                    {
+                        "protocolStage": "directReflection",
+                        "reflectionMode": "synthesis",
+                        "allowedSemanticOperations": ["proposePractice"],
+                    }
+                ),
+            }
+        ]
+        with patch("app.config.DEEPSEEK_API_KEY", "deepseek-key"), \
+            patch("app.config.DEEPSEEK_BASE_URL", "https://api.deepseek.com"), \
+            patch("app.config.DEEPSEEK_WRITER_MODEL", "deepseek-v4-pro"), \
+            patch("app.config.OPENAI_API_KEY", ""), \
+            patch.object(
+                self.gateway,
+                "_complete_deepseek",
+                new=AsyncMock(return_value=incomplete_action),
+            ), \
+            patch.object(
+                self.gateway,
+                "_repair_deepseek_turn_controller_json",
+                new=AsyncMock(),
+            ) as repair:
+            result = await self.gateway.complete(
+                role="writer",
+                agent_task="current_v5_core_planner",
+                request_id="current-v5-incomplete-practice",
+                messages=messages,
+                max_tokens=1300,
+                temperature=0.28,
+            )
+
+        self.assertEqual(
+            json.loads(result.content),
+            {
+                "semanticOperation": "proposePractice",
+                "semanticEvidencePatch": {"memoryUpdate": {}},
+                "reflectionProgressionDecision": None,
+                "responseFocus": "提出一个可以调整的小行动",
+            },
+        )
+        repair.assert_not_awaited()
+
     def test_current_v5_provider_applies_active_fierce_contract_from_request_context(self) -> None:
         messages = [
             {

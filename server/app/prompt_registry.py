@@ -918,9 +918,14 @@ practiceTransition=null or {"transactionID":"","narrativeReferenceID":null,"prop
 
 CURRENT_V5_PROPOSE_PRACTICE_CONTRACT = r'''
 PROPOSE PRACTICE DECISION
-For proposePractice, emit one complete practiceTransition:
-{"proposal":{"content":"<one small action grounded in the established direction>",
-"basis":"<one exact groundedRealityCandidates.id>"},"noActionReason":null}.
+For proposePractice, emit this complete sparse semantic transaction. Placeholders describe structure,
+not output wording:
+{"semanticOperation":"proposePractice","reflectionProgressionDecision":null,
+"semanticEvidencePatch":{"memoryUpdate":{"practiceTransition":{"proposal":{
+"content":"<one small action grounded in the established direction>",
+"basis":"<one exact groundedRealityCandidates.id>"},"noActionReason":null}},
+"cardConnectionEvidence":null,"contextualTrackingDecision":null},
+"responseFocus":"<invite acceptance or revision of this proposal>"}.
 The proposal remains assistantProposed and pending until the person accepts or revises it; Swift owns
 source, status, category, transaction, and provenance metadata.
 

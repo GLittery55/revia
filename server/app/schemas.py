@@ -1451,11 +1451,15 @@ def _enforce_current_v5_active_fierce_contract(
 def _enforce_current_v5_propose_practice_contract(
     projected: dict[str, Any],
 ) -> dict[str, Any]:
-    """Require one complete proposal when the Planner chooses ``proposePractice``.
+    """Normalize a complete proposal without turning an incomplete act into transport failure.
 
     The backend validates only the operation-owned wire shape. Whether the proposed Chinese text
     stays within the user's grounded direction is Planner meaning and remains outside this
-    structural validator; Swift still validates the exact candidate basis and owns transaction,
+    structural validator. A parseable ``proposePractice`` decision must still reach Swift when its
+    optional payload is absent or malformed: the semantic compiler/Gate already owns
+    ``practiceProposalMissing``/``practiceProposalIncomplete`` correction. A decodable semantic
+    conflict, such as a complete proposal plus ``noActionReason``, is preserved rather than
+    rewritten as missing. Swift also validates the exact candidate basis and owns transaction,
     source, status, category, and workflow progression.
     """
 
@@ -1471,54 +1475,41 @@ def _enforce_current_v5_propose_practice_contract(
     memory = patch.get("memoryUpdate") if isinstance(patch, dict) else None
     transition = memory.get("practiceTransition") if isinstance(memory, dict) else None
     if not isinstance(transition, dict):
-        raise CurrentV5PlannerContractError(
-            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition",
-            violation="practice_proposal_required",
-        )
+        return projected
+
+    def omit_incomplete_transition() -> dict[str, Any]:
+        if isinstance(memory, dict):
+            memory.pop("practiceTransition", None)
+        return projected
+
     proposal = transition.get("proposal")
     if not isinstance(proposal, dict):
-        raise CurrentV5PlannerContractError(
-            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal",
-            violation="practice_proposal_required",
-        )
-    if transition.get("noActionReason") is not None:
-        raise CurrentV5PlannerContractError(
-            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.noActionReason",
-            violation="must_be_null_for_propose_practice",
-        )
+        return omit_incomplete_transition()
 
     content = _unwrap_current_v5_string_syntax(
         proposal.get("content"),
         field_name="content",
     )
     if not isinstance(content, str) or not content.strip():
-        raise CurrentV5PlannerContractError(
-            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal.content",
-            violation="required_for_propose_practice",
-        )
+        return omit_incomplete_transition()
     basis = _unwrap_current_v5_string_syntax(
         proposal.get("basis"),
         field_name="basis",
     )
     if not isinstance(basis, str) or not basis.strip():
-        raise CurrentV5PlannerContractError(
-            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal.basis",
-            violation="required_for_propose_practice",
-        )
+        return omit_incomplete_transition()
 
     try:
         _CURRENT_V5_PRACTICE_PROPOSAL_ADAPTER.validate_python(
             {"content": content, "basis": basis}
         )
-    except ValidationError as error:
-        raise CurrentV5PlannerContractError(
-            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal",
-            violation="invalid_practice_proposal",
-        ) from error
+    except ValidationError:
+        return omit_incomplete_transition()
 
     proposal["content"] = content
     proposal["basis"] = basis
-    transition.pop("noActionReason", None)
+    if transition.get("noActionReason") is None:
+        transition.pop("noActionReason", None)
     return projected
 
 
@@ -1531,9 +1522,9 @@ def canonicalize_current_v5_planner_contract(
     """Project every parseable object onto the Swift-decodable current-v5 sparse surface.
 
     The backend owns JSON syntax, legacy alias movement, and removal of unowned metadata. Ordinary
-    malformed optional syntax is removed at the smallest boundary. A declared operation-specific
-    semantic branch is different: its branch-owned payload must be atomic and internally consistent
-    before Swift receives it. Swift remains the sole workflow authority.
+    malformed optional syntax is removed at the smallest boundary. Complete operation-owned payloads
+    are normalized atomically; incomplete optional payloads are omitted while their parseable semantic
+    operation is preserved for the Swift compiler/Gate. Swift remains the sole workflow authority.
     """
 
     try:
