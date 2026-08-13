@@ -118,12 +118,27 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertIn(CURRENT_V5_REALITY_CONNECTION_CONTRACT, prompt)
         self.assertIn("Choose connectionEstablished as soon as", prompt)
-        self.assertIn("requires a nonempty realityMapping", prompt)
-        self.assertIn("requires realityMapping to be null or absent", prompt)
+        self.assertIn("requires one nonempty grounded realityMapping", prompt)
+        self.assertIn("needsMoreExploration requires", prompt)
+        self.assertIn("it null/absent", prompt)
         self.assertIn('"branch":"connectionEstablished"', prompt)
         self.assertIn('"branch":"needsMoreExploration"', prompt)
         self.assertIn("offerCardConnectionCandidate is separate", prompt)
-        self.assertIn("never substitute the candidate operation", prompt)
+        self.assertIn("never the candidate operation", prompt)
+        self.assertIn("Semantic examples — classify, do not copy", prompt)
+        self.assertIn("Established shape; placeholders are not wording", prompt)
+        self.assertIn('"realityMapping":"<user-authored grounded reality relation>"', prompt)
+        self.assertIn('"responseFocus":"<continue from the established reality relation>"', prompt)
+        self.assertIn("Exploration shape; placeholders are not wording", prompt)
+        self.assertIn('"responseFocus":"<one concrete reality-oriented question>"', prompt)
+        self.assertNotIn(
+            '"realityMapping":"画面里的人已经完成了，而用户还有事情没完成却继续刷视频"',
+            CURRENT_V5_REALITY_CONNECTION_CONTRACT,
+        )
+        self.assertNotIn(
+            '"responseFocus":"从用户已经形成的现实关系进入现实探索"',
+            CURRENT_V5_REALITY_CONNECTION_CONTRACT,
+        )
 
         for established_answer in (
             "他已经完成了，但我还没完成还在刷视频",
@@ -193,6 +208,23 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn('"branch":"tenderEstablished"', prompt)
         self.assertIn("requires a nonempty declarative reflectionDelta", prompt)
         self.assertIn("Never put the Tender meaning only in responseFocus", prompt)
+        self.assertIn("Semantic example — classify function, do not copy wording", prompt)
+        self.assertIn("Tender structural shape", prompt)
+        self.assertIn('"evidenceBasis":["<grounded evidence>"]', prompt)
+        self.assertIn('"dimensions":["<supported dimension>"]', prompt)
+        self.assertIn('"reflectionDelta":"<bounded Tender understanding>"', prompt)
+        self.assertIn(
+            '"responseFocus":"<present the bounded understanding and allow revision>"',
+            prompt,
+        )
+        self.assertNotIn(
+            "反复修改仍没有解决，是这次真实的困难",
+            CURRENT_V5_TENDER_REFLECTION_CONTRACT,
+        )
+        self.assertNotIn(
+            '"responseFocus":"自然呈现这个有限理解，并给用户一次修订机会"',
+            CURRENT_V5_TENDER_REFLECTION_CONTRACT,
+        )
 
     def test_tender_reflection_established_requires_atomic_nonempty_delta(self) -> None:
         valid = {
@@ -2772,7 +2804,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             }
         ]
 
-        planner_prompt = build_turn_messages(
+        planner_messages = build_turn_messages(
             LLMTurnPromptIn(
                 promptTask="planner",
                 promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
@@ -2780,27 +2812,143 @@ class CurrentV5CorePromptTests(unittest.TestCase):
                 maxTokens=900,
                 temperature=0.2,
             )
-        ).system
+        )
+        planner_prompt = planner_messages.system
 
         self.assertIn(CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT, planner_prompt)
         self.assertIn("TENDER REVISION HAS EXCLUSIVE TURN PRIORITY", planner_prompt)
+        self.assertIn("currently committed semanticMemory.reflectionFrame.reflectionDelta", planner_prompt)
+        self.assertIn("A revision axis is new only when", planner_prompt)
         self.assertIn("scope, time range or recurrence", planner_prompt)
         self.assertIn("This remains a revision even when", planner_prompt)
         self.assertIn("do not inspectReality, synthesize", planner_prompt)
         self.assertIn("Preserve existing", planner_prompt)
         self.assertIn("grounded reality candidates for the next turn", planner_prompt)
-        self.assertIn("其实不只是这次论文，我整体上就是挺拖延的", planner_prompt)
-        self.assertIn('"meaning":"reviseTender"', planner_prompt)
-        self.assertIn(
-            "不把尚未具体展开的整体标签当作已经证实的行为事实",
-            planner_prompt,
-        )
+        self.assertIn("其实不只是这次论文，我整体上就是挺拖延的", planner_messages.user)
+        self.assertIn("STRUCTURAL DECISION EXAMPLE — DO NOT COPY AS OUTPUT", planner_prompt)
+        self.assertIn("committed delta scope = one isolated meeting", planner_prompt)
+        self.assertIn("latest answer supplies another meeting or deadline", planner_prompt)
+        self.assertIn("decision is not reviseTender", planner_prompt)
+        self.assertIn("semantically equivalent Tender delta", planner_prompt)
+        self.assertIn("reported recurring pattern", planner_prompt)
+        self.assertNotIn("前面的理解需要扩大", CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT)
+        self.assertNotIn("对方认为", CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT)
+        self.assertNotIn("尚未具体展开", CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT)
         self.assertIn(
             "ONLY WITHOUT A TENDER REVISION, apply the Fierce review",
             planner_prompt,
         )
         self.assertIn("does not ask the person", planner_prompt)
         self.assertIn("to invent a solution or practice", planner_prompt)
+
+        directive = {
+            "semanticOperation": "continueTenderReflection",
+            "responseFocus": "继续询问这种拖延还会出现在哪些时候",
+            "sourceStage": "directReflection",
+            "destinationStage": "directReflection",
+            "nextPrompt": {
+                "kind": "openQuestion",
+                "purpose": "tenderReflection",
+                "focus": "respond_to_or_revise_bounded_tender_understanding",
+            },
+            "localAction": "none",
+            "memoryUpdate": {
+                "reflectionPhase": "tender",
+                "reflectionFrame": {
+                    "mode": "tender",
+                    "action": "softenGlobalSelfJudgment",
+                    "evidenceBasis": [
+                        {
+                            "source": "latestUserAnswer",
+                            "content": "用户认为这种情况并非只发生一次",
+                        }
+                    ],
+                    "dimensions": ["mindfulness"],
+                    "reflectionDelta": "用户报告这是反复出现的问题；具体模式与整个人的标签仍需分开",
+                },
+            },
+            "rewriteReason": None,
+        }
+        writer_prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="writer",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request, "directive": directive},
+                maxTokens=500,
+                temperature=0.3,
+            )
+        ).system
+
+        self.assertIn("revises an already committed Tender understanding", writer_prompt)
+        self.assertIn("Realize only the semantic change", writer_prompt)
+        self.assertIn("Do not call a reported recurring pattern", writer_prompt)
+        self.assertIn("Do not ask for examples, occasions, origins", writer_prompt)
+        self.assertIn("even if responseFocus requests them", writer_prompt)
+        self.assertIn("must not reopen Exploration", writer_prompt)
+        self.assertIn("Never copy Prompt examples, JSON", writer_prompt)
+        self.assertIn("placeholders, or internal phrasing", writer_prompt)
+        self.assertIn("Address them as “你”", writer_prompt)
+        self.assertIn("never “用户”, “对方”, “此人”", writer_prompt)
+        self.assertIn("render current grounded meaning naturally", writer_prompt)
+
+    def test_supporting_examples_do_not_reconsume_an_existing_recurrence_revision(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "tender"
+        request["allowedSemanticOperations"] = [
+            "continueTenderReflection",
+            "continueTenderGroundedFierceReflection",
+            "synthesizeDirectReflection",
+        ]
+        request["recentMessages"] = [
+            {
+                "id": "00000000-0000-0000-0000-000000000203",
+                "role": "user",
+                "content": "比如赶飞机时，收拾行李也经常拖到最后。",
+                "replyToMessageID": None,
+            }
+        ]
+        request["semanticMemory"] = {
+            "selfCriticalStatement": "我觉得自己整体上挺拖延",
+            "selfCriticismLink": "许多事情拖到最后 -> 我觉得自己整体上挺拖延",
+            "reflectionFrame": {
+                "mode": "tender",
+                "action": "softenGlobalSelfJudgment",
+                "evidenceBasis": [
+                    {
+                        "source": "latestUserAnswer",
+                        "content": "用户认为这种情况并非只发生一次",
+                    }
+                ],
+                "dimensions": ["mindfulness"],
+                "reflectionDelta": "用户报告这是跨情境反复出现的问题；具体模式与整个人的标签仍需分开",
+            },
+        }
+        request["groundedRealityCandidates"] = [
+            {
+                "id": "episodeStructure.behaviorEvidence.0",
+                "source": "episode",
+                "content": "重要事情没有完成时仍继续刷手机",
+            }
+        ]
+
+        planner_messages = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        )
+        planner_prompt = planner_messages.system
+
+        self.assertIn("用户报告这是跨情境反复出现的问题", planner_messages.user)
+        self.assertIn("比如赶飞机时，收拾行李也经常拖到最后", planner_messages.user)
+        self.assertIn("latest answer supplies another meeting or deadline", planner_prompt)
+        self.assertIn("decision is not reviseTender", planner_prompt)
+        self.assertIn("does not reopen an axis already represented", planner_prompt)
+        self.assertIn("Never resubmit an unchanged", planner_prompt)
 
     def test_planner_loads_only_the_current_stage_contract(self) -> None:
         event_item = LLMTurnPromptIn(
@@ -2880,14 +3028,14 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Choose connectionEstablished as soon as", card_prompt)
         self.assertIn("concrete user-authored relation", card_prompt)
         self.assertIn("continuation, difference, or tension", card_prompt)
-        self.assertIn("mention, image restatement, explicit comparison", card_prompt)
+        self.assertIn("no Card restatement or explicit comparison", card_prompt)
         self.assertIn("Development is optional", card_prompt)
         self.assertIn("Emit imageRelation only for a new image-side revision", card_prompt)
         self.assertIn("cardConnectionEvidence", card_prompt)
-        self.assertIn("object/property correspondence by itself", card_prompt)
+        self.assertIn("object/property correspondence alone", card_prompt)
         self.assertIn("one authorized scaffold", card_prompt)
-        self.assertIn("connectionEstablished requires a nonempty realityMapping", card_prompt)
-        self.assertIn("needsMoreExploration requires realityMapping", card_prompt)
+        self.assertIn("connectionEstablished requires one nonempty grounded realityMapping", card_prompt)
+        self.assertIn("needsMoreExploration requires", card_prompt)
         self.assertIn("Do not seek Card meaning, psychology", card_prompt)
         self.assertNotIn("OPTIONAL ACTION STRUCTURE", card_prompt)
 
@@ -3462,7 +3610,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("immediately draws one uniformly random local card", prompt)
         self.assertIn("must not invite, confirm, select, describe, predict, or interpret", prompt)
         self.assertIn("responseFocus is a", prompt)
-        self.assertIn("goal, not evidence", prompt)
+        self.assertIn("responseFocus is a goal", prompt)
+        self.assertIn("evidence; the operation contract outranks it", prompt)
         self.assertIn("operation contract outranks it", prompt)
         self.assertNotIn("End with exactly one natural, easy-to-answer question", prompt)
 
@@ -3517,9 +3666,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertIn("cardConnectionEvidence", prompt)
         self.assertNotIn("REFLECTION STRUCTURE", prompt)
-        self.assertIn("emit exactly one turn-local", prompt)
+        self.assertIn("emit one atomic", prompt)
         self.assertIn("Choose connectionEstablished as soon as", prompt)
-        self.assertIn("one atomic semantic transaction", prompt)
+        self.assertIn("semanticEvidencePatch.cardConnectionEvidence decision", prompt)
         self.assertIn("Do not seek Card meaning, psychology", prompt)
         self.assertIn("responsibility, solution, or action", prompt)
         self.assertNotIn("reflectionFrame", prompt)

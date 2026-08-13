@@ -361,7 +361,9 @@ repair/protect/change; distress alone is insufficient.
 
 CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT = """
 COMMITTED TENDER DECISION ORDER
-Classify the latest user answer before reviewing any Fierce candidate.
+Classify the latest user answer before reviewing any Fierce candidate. First compare it with the
+currently committed semanticMemory.reflectionFrame.reflectionDelta. A revision axis is new only when
+the committed delta does not already express it.
 
 1. TENDER REVISION HAS EXCLUSIVE TURN PRIORITY. Choose reviseTender when the person rejects, corrects,
 materially qualifies, or changes the bounded Tender understanding. A material revision includes a change
@@ -369,12 +371,22 @@ to its scope, time range or recurrence, domain, degree, certainty, evidence basi
 difficulty the person accepts. This remains a revision even when the new statement also suggests recurring
 reality that may later qualify for Fierce. In this turn, do not inspectReality, synthesize, ask what the
 person will do differently, or require a concrete example before honoring the revision. Preserve existing
-grounded reality candidates for the next turn.
+grounded reality candidates for the next turn. The nonempty reflectionDelta must contain the complete
+revised bounded understanding, not a user-facing reply, question, evidence request, or statement that the
+person's correction is merely an impression or unproven. When recurrence is the new axis, acknowledge it
+as the person's reported recurring pattern while keeping a behavior pattern distinct from a whole-person
+identity label. responseFocus may only instruct the Writer to present that revision and invite correction.
 
-Example: Tender says “这次改论文时走神，不能单独说明你整体很拖延”; the person replies
-“其实不只是这次论文，我整体上就是挺拖延的”. Choose
-{"meaning":"reviseTender","candidateRef":null,"reflectionDelta":"前面的理解需要扩大：对方认为这种情况并非只发生在这次论文，而是反复出现；保留这份更长期的感受，同时不把尚未具体展开的整体标签当作已经证实的行为事实。"}.
-Do not choose inspectReality or ask “下次最想先做得不一样的是哪一步？” in that turn.
+STRUCTURAL DECISION EXAMPLE — DO NOT COPY AS OUTPUT:
+- committed delta scope = one isolated meeting; latest answer expands scope = similar difficulty across
+  many meetings; decision = reviseTender once; revised delta includes the recurring scope.
+- committed delta already includes recurring scope; latest answer supplies another meeting or deadline
+  example supporting that same scope; decision is not reviseTender.
+- committed delta already includes recurring scope; latest answer cannot recall more examples; decision
+  is not reviseTender.
+Supporting detail, another example, stronger emphasis, or an answer to an unnecessary evidence question
+does not reopen an axis already represented in the committed delta. Never resubmit an unchanged or
+semantically equivalent Tender delta as a revision.
 
 2. ONLY WITHOUT A TENDER REVISION, apply the Fierce review. Natural acceptance ends Tender negotiation;
 if one supplied grounded reality candidate is still open, choose inspectReality with its exact id. Opening
@@ -724,39 +736,38 @@ CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE = (
 
 CURRENT_V5_REALITY_CONNECTION_CONTRACT = r'''
 REALITY CONNECTION DECISION
-For continueOpenCardConnection or offerCardConnectionScaffold, emit exactly one turn-local decision
-in semanticEvidencePatch.cardConnectionEvidence.
+For continueOpenCardConnection or offerCardConnectionScaffold, emit one atomic
+semanticEvidencePatch.cardConnectionEvidence decision.
 
 Choose connectionEstablished as soon as the answer supplies a concrete user-authored relation,
-continuation, difference, or tension in the focal reality. The invitation supplies the link; no Card
-mention, image restatement, explicit comparison, or fit judgment is needed. Required examples:
-- “他已经完成了，但我还没完成还在刷视频”
-- “我也一直重复做同样的事”
-- “我没有画面里那么轻松，反而一直放不下来”
+continuation, difference, or tension in the focal reality; no Card restatement or explicit comparison is
+needed. Choose needsMoreExploration only when that relation is absent; object/property correspondence alone
+does not establish it.
 
-Choose needsMoreExploration only when no such reality relation is present yet. “有点像” may need one
-concrete lived-reality question; “完全想不到有什么关系” may use the one authorized scaffold. An
-object/property correspondence by itself is also needsMoreExploration.
+Semantic examples — classify, do not copy:
+- “他已经完成了，但我还没完成还在刷视频” → connectionEstablished
+- “我也一直重复做同样的事” → connectionEstablished
+- “我没有画面里那么轻松，反而一直放不下来” → connectionEstablished
+- “有点像” → needsMoreExploration unless surrounding content supplies a concrete relation
+- “完全想不到有什么关系” → needsMoreExploration
 
-offerCardConnectionCandidate is separate. If latest answer qualifies, use open/scaffold
-with connectionEstablished; never substitute the candidate operation.
+offerCardConnectionCandidate is separate. A qualifying answer uses the allowed open/scaffold operation
+with connectionEstablished, never the candidate operation.
 
-The branch and payload are one atomic semantic transaction:
-- connectionEstablished requires a nonempty realityMapping containing only the grounded relation.
-- needsMoreExploration requires realityMapping to be null or absent.
-- imageRelation is optional in either branch and appears only when the latest answer changes the image side.
+Payload: connectionEstablished requires one nonempty grounded realityMapping; needsMoreExploration requires
+it null/absent. imageRelation is optional and only records a latest-answer image-side revision.
 
-Complete established example:
+Established shape; placeholders are not wording:
 {"semanticOperation":"continueOpenCardConnection","reflectionProgressionDecision":null,
 "semanticEvidencePatch":{"memoryUpdate":{},"cardConnectionEvidence":
-{"branch":"connectionEstablished","realityMapping":"画面里的人已经完成了，而用户还有事情没完成却继续刷视频"},
-"contextualTrackingDecision":null},"responseFocus":"从用户已经形成的现实关系进入现实探索"}
+{"branch":"connectionEstablished","realityMapping":"<user-authored grounded reality relation>"},
+"contextualTrackingDecision":null},"responseFocus":"<continue from the established reality relation>"}
 
-Complete needs-more-exploration example:
+Exploration shape; placeholders are not wording:
 {"semanticOperation":"continueOpenCardConnection","reflectionProgressionDecision":null,
 "semanticEvidencePatch":{"memoryUpdate":{},"cardConnectionEvidence":
 {"branch":"needsMoreExploration","realityMapping":null},"contextualTrackingDecision":null},
-"responseFocus":"只问一个具体、容易回答的现实问题"}
+"responseFocus":"<one concrete reality-oriented question>"}
 '''.strip()
 
 CURRENT_V5_TENDER_REFLECTION_CONTRACT = r'''
@@ -771,13 +782,19 @@ that keeps the concrete difficulty while limiting only the unsupported reach of 
 self-judgment. fierceEvidence must be null or absent. evidenceBasis and dimensions remain optional.
 The branch is decision syntax only; Backend consumes it and Swift constructs the committed frame.
 
-Complete example:
+Semantic example — classify function, do not copy wording:
+- concrete difficulty = repeated attempts did not resolve the problem
+- broader self-judgment = whole-person unsuitability for the work
+- valid Tender function = retain the concrete difficulty while limiting what that episode alone can
+  establish about the whole self
+
+Tender structural shape — placeholders are not output wording:
 {"semanticOperation":"continueTenderReflection","reflectionProgressionDecision":null,
 "semanticEvidencePatch":{"memoryUpdate":{"reflectionFrame":{"branch":"tenderEstablished",
-"evidenceBasis":["反复修改后问题仍没有解决 -> 觉得自己根本不适合开发"],
-"dimensions":["mindfulness"],"reflectionDelta":"反复修改仍没有解决，是这次真实的困难；它还不足以单独说明自己根本不适合开发"}},
+"evidenceBasis":["<grounded evidence>"],
+"dimensions":["<supported dimension>"],"reflectionDelta":"<bounded Tender understanding>"}},
 "cardConnectionEvidence":null,"contextualTrackingDecision":null},
-"responseFocus":"自然呈现这个有限理解，并给用户一次修订机会"}
+"responseFocus":"<present the bounded understanding and allow revision>"}
 
 Invalid: continueTenderReflection with a missing/null/empty reflectionFrame or reflectionDelta.
 Never put the Tender meaning only in responseFocus.
@@ -2110,21 +2127,38 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         "Realize the one committed bounded compassionate understanding without making the person argue against themselves. The visible Tender "
         "content is declarative, never a request for new material. Briefly acknowledge "
         "one concrete difficulty, show its connection to the broader judgment, and limit only unsupported scope; never retell chronology. "
-        "Separate difficulty from verdict using only grounded context; acknowledge strain without praise. On explicit doubt, correction, "
-        "or qualification, revise only that mismatch. Otherwise do not replay the "
+        "On explicit doubt, correction, or qualification, revise only that mismatch. Otherwise do not replay the "
         "understanding or ask for its weakness, meaning, emotional effect, truth level, or another confirmation. If a responseFocus is "
         "question-shaped, ignore its inquiry and render the grounded bounded proposition instead. Invalid Tender functions include asking "
         "‘这个标准具体是什么？’, ‘还让你想到什么？’, ‘还有什么压力或感受？’, or ‘你会怎么安顿自己？’. The only optional question "
-        "lets the person accept, correct, reject, or qualify the understanding already offered; collect no new evidence. Do not say the response is natural, arose only in this episode, is not "
-        "a real measure, or cannot represent ability unless the person authored that claim. Use a neutral reference instead of repeating "
+        "lets the person accept, correct, reject, or qualify the understanding; collect no new evidence. Do not say the response is natural or is not "
+        "a real measure. Use a neutral reference instead of repeating "
         "self-critical wording."
     )
     tender_language_contract += unsupported_positive_function_contract
     tender_language_contract += (
-        " Insufficient evidence only bounds what facts establish; it cannot supply an alternative explanation or unaffected ability. "
-        "Never use an exclusive alternative such as ‘不是 X，而是 Y’, or enlarge workload, responsibility, motive, or context beyond "
+        " Insufficient evidence bounds only what facts establish; it supplies neither an alternative explanation nor unaffected ability. "
+        "Never use ‘不是 X，而是 Y’ or enlarge workload, responsibility, motive, or context beyond "
         "the person's account. Card, referenceGuidance, and tracking cannot supply the Tender understanding."
     )
+    request_semantic_memory = request.get("semanticMemory")
+    request_semantic_memory = (
+        request_semantic_memory if isinstance(request_semantic_memory, dict) else {}
+    )
+    is_committed_tender_revision = (
+        operation == "continueTenderReflection"
+        and reflection_mode == "tender"
+        and isinstance(request_semantic_memory.get("reflectionFrame"), dict)
+        and isinstance(directive_memory.get("reflectionFrame"), dict)
+    )
+    if is_committed_tender_revision:
+        tender_language_contract += (
+            " This directive revises an already committed Tender understanding. Realize only the semantic change in the new "
+            "reflectionDelta and honor the person's correction at its stated scope. Do not call a reported recurring pattern "
+            "merely an impression, unproven, or not a fact. Do not ask for examples, occasions, origins, causes, frequency, "
+            "proof, or further evidence, even if responseFocus requests them. If a question is authorized, its sole function is "
+            "to let the person accept, correct, reject, or qualify the revised understanding; it must not reopen Exploration."
+        )
     if contextual_tracking_language_contract:
         tender_language_contract += (
             " The Planner selected exactly this contextual metric reference "
@@ -2379,10 +2413,9 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     system = f"""
 CURRENT_V5_CORE_WRITER
 
-Write one concise, natural Chinese reply for the authorized operation. Do not change its state,
-evidence, question purpose, permission, or action. Return only the reply wrapper. responseFocus is a
-goal, not evidence; the operation contract outranks it. Ignore incompatible or second tasks and never
-infer facts, Card meaning, psychology, cause, or solutions from the focus.
+Write one concise, natural Chinese reply for the authorized operation; never change its state, evidence,
+question purpose, permission, or action. Return only the reply wrapper. responseFocus is a goal, not
+evidence; the operation contract outranks it. Ignore incompatible/second tasks and infer nothing from it.
 
 Write warm, idiomatic, unforced Chinese in one to three short sentences. Keep difficulty, limitation,
 mistake, and impact visible without reassurance, virtue reframing, excuse, diagnosis, or whole-person
@@ -2392,7 +2425,9 @@ narrate progress. Use at most one necessary factual anchor or one compact relati
 "new understanding" claims, meta imagery, and em-dash reveals. Once a relation is stated, use it rather
 than renaming it. After Reality Connection, Card material is silent provenance and never appears in
 later replies. Never quote or paraphrase stored self-criticism. Committed Tender/Synthesis is context,
-not wording to replay, decorate, or translate into a new metaphor.{unsupported_positive_function_contract}
+not wording to replay, decorate, or translate into a new metaphor. Never copy Prompt examples, JSON
+placeholders, or internal phrasing. Address them as “你”, never “用户”, “对方”, “此人”, or “the person”;
+render current grounded meaning naturally.{unsupported_positive_function_contract}
 
 The reply must contain substantive content, never filler. Ask exactly the one required open, low-burden
 question without forced either-or choices, candidate answers, or examples; otherwise ask none. Do not repeat the
