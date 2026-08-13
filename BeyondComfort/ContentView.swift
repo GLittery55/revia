@@ -597,10 +597,18 @@ private struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        ForEach(model.session.messages.filter {
-                            !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        }) { message in
-                            MessageBubble(message: message).id(message.id)
+                        ForEach(conversationItems) { item in
+                            switch item {
+                            case .message(let message):
+                                MessageBubble(message: message).id(message.id)
+                            case .card(let card, _):
+                                CardMessageBubble(
+                                    card: card,
+                                    onImageReady: { model.cardDidDisplay(cardID: card.id) },
+                                    onImageFailure: { model.cardDisplayDidFail(cardID: card.id) }
+                                )
+                                .id("card-message-\(card.id)-\(model.session.cardDisplayReloadNonce)")
+                            }
                         }
                         if model.isTyping && !model.isStreamingResponse { TypingIndicator() }
                         StagePanel(model: model).id("stage-panel")
@@ -645,10 +653,6 @@ private struct ChatView: View {
                         await Task.yield()
                         scrollToLatestMessage(proxy, animated: true)
                     }
-                }
-                .onChange(of: model.draft) { _, _ in
-                    guard inputFocused else { return }
-                    scrollToLatestMessage(proxy, animated: false)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in
                     guard inputFocused else { return }
@@ -702,6 +706,27 @@ private struct ChatView: View {
         ].contains(model.session.stage)
     }
 
+    private var conversationItems: [ConversationItem] {
+        var items = model.session.messages.compactMap { message -> ConversationItem? in
+            guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            return .message(message)
+        }
+        if let card = model.session.card {
+            let drawnAt = model.session.cardDrawRecord?.drawnAt
+                ?? model.session.messages.last?.createdAt
+                ?? model.session.createdAt
+            items.append(.card(card, drawnAt: drawnAt))
+        }
+        return items.sorted { lhs, rhs in
+            if lhs.createdAt == rhs.createdAt {
+                return lhs.order < rhs.order
+            }
+            return lhs.createdAt < rhs.createdAt
+        }
+    }
+
     private var latestVisibleMessageID: UUID? {
         model.session.messages.last {
             !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -753,6 +778,32 @@ private struct ChatView: View {
     }
 }
 
+private enum ConversationItem: Identifiable {
+    case message(ChatMessage)
+    case card(ReflectionCard, drawnAt: Date)
+
+    var id: String {
+        switch self {
+        case .message(let message): "message-\(message.id.uuidString)"
+        case .card(let card, _): "card-\(card.id)"
+        }
+    }
+
+    var createdAt: Date {
+        switch self {
+        case .message(let message): message.createdAt
+        case .card(_, let drawnAt): drawnAt
+        }
+    }
+
+    var order: Int {
+        switch self {
+        case .message: 0
+        case .card: 1
+        }
+    }
+}
+
 private func dismissKeyboard() {
     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 }
@@ -783,6 +834,39 @@ private struct MessageBubble: View {
     }
 }
 
+private struct CardMessageBubble: View {
+    let card: ReflectionCard
+    var onImageReady: (() -> Void)? = nil
+    var onImageFailure: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .top) {
+            Image(systemName: "face.smiling.inverse")
+                .font(.title2)
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(
+                    LinearGradient(
+                        colors: [.purple.opacity(0.65), .indigo],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    in: Circle()
+                )
+                .accessibilityHidden(true)
+
+            CardView(
+                card: card,
+                onImageReady: onImageReady,
+                onImageFailure: onImageFailure
+            )
+            .frame(maxWidth: 360)
+
+            Spacer(minLength: 24)
+        }
+    }
+}
+
 private struct StagePanel: View {
     @ObservedObject var model: ReflectionViewModel
     var body: some View {
@@ -807,27 +891,19 @@ private struct StagePanel: View {
             case .trackingPermission, .trackingReview, .readinessCheck:
                 EmptyView()
             case .cardIntroduction:
-                if let card = model.session.card {
-                    CardView(
-                        card: card,
-                        onImageReady: { model.cardDidDisplay(cardID: card.id) },
-                        onImageFailure: { model.cardDisplayDidFail(cardID: card.id) }
-                    )
-                    .id(model.session.cardDisplayReloadNonce)
-                    if model.session.cardDisplayState == .loadFailed {
-                        Text("卡片图片没有成功显示。可以重新加载刚才抽到的这张卡；图片出现前不用解读。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Button("重新加载这张卡", action: model.retryCardDisplay)
-                            .buttonStyle(.borderedProminent)
-                    }
+                if model.session.cardDisplayState == .loadFailed {
+                    Text("卡片图片没有成功显示。可以重新加载刚才抽到的这张卡；图片出现前不用解读。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("重新加载这张卡", action: model.retryCardDisplay)
+                        .buttonStyle(.borderedProminent)
                 } else {
-                    ProgressView("正在抽取卡片…")
+                    if model.session.card == nil {
+                        ProgressView("正在抽取卡片…")
+                    }
                 }
             case .cardInterpretation, .attributionReflection:
-                if let card = model.session.card, !model.session.cardWasSetAside {
-                    CollapsibleCardView(card: card)
-                }
+                EmptyView()
             case .actionSelection: EmptyView()
             case .summary, .completed: ReviewPanel(model: model)
             case .safetySupport: Button("结束本次流程", action: model.end).buttonStyle(.borderedProminent)
@@ -1271,48 +1347,9 @@ private struct CardView: View {
                 .frame(maxHeight: 420)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-                .accessibilityLabel(card.title)
-            Text(card.title).font(.headline)
+                .accessibilityLabel("反思卡画面")
             Text("没有固定含义 · 以你的解读为准").font(.caption).foregroundStyle(.secondary)
         }.cardStyle()
-    }
-}
-
-private struct CollapsibleCardView: View {
-    let card: ReflectionCard
-    @State private var isExpanded = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            ReflectionCardImage(imageName: card.imageName) { _ in }
-                .frame(maxHeight: 340)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .padding(.top, 12)
-
-            Text("没有固定含义 · 以你的解读为准")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 6)
-        } label: {
-            HStack(spacing: 12) {
-                ReflectionCardImage(imageName: card.imageName) { _ in }
-                    .frame(width: 58, height: 76)
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(card.title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(isExpanded ? "收起卡牌" : "展开查看卡牌")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .tint(.indigo)
-        .cardStyle()
-        .accessibilityLabel("\(card.title)，\(isExpanded ? "已展开" : "已收起")")
     }
 }
 
@@ -1330,7 +1367,7 @@ private struct ReflectionCardImage: View {
                 ContentUnavailableView(
                     "卡片图片无法加载",
                     systemImage: "photo.badge.exclamationmark",
-                    description: Text("缺少资源：\(imageName).png")
+                    description: Text("暂时无法显示这张卡的画面")
                 )
                 .frame(height: 280)
             }

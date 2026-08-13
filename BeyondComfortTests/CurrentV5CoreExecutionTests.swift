@@ -101,10 +101,10 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
                 .init(
                     semanticOperation: .advanceToCardConsent,
                     semanticEvidencePatch: .init(),
-                    responseFocus: "简短承接已经清楚的事件并邀请一张随机反思卡"
+                    responseFocus: ""
                 ),
             ],
-            replies: ["事情怎么发生的已经说清楚了。我们可以抽一张随机反思卡看看吗？"]
+            replies: []
         )
         let model = ReflectionViewModel(
             analyzer: UnusedCurrentV5ContextAnalyzer(),
@@ -130,8 +130,10 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         let legacyPlanCalls = await legacy.planCount()
         XCTAssertEqual(model.session.protocolStage, .cardConsent)
         XCTAssertEqual(corePlanCalls, 1)
-        XCTAssertEqual(coreWriteCalls, 1)
+        XCTAssertEqual(coreWriteCalls, 0)
         XCTAssertEqual(legacyPlanCalls, 0)
+        XCTAssertEqual(model.session.cardDisplayState, .selected)
+        XCTAssertNotNil(model.session.card)
         XCTAssertEqual(audit.count(for: .semanticMapper), 1)
         XCTAssertEqual(audit.count(for: .projector), 1)
         XCTAssertEqual(audit.count(for: .legacySemanticMapper), 0)
@@ -144,9 +146,21 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
                     || $0.action.contains("response_failed_twice")
             }
         )
+        XCTAssertFalse(
+            model.session.messages.contains {
+                $0.role == .assistant && $0.content.contains("可以抽一张")
+            }
+        )
+
+        let selectedCard = try XCTUnwrap(model.session.card)
+        model.cardDidDisplay(cardID: selectedCard.id)
+
+        XCTAssertEqual(model.session.protocolStage, .cardReflection)
+        XCTAssertEqual(model.session.cardDisplayState, .displayed)
+        XCTAssertEqual(model.session.workflowPhase, .cardObservation)
         XCTAssertEqual(
             model.session.messages.last(where: { $0.role == .assistant })?.content,
-            "事情怎么发生的已经说清楚了。我们可以抽一张随机反思卡看看吗？"
+            "这张卡是随机抽取的，也没有固定答案。先只看画面，你觉得这里正在发生什么？"
         )
     }
 
@@ -268,8 +282,9 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         let legacyPlanCalls = await legacy.planCount()
         XCTAssertEqual(model.session.protocolStage, .cardConsent)
         XCTAssertEqual(corePlanCalls, 1)
-        XCTAssertEqual(coreWriteCalls, 1)
+        XCTAssertEqual(coreWriteCalls, 0)
         XCTAssertEqual(legacyPlanCalls, 0)
+        XCTAssertEqual(model.session.cardDisplayState, .selected)
         XCTAssertFalse(
             model.session.studyEvents.contains {
                 $0.action.contains("current_v5_core_single_correction")
@@ -1366,10 +1381,95 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
             noActionReason: nil
         )
         operations = CurrentV5CapabilitySet.allowedOperations(for: session)
-        XCTAssertFalse(operations.contains(.proposePractice))
+        XCTAssertTrue(operations.contains(.proposePractice))
         XCTAssertTrue(operations.contains(.resolvePractice))
         XCTAssertFalse(operations.contains(.confirmNarrative))
         XCTAssertFalse(operations.contains(.completeConversation))
+    }
+
+    func testAdjustmentRequestReplacesPendingPracticeWithoutEnteringFinalNarrative() throws {
+        var session = ReflectionSession()
+        session.protocolVersion = ReflectionSession.currentProtocolVersion
+        session.protocolStage = .optionalAction
+        session.stage = .actionSelection
+        session.semanticMemory.reflectionPhase = .synthesis
+        session.semanticMemory.episodeStructure = TurnEpisodeStructure(
+            concreteFacts: ["反复调整 prompt 后，表达仍然生硬"],
+            behaviorEvidenceStatus: .present,
+            behaviorEvidence: ["连续加入例子和限制词，但没有先分开验证哪项改动有效"]
+        )
+        session.semanticMemory.reflectionFrame = .init(
+            mode: .tender,
+            action: .synthesizeUnderstanding,
+            evidenceBasis: [
+                .init(
+                    source: .episode,
+                    content: "连续加入例子和限制词，但没有先分开验证哪项改动有效"
+                )
+            ],
+            dimensions: [],
+            reflectionDelta: "当前这套调整方式还没有达到想要的效果，但不能据此判断整体开发能力。",
+            fierceEvidence: nil
+        )
+        session.semanticMemory.practiceTransition = .init(
+            transactionID: "practice-old",
+            narrativeReferenceID: nil,
+            proposal: .init(
+                id: "practice-old",
+                kind: .change,
+                content: "先写下一句当前具体卡点",
+                basis: "episodeStructure.behaviorEvidence.0",
+                status: .pendingConfirmation,
+                source: .assistantProposed
+            ),
+            noActionReason: nil
+        )
+        session.semanticMemory.nextPrompt = .confirmationRequest(
+            target: .practice,
+            referenceID: "practice-old"
+        )
+
+        let output = CurrentV5PlannerOutput(
+            semanticOperation: .proposePractice,
+            semanticEvidencePatch: .init(
+                practiceContribution: .init(
+                    proposal: .init(
+                        content: "连续两次修改仍没变清楚时，先只保留一个待验证的假设",
+                        basis: "episodeStructure.behaviorEvidence.0"
+                    ),
+                    noActionReason: nil
+                )
+            ),
+            responseFocus: "呈现调整后的行动建议"
+        )
+        let gate = CurrentV5SwiftTurnGate(
+            protocolController: ReflectionProtocolController()
+        )
+        let authorized = try gate.authorize(
+            output,
+            for: session,
+            allowedSemanticOperations: CurrentV5CapabilitySet.allowedOperations(for: session)
+        )
+        let plan = authorized.projectedPlan
+        let replacement = try XCTUnwrap(plan.memoryUpdate.practiceTransition)
+        let proposal = try XCTUnwrap(replacement.proposal)
+
+        XCTAssertEqual(plan.requestedStage, .optionalAction)
+        XCTAssertEqual(plan.replyIntent, .suggestPractice)
+        XCTAssertEqual(plan.resolvedConfirmation?.target, .practice)
+        XCTAssertEqual(plan.resolvedConfirmation?.decision, .revised)
+        XCTAssertEqual(plan.resolvedConfirmation?.referenceID, "practice-old")
+        XCTAssertNotEqual(replacement.transactionID, "practice-old")
+        XCTAssertEqual(proposal.id, replacement.transactionID)
+        XCTAssertEqual(proposal.status, .pendingConfirmation)
+        XCTAssertEqual(proposal.source, .assistantProposed)
+        XCTAssertEqual(
+            proposal.content,
+            "连续两次修改仍没变清楚时，先只保留一个待验证的假设"
+        )
+        XCTAssertEqual(plan.nextPrompt.target, .practice)
+        XCTAssertEqual(plan.nextPrompt.referenceID, proposal.id)
+        XCTAssertNil(plan.memoryUpdate.finalNarrative)
     }
 
     func testUniqueCandidateOperationAdvancesWithoutPlannerCorrection() async throws {
@@ -1417,7 +1517,8 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         let writeCount = await core.writeCount()
         XCTAssertEqual(model.session.protocolStage, .cardConsent)
         XCTAssertEqual(planCount, 1)
-        XCTAssertEqual(writeCount, 1)
+        XCTAssertEqual(writeCount, 0)
+        XCTAssertEqual(model.session.cardDisplayState, .selected)
         XCTAssertFalse(
             model.session.studyEvents.contains {
                 $0.action.contains("current_v5_core_single_correction")
@@ -1458,7 +1559,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         XCTAssertEqual(authorized.projectedPlan.nextPrompt.kind, .openQuestion)
     }
 
-    func testCompletingEventActKeepsItsOperationAndProjectsCardConsent() throws {
+    func testCompletingEventActKeepsItsOperationAndProjectsMandatoryLocalCardDraw() throws {
         var session = ReflectionSession()
         session.protocolVersion = ReflectionSession.currentProtocolVersion
         session.protocolStage = .contextualDisclosure
@@ -1490,7 +1591,10 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
 
         XCTAssertEqual(authorized.operation, .clarifyEvent)
         XCTAssertEqual(authorized.projectedPlan.requestedStage, .cardConsent)
-        XCTAssertEqual(authorized.projectedPlan.nextPrompt.target, .cardConsent)
+        XCTAssertEqual(authorized.projectedPlan.localAction.kind, .drawRandomCard)
+        XCTAssertEqual(authorized.projectedPlan.replyIntent, .acknowledgeCardConsent)
+        XCTAssertEqual(authorized.projectedPlan.nextPrompt.kind, .none)
+        XCTAssertNil(authorized.projectedPlan.resolvedConfirmation)
         XCTAssertNil(CurrentV5WriterDirective(authorized: authorized).responseFocus)
     }
 
@@ -4413,7 +4517,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         )
     }
 
-    func testCardConsentAnswerUsesCorePlannerThenSwiftDrawsLocally() async throws {
+    func testLegacyCardConsentAcceptanceCommitsLocallyAndSwiftDraws() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeyondComfort-current-card-consent-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -4451,7 +4555,7 @@ final class CurrentV5CoreExecutionTests: XCTestCase {
         let corePlanCalls = await core.planCount()
         let coreWriteCalls = await core.writeCount()
         let legacyPlanCalls = await legacy.planCount()
-        XCTAssertEqual(corePlanCalls, 1)
+        XCTAssertEqual(corePlanCalls, 0)
         XCTAssertEqual(coreWriteCalls, 0)
         XCTAssertEqual(legacyPlanCalls, 0)
         XCTAssertEqual(model.session.protocolStage, .cardConsent)

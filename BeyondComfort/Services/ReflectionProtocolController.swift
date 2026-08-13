@@ -797,10 +797,19 @@ struct ReflectionProtocolController: Sendable {
         let awaitingAcceptedNarrative = session.protocolStage == .optionalAction
             && session.semanticMemory.practiceTransition?.proposal == nil
             && session.semanticMemory.practiceTransition?.noActionReason == nil
+        let isReplacingPendingPractice = session.protocolStage == .optionalAction
+            && state.replyIntent == .suggestPractice
+            && session.semanticMemory.practiceTransition?.proposal?.status
+                == .pendingConfirmation
         if isPreNarrativeProposal {
             if state.resolution != nil { missing.append(.narrativeResolution) }
         } else if state.replyIntent == .suggestPractice, awaitingAcceptedNarrative {
             if state.resolution != nil { missing.append(.narrativeResolution) }
+        } else if isReplacingPendingPractice {
+            if state.resolution?.target != .practice
+                || state.resolution?.decision != .revised {
+                missing.append(.narrativeResolution)
+            }
         } else {
             let expectedResolutionTarget: TurnConfirmationTarget =
                 state.replyIntent == .suggestPractice ? .finalNarrative : .practice

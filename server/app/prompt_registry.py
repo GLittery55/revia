@@ -11,7 +11,7 @@ from .schemas import LLMChatIn, LLMTurnPromptIn
 
 
 TURN_PROMPT_VERSION = "turn-v4-server-v45"
-CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v100"
+CURRENT_V5_CORE_PROMPT_VERSION = "turn-v5-core-server-v100-fierce-action1-mandatory-card1"
 TurnPromptTask = Literal[
     "planner",
     "plan_critic",
@@ -359,6 +359,32 @@ only for supplied behavior, impact, boundary, support, or caring repair/protect/
 """.strip()
 
 
+CURRENT_V5_FIERCE_PURPOSE_CONTRACT = """
+Fierce establishes one user-grounded next direction for unresolved or recurring reality, not
+the meaning of a completed response. A finished apology, correction, or coping action alone is no candidate
+and is not repair/protection. inspectReality needs one fact about a next encounter, ongoing effect/
+relationship/constraint, help, or different response. No second fact, causality, or user-proposed action
+is required. Confirm, qualify, replace, or reject are valid. A stated or accepted direction completes
+Fierce. Action operationalizes later; Fierce adds no plan.
+""".strip()
+
+
+CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT = """
+The Planner's repair/protect/change/support/responsibility categories are internal classification only.
+Translate the candidate into ordinary language about the actual person, situation, action, or consequence.
+Lead with the concrete situation that may happen again or is not yet resolved, then ask one direct question
+about what the person would want to do next or differently. If the candidate already contains one narrow
+future direction, ask for a natural confirmation or revision of that direction. If it names only an ongoing
+problem, ask the person for the next response they would prefer; do not make them discover an abstract
+category. Functional forms include “下次再遇到这种情况，你最想先做得不一样的是哪一步？” and
+“下次汇报前，你觉得先把版本核对加回来，是你最想调整的地方吗？”. Adapt the wording to the
+grounded episode; these are functions, not templates. Do not ask “现在还悬着什么”, “哪个具体部分需要回应”,
+or what needs to be protected, repaired, faced, supported, or changed. Do not ask what a completed past
+action meant, and do not assign that action a positive purpose. The question must let a short confirmation,
+qualification, replacement, or rejection answer the actual pending decision.
+""".strip()
+
+
 OUTPUT_DISCIPLINE = """
 Output discipline: return exactly the requested JSON object and nothing else. Preserve enum and field
 spelling. null leaves memory unchanged; a patch contains only newly supported or explicitly corrected
@@ -518,7 +544,8 @@ _PLANNING_STAGE_CONTRACTS: dict[str, str] = {
         "detail. Behavior is clarified only when needed to understand the process and never presumes blame. "
         "External-result episodes may be complete through preparation, submission, waiting, and receipt "
         "without a known cause or omission. Set eventDisclosureOutcome every turn. Once the chain is clear, "
-        "use readyForTenderOrCard and inviteCardConsent with one brief factual/Tender bridge. Emotion, impact, "
+        "use readyForTenderOrCard and advanceToCardConsent. For current-v5 card-mediated sessions Swift then "
+        "draws one uniformly random local card immediately; do not create or seek an in-dialogue card choice. Emotion, impact, "
         "importance, self-judgment, motive, responsibility, and reflectionFocus are optional, never gates."
     ),
     "cardConsent": (
@@ -747,10 +774,15 @@ practiceTransition=null or {"transactionID":"","narrativeReferenceID":null,"prop
 """.strip()
 
 CURRENT_V5_PRACTICE_CONTRACT = """
-For proposePractice, practiceTransition is {"proposal":{"content":"one small action",
-"basis":"one exact groundedRealityCandidates.id"},"noActionReason":null}. For resolvePractice,
-include only a revised proposal's content/basis, or noActionReason when the person declines/is not
-ready; omission means acceptance of the active proposal. Do not emit memoryUpdate.finalNarrative on
+For proposePractice, including replacement of a pending proposal, practiceTransition is
+{"proposal":{"content":"one small action","basis":"one exact groundedRealityCandidates.id"},
+"noActionReason":null}. A request to adjust, shrink, or change an assistant proposal without stating
+the replacement is not acceptance and is not yet a user revision: choose proposePractice, supply one
+materially adjusted assistant proposal, and leave it pending for the person's decision. Change the
+method, trigger, scope, or use of support rather than merely paraphrasing the active proposal. For
+resolvePractice, include a revised proposal's content/basis only when the person has actually stated
+that replacement, or noActionReason when the person declines/is not ready; omission means clear
+acceptance of the active proposal. Do not emit memoryUpdate.finalNarrative on
 resolvePractice: Swift compiles the final narrative from the committed Synthesis and resolved Action.
 Never emit kind,
 transactionID, narrativeReferenceID, proposal.id, status, or source. Swift derives the internal
@@ -1551,17 +1583,14 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "{\"meaning\":\"synthesize\",\"candidateRef\":null,\"reflectionDelta\":\"explicit synthesis\"}. "
             "Delta is nonempty for revise/synthesize and null for inspect; never use memoryUpdate.reflectionFrame here. "
             "Swift compiles these meanings into the existing operations. Natural or qualified acceptance of Tender does not by itself "
-            "complete reflection. Prefer inspectReality when any committed user evidence contains "
-            "a meaningful behavior, impact, responsibility, boundary, support, repair, protection, or change direction still worth examining. "
-            "One grounded fact suffices; two facts, causality, or a user-proposed action are not required. responseFocus asks only for "
-            "confirmation, revision, rejection, or qualification of that concrete candidate. Use synthesize only when no such part remains. "
-            "FIERCE. Use only reflectionProgressionDecision; omit semanticOperation and reflectionFrame. Keep the exact "
-            "latestAnswerContext.referenceID only as read-only context. If one clarification remains, return "
-            "{\"meaning\":\"clarifyFierce\"} plus one concrete responseFocus. A grounded/qualified direction returns "
+            "complete reflection. "
+            + CURRENT_V5_FIERCE_PURPOSE_CONTRACT
+            + " Synthesize only when no unfinished or recurring reality remains. FIERCE. Use only reflectionProgressionDecision; omit "
+            "semanticOperation and reflectionFrame; keep latestAnswerContext.referenceID read-only. clarifyFierce requires responseFocus. "
+            "A grounded direction returns "
             "{\"meaning\":\"completeFierce\",\"reflectionDelta\":\"bounded understanding\","
-            "\"fierceDirection\":\"repair|protect|change\"} and empty "
-            "responseFocus. Decline/no meaningful direction returns synthesize with an explicit delta. Grounded repair/protect/change "
-            "ends Fierce; ask no more. Swift opens Synthesis. Protection is user-authored; non-user material cannot ground Fierce or Action. "
+            "\"fierceDirection\":\"repair|protect|change\"} with empty responseFocus; decline returns synthesize with an explicit delta. "
+            "ask no more; Swift opens Synthesis. Direction labels are internal; non-user material cannot ground Fierce or Action. "
             "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed context in one revisable delta; add no "
             "interpretation or action. First Synthesis requires an explicit nonempty Planner synthesisDelta. It may preserve the accepted "
             "Tender/Fierce meaning but must express the integrated understanding rather than copy the committed reflectionDelta exactly; "
@@ -1578,9 +1607,13 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
         )
     if stage == "optionalAction":
         return (
-            "Resolve only the active small action. Preserve the user's accept, revision, or refusal without "
-            "adding a second plan. Do not provide memoryUpdate.finalNarrative. Swift atomically compiles Final Narrative "
-            "from the already committed Synthesis and the resolved action/noAction. This is one Action→Final Narrative boundary."
+            "Handle only the active small action. Clear acceptance uses resolvePractice with no proposal. A concrete "
+            "replacement authored by the person uses resolvePractice with exactly that replacement; refusal uses "
+            "noActionReason. When the person wants the suggestion adjusted but has not supplied the replacement, use "
+            "proposePractice now and generate one materially different, still-grounded proposal for confirmation. Do not "
+            "treat a request for adjustment as acceptance or as a completed user revision, and do not move to Final Narrative "
+            "until one actual proposal is accepted or concretely revised by the person. Do not provide memoryUpdate.finalNarrative; "
+            "Swift compiles it only after Action resolution."
         )
     if stage == "narrativeConfirmation":
         return (
@@ -1929,6 +1962,7 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     )
     operation = str(directive.get("semanticOperation") or "")
     reflection_mode = str(request.get("reflectionMode") or "")
+    source_stage = str(directive.get("sourceStage") or "")
     destination_stage = str(directive.get("destinationStage") or "")
     directive_memory = directive.get("memoryUpdate")
     directive_memory = directive_memory if isinstance(directive_memory, dict) else {}
@@ -2014,15 +2048,9 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "another person's reaction, emotion detail, or a combined either-or question. Do not ask a meta-conversation question."
         ),
         "advanceToCardConsent": (
-            "Use the completed episode for one short grounded bridge, then invite one random reflection card. "
-            "If an explicit broad self-critical statement exists in committed memory or this directive's "
-            "memoryUpdate, the bridge must acknowledge the specific difficulty or result and distinguish what "
-            "it establishes from that broader verdict. Preserve uncertainty: do not deny the verdict as a fact, "
-            "supply a positive opposite, praise, reassure, excuse, or infer an unreported emotion. If no broad "
-            "self-judgment exists, use only a brief factual bridge. Do not add an Event-analysis question before "
-            "or after the invitation, even if responseFocus contains one. The consent question is the only "
-            "question in the reply. The card has not been drawn: never describe or predict its image, text, "
-            "message, meaning, advice, or likely connection to the episode."
+            "This is a silent current-v5 protocol boundary. Swift immediately draws one uniformly random local "
+            "card after the completed Event; the Writer must not invite, confirm, select, describe, predict, or "
+            "interpret the card. The local card-display turn supplies the first visible image question."
         ),
         "inviteCardConsent": (
             "Clarify only a genuine ambiguity, question, or hesitation about the pending invitation. "
@@ -2146,26 +2174,20 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         ),
         "continueTenderReflection": tender_language_contract,
         "continueTenderGroundedFierceReflection": (
-            "Keep the committed Tender understanding present without explaining it again. For an opening or unresolved Fierce act, carry it into one "
-            "user-grounded Protect, Provide, Repair, or Motivate inquiry. "
+            CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT
+            + " Keep the committed Tender understanding present without explaining it again. "
             "When this directive opens Fierce from Tender, responseFocus is the exact Swift-validated groundedRealityCandidate content. "
             "When request.reflectionMode is fierce and this directive contains no new reflectionFrame, the inquiry is legally continuing: "
             "latestAnswerContext.referenceID preserves that same candidate and responseFocus identifies the one remaining clarification. "
-            "Use the latest answer and only that candidate to ask about one narrow reality-facing part; do not imply that a direction has "
-            "already formed, switch candidates, recap Tender, or expose the reference. This may be one behavior, impact, boundary, support condition, repair, protection, or possible "
-            "change; a tentative relation between two facts is optional, never required. Make the question answerable by confirming, "
-            "revising, rejecting, or qualifying that concrete part. Keep it compact, without a ‘you said/mentioned’ preface or chronology recap. Name the actual "
-            "action, condition, person, or result; do not ask the person to identify an abstract issue, "
-            "responsibility, boundary, need, behavior pattern, or change from scratch. Do not use protocol or therapy language such as "
-            "whole-person judgment, reality tension, something worth facing, or a handling approach worth revisiting. When a complete "
-            "Fierce frame is present, reflect only the direction the person has now grounded. That direction completes Fierce: do not ask "
-            "another Fierce question, request more detail, or open a second repair/protect/change direction. Use one short natural bridge that "
+            "Use the latest answer and only that candidate. Do not switch candidates, recap Tender, expose the reference, or turn a "
+            "completed past response into evidence of a positive purpose. A tentative relation between two facts is optional, never required. "
+            "Keep the question compact, without a ‘you said/mentioned’ preface or chronology recap. When a complete Fierce frame is present, "
+            "reflect only the ordinary-language future direction the person has now grounded. That direction completes Fierce: do not ask "
+            "another Fierce question, request more detail, or open a second direction. Use one short natural bridge that "
             "lets the next turn put the existing reflection together, while leaving room for a spontaneous correction. Do not quote, emphasize, paraphrase, or otherwise "
             "replay the person's self-critical judgment, replay the Tender distinction, or repackage either through the Card "
-            "metaphor. Protection names only a direction the person has explicitly grounded; never assign it as a beneficial "
-            "function or positive intention of the difficulty or painful experience. Use ordinary reality language and preserve care "
-            "and agency together. Do not state the answer or assign responsibility. Do not produce a plan, step, menu, or "
-            "solution; Action comes later and owns what to do next. Card material, "
+            "metaphor. Do not state the answer or assign responsibility. Do not produce timing, a checklist, a menu, or a multi-step "
+            "solution; Action comes later and operationalizes the confirmed direction. Card material, "
             "referenceGuidance, and tracking remain background; model inference cannot become need, responsibility, or action evidence."
         ),
         "synthesizeDirectReflection": (
@@ -2223,11 +2245,18 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         operation,
         "Follow the authorized operation without adding a second conversational task.",
     )
+    if operation == "proposePractice" and source_stage == "optionalAction":
+        operation_contract = operation_contract + " " + (
+            "This turn replaces a pending assistant suggestion because the person asked for an adjustment without "
+            "supplying the replacement. Present the newly authorized proposal as the adjusted suggestion, not as an "
+            "accepted action or Final Narrative. It must materially change the method, trigger, scope, or use of support; "
+            "do not merely reword the previous proposal, add more explanation to it, or repeat the Synthesis. End with one "
+            "natural invitation to accept, further revise, or decline this actual replacement."
+        )
     if operation == "clarifyEvent" and destination_stage == "cardConsent":
         operation_contract = (
-            "The current Event act is complete and Swift has projected Card Consent for the next turn. Use at most one "
-            "short factual bridge, then invite one random reflection card. Do not ask another Event question, add a "
-            "Tender distinction, explain a cause, or preview Card content. The consent question is the only question."
+            "The current Event act is complete and Swift immediately performs the required local random draw. "
+            "This semantic transaction is silent; do not write a bridge, question, confirmation, or Card preview."
         )
     elif operation == "continueCardObservation" and next_purpose == "cardDevelopment":
         operation_contract = operation_contracts["continueCardDevelopment"]
@@ -2235,8 +2264,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         operation_contract = operation_contracts["inviteRealityConnection"]
     elif operation == "continueTenderGroundedFierceReflection" and next_purpose == "synthesisReflection":
         operation_contract = operation_contract + " " + (
-            "The person has now grounded one repair, protect, or change direction and Swift has closed Fierce. State only that committed "
-            "reality-facing direction in ordinary language, then use one short natural transition toward putting the existing understanding "
+            "The person has now said how they want to meet the unresolved or recurring reality and Swift has closed Fierce. State only "
+            "that user-grounded future direction in ordinary language, then use one short natural transition toward putting the existing understanding "
             "together. Do not ask another Fierce question, request a reason, implication, detail, confirmation, or action, and do not create "
             "the Synthesis yourself. Leave room only for a spontaneous correction; never expose route names."
         )
@@ -2248,7 +2277,7 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     elif reflection_realization == "bridgeToSynthesis":
         operation_contract = (
             "The latest answer has completed Fierce and the post-turn phase is Synthesis. State the "
-            "committed repair, protection, or change direction once in ordinary language, then add one "
+            "person's committed way of meeting the unresolved or recurring reality once in ordinary language, then add one "
             "short declarative bridge toward putting the existing understanding together. Ask no question, "
             "seek no reason or confirmation, do not reconnect the direction to earlier material, and do not "
             "create Synthesis or Action content. Ignore any stale responseFocus or earlier Fierce task."

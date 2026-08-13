@@ -1335,7 +1335,7 @@ enum CurrentV5CapabilitySet {
         case .optionalAction:
             operations = session.semanticMemory.practiceTransition?.proposal == nil
                 ? [.proposePractice]
-                : [.resolvePractice]
+                : [.proposePractice, .resolvePractice]
         case .complete:
             operations = [.completeConversation]
         case .safetySupport:
@@ -1753,7 +1753,7 @@ enum CurrentV5RemoteContractError: Error {
 }
 
 enum CurrentV5ServerPrompt {
-    static let version = "turn-v5-core-server-v100"
+    static let version = "turn-v5-core-server-v100-fierce-action1-mandatory-card1"
 }
 
 private struct CurrentV5PlannerPayload: Encodable {
@@ -3273,12 +3273,15 @@ private struct CurrentV5CanonicalProjector {
                 )
             }
             if isEventDisclosureCoreComplete(eventState) {
-                // The Planner completed the current Event act. The operation remains Event;
-                // only the post-turn workflow enters Card Consent.
+                // The Planner completed the current Event act. Card-mediated current-v5 sessions
+                // expose one uniformly random local card as the next protocol stimulus; there is
+                // no in-dialogue opt-out gate that the model can repeat or misread. `cardConsent`
+                // remains the transient pre-display stage so saved sessions and the existing local
+                // card renderer keep one compatible draw transaction.
                 return make(
                     stage: .cardConsent,
-                    intent: .inviteCardConsent,
-                    next: confirmation(.cardConsent)
+                    intent: .acknowledgeCardConsent,
+                    action: .init(kind: .drawRandomCard)
                 )
             }
             guard !focus.isEmpty else {
@@ -3316,10 +3319,12 @@ private struct CurrentV5CanonicalProjector {
                     failure: .eventCoreIncomplete
                 )
             }
+            // The operation name is retained as a wire-compatibility alias. Its current-v5
+            // executable meaning is a mandatory local random draw, not a visible consent request.
             return make(
                 stage: .cardConsent,
-                intent: .inviteCardConsent,
-                next: confirmation(.cardConsent)
+                intent: .acknowledgeCardConsent,
+                action: .init(kind: .drawRandomCard)
             )
 
         case .inviteCardConsent:
@@ -4027,18 +4032,32 @@ private struct CurrentV5CanonicalProjector {
                     failure: .practiceEvidenceInvalid
                 )
             }
+            let resolvedPracticeConfirmation: TurnResolvedConfirmation?
+            if sourceStage == .narrativeConfirmation {
+                resolvedPracticeConfirmation = .init(
+                    target: .finalNarrative,
+                    decision: .accepted,
+                    referenceID: transition.narrativeReferenceID
+                )
+            } else if sourceStage == .optionalAction,
+                      let active = session.semanticMemory.practiceTransition?.proposal {
+                // A request to adjust an assistant proposal resolves only that pending
+                // proposal. The replacement remains pending so the person can decide on the
+                // actual revised action instead of being taken straight to Final Narrative.
+                resolvedPracticeConfirmation = .init(
+                    target: .practice,
+                    decision: .revised,
+                    referenceID: active.id
+                )
+            } else {
+                resolvedPracticeConfirmation = nil
+            }
             return make(
                 stage: .optionalAction,
                 intent: .suggestPractice,
                 update: memoryUpdate,
                 next: confirmation(.practice, referenceID: transition.transactionID),
-                resolved: sourceStage == .narrativeConfirmation
-                    ? .init(
-                        target: .finalNarrative,
-                        decision: .accepted,
-                        referenceID: transition.narrativeReferenceID
-                    )
-                    : nil
+                resolved: resolvedPracticeConfirmation
             )
 
         case .resolvePractice:

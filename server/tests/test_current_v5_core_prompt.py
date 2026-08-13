@@ -1064,7 +1064,10 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             / "BeyondComfortTests/Fixtures/current-v5-planner-output-v40.json"
         )
         validate_current_v5_planner_contract(fixture_path.read_text(encoding="utf-8"))
-        self.assertEqual(CURRENT_V5_CORE_PROMPT_VERSION, "turn-v5-core-server-v100")
+        self.assertEqual(
+            CURRENT_V5_CORE_PROMPT_VERSION,
+            "turn-v5-core-server-v100-fierce-action1-mandatory-card1",
+        )
 
     def test_initial_synthesis_requires_explicit_non_replayed_delta(self) -> None:
         request = self.request()
@@ -1928,15 +1931,17 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Do not ask where the judgment is weakest", planner_prompt)
         self.assertIn("what the distinction means", planner_prompt)
         self.assertIn("Continue only to repair explicit rejection", planner_prompt)
-        self.assertIn("Prefer inspectReality when any committed user evidence", planner_prompt)
-        self.assertIn("One grounded fact suffices", planner_prompt)
-        self.assertIn("two facts, causality, or a user-proposed action are not required", planner_prompt)
-        self.assertIn("confirmation, revision, rejection, or qualification", planner_prompt)
-        self.assertIn("Use synthesize only when no such part remains", planner_prompt)
+        self.assertIn("Fierce establishes one user-grounded next direction", planner_prompt)
+        self.assertIn("A finished apology, correction, or coping action", planner_prompt)
+        self.assertIn("alone is no candidate", planner_prompt)
+        self.assertIn("inspectReality needs one fact", planner_prompt)
+        self.assertIn("No second fact, causality, or user-proposed action", planner_prompt)
+        self.assertIn("Confirm, qualify, replace, or reject", planner_prompt)
+        self.assertIn("Synthesize only when no unfinished or recurring reality remains", planner_prompt)
         self.assertIn("non-user material cannot ground Fierce or Action", planner_prompt)
         self.assertIn("Use only reflectionProgressionDecision", planner_prompt)
         self.assertIn("latestAnswerContext.referenceID", planner_prompt)
-        self.assertIn('"meaning":"clarifyFierce"', planner_prompt)
+        self.assertIn("clarifyFierce requires responseFocus", planner_prompt)
         self.assertIn('"meaning":"completeFierce"', planner_prompt)
         self.assertNotIn("acknowledgeExperience", planner_prompt)
         self.assertNotIn("connectCommonHumanity", planner_prompt)
@@ -2014,15 +2019,15 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("emotional improvement is not required", planner_prompt)
         self.assertIn("Do not ask where the judgment is weakest", planner_prompt)
         self.assertIn("Continue only to repair explicit rejection", planner_prompt)
-        self.assertIn("One grounded fact suffices", planner_prompt)
-        self.assertIn("two facts, causality, or a user-proposed action are not required", planner_prompt)
-        self.assertIn("confirmation, revision, rejection, or qualification", planner_prompt)
-        self.assertIn("concrete candidate", planner_prompt)
+        self.assertIn("inspectReality needs one fact", planner_prompt)
+        self.assertIn("No second fact, causality, or user-proposed action", planner_prompt)
+        self.assertIn("Confirm, qualify, replace, or reject", planner_prompt)
+        self.assertIn("candidate", planner_prompt)
         self.assertIn("reflectionDelta\":null", planner_prompt)
-        self.assertIn("A grounded/qualified direction returns", planner_prompt)
+        self.assertIn("A grounded direction returns", planner_prompt)
         self.assertIn("Use only reflectionProgressionDecision", planner_prompt)
-        self.assertIn("Protection is user-authored", planner_prompt)
-        self.assertIn("Grounded repair/protect/change ends Fierce", planner_prompt)
+        self.assertIn("Direction labels are internal", planner_prompt)
+        self.assertIn("A stated or accepted direction completes", planner_prompt)
         self.assertIn("ask no more", planner_prompt)
         self.assertIn("Swift opens Synthesis", planner_prompt)
         self.assertIn("Swift recovers the active candidate", planner_prompt)
@@ -2069,7 +2074,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("State the committed repair, protection, or change direction", writer_prompt)
+        self.assertIn("person's committed way of meeting the unresolved or recurring reality", writer_prompt)
         self.assertIn("do not create Synthesis or Action content", writer_prompt)
         self.assertIn("post-turn phase is Synthesis", writer_prompt)
         self.assertIn("Ask no question", writer_prompt)
@@ -2096,18 +2101,21 @@ class CurrentV5CorePromptTests(unittest.TestCase):
                 temperature=0.3,
             )
         ).system
-        self.assertIn("one user-grounded Protect, Provide, Repair, or Motivate inquiry", opening_writer_prompt)
+        self.assertIn("repair/protect/change/support/responsibility categories are internal classification only", opening_writer_prompt)
+        self.assertIn("what the person would want to do next or differently", opening_writer_prompt)
+        self.assertIn("下次再遇到这种情况，你最想先做得不一样的是哪一步？", opening_writer_prompt)
+        self.assertIn("下次汇报前，你觉得先把版本核对加回来", opening_writer_prompt)
+        self.assertIn("Do not ask “现在还悬着什么”", opening_writer_prompt)
+        self.assertIn("“哪个具体部分需要回应”", opening_writer_prompt)
+        self.assertIn("do not assign that action a positive purpose", opening_writer_prompt)
         self.assertIn("Keep the committed Tender understanding present", opening_writer_prompt)
         self.assertIn("responseFocus is the exact Swift-validated groundedRealityCandidate content", opening_writer_prompt)
-        self.assertIn("Use the latest answer and only that candidate to ask about one narrow reality-facing part", opening_writer_prompt)
-        self.assertIn("a tentative relation between two facts is optional, never required", opening_writer_prompt)
-        self.assertIn("confirming, revising, rejecting, or qualifying", opening_writer_prompt)
+        self.assertIn("Use the latest answer and only that candidate", opening_writer_prompt)
+        self.assertIn("A tentative relation between two facts is optional, never required", opening_writer_prompt)
+        self.assertIn("qualification, replacement, or rejection", opening_writer_prompt)
         self.assertIn("without a ‘you said/mentioned’ preface or chronology recap", opening_writer_prompt)
-        self.assertIn("Name the actual action, condition, person, or result", opening_writer_prompt)
-        self.assertIn("do not ask the person to identify an abstract issue", opening_writer_prompt)
-        self.assertIn("whole-person judgment, reality tension, something worth facing", opening_writer_prompt)
-        self.assertIn("Do not state the answer", opening_writer_prompt)
-        self.assertIn("Action comes later", opening_writer_prompt)
+        self.assertIn("actual person, situation, action, or consequence", opening_writer_prompt)
+        self.assertIn("Action comes later and operationalizes the confirmed direction", opening_writer_prompt)
         self.assertIn("the inquiry is legally continuing", opening_writer_prompt)
         self.assertIn("latestAnswerContext.referenceID preserves that same candidate", opening_writer_prompt)
 
@@ -2766,17 +2774,17 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn('"latestAnswerContext":', prompt.user)
         self.assertNotIn('"nextPrompt":', prompt.user)
 
-    def test_card_consent_writer_cannot_preview_the_random_card(self) -> None:
+    def test_mandatory_local_card_draw_is_silent_and_cannot_preview_the_card(self) -> None:
         request = self.request()
         request["protocolStage"] = "contextualDisclosure"
         request["allowedSemanticOperations"] = ["advanceToCardConsent"]
         directive = {
             "semanticOperation": "advanceToCardConsent",
-            "responseFocus": "简短承接并邀请随机反思卡",
+            "responseFocus": None,
             "sourceStage": "contextualDisclosure",
             "destinationStage": "cardConsent",
-            "nextPrompt": {"kind": "confirmationRequest", "target": "cardConsent"},
-            "localAction": "none",
+            "nextPrompt": {"kind": "none"},
+            "localAction": "drawRandomCard",
             "memoryUpdate": {},
             "rewriteReason": None,
         }
@@ -2790,19 +2798,15 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("The card has not been drawn", prompt)
-        self.assertIn("never describe or predict its image, text, message, meaning, advice", prompt)
-        self.assertIn("explicit broad self-critical statement", prompt)
-        self.assertIn("distinguish what it establishes from that broader verdict", prompt)
-        self.assertIn("do not deny the verdict as a fact", prompt)
-        self.assertIn("infer an unreported emotion", prompt)
+        self.assertIn("silent current-v5 protocol boundary", prompt)
+        self.assertIn("immediately draws one uniformly random local card", prompt)
+        self.assertIn("must not invite, confirm, select, describe, predict, or interpret", prompt)
         self.assertIn("responseFocus is a", prompt)
         self.assertIn("goal, not evidence", prompt)
-        self.assertIn("Event-analysis question before or after the invitation", prompt)
-        self.assertIn("The consent question is the only question", prompt)
         self.assertIn("operation contract outranks it", prompt)
+        self.assertNotIn("End with exactly one natural, easy-to-answer question", prompt)
 
-    def test_completed_clarify_event_turn_realizes_card_consent_not_event_exploration(self) -> None:
+    def test_completed_clarify_event_turn_realizes_silent_mandatory_card_draw(self) -> None:
         request = self.request()
         request["protocolStage"] = "contextualDisclosure"
         request["allowedSemanticOperations"] = ["clarifyEvent"]
@@ -2811,11 +2815,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "responseFocus": None,
             "sourceStage": "contextualDisclosure",
             "destinationStage": "cardConsent",
-            "nextPrompt": {
-                "kind": "confirmationRequest",
-                "target": "cardConsent",
-            },
-            "localAction": "none",
+            "nextPrompt": {"kind": "none"},
+            "localAction": "drawRandomCard",
             "memoryUpdate": {
                 "episodeStructure": {
                     "concreteFacts": ["同事临时交来额外工作"],
@@ -2836,10 +2837,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Swift has projected Card Consent for the next turn", prompt)
-        self.assertIn("invite one random reflection card", prompt)
-        self.assertIn("Do not ask another Event question", prompt)
-        self.assertIn("The consent question is the only question", prompt)
+        self.assertIn("Swift immediately performs the required local random draw", prompt)
+        self.assertIn("semantic transaction is silent", prompt)
+        self.assertIn("do not write a bridge, question, confirmation, or Card preview", prompt)
 
     def test_user_authored_connection_enters_exploration_without_tender_frame(self) -> None:
         request = self.request()
@@ -3170,7 +3170,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertIn("Use only canonical link, Tender", planner_prompt)
         self.assertIn("grounded/declined Fierce", planner_prompt)
-        self.assertIn("Use synthesize only when no such part remains", planner_prompt)
+        self.assertIn("Synthesize only when no unfinished or recurring reality remains", planner_prompt)
         self.assertIn("confirmed context in one revisable delta", planner_prompt)
         self.assertIn("add no interpretation or action", planner_prompt)
 
@@ -3268,6 +3268,90 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Prefer the episode's unresolved reality problem", prompt)
         self.assertIn("not writing, repeating, or rehearsing a kinder sentence", prompt)
         self.assertIn("missing a user-authored method is not a reason for noAction", prompt)
+
+    def test_optional_action_adjustment_requests_a_replacement_before_final(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "optionalAction"
+        request["allowedSemanticOperations"] = ["proposePractice", "resolvePractice"]
+        request["semanticMemory"] = {
+            "practiceTransition": {
+                "transactionID": "practice-old",
+                "proposal": {
+                    "id": "practice-old",
+                    "kind": "change",
+                    "content": "先写下一句当前卡点",
+                    "basis": "episodeStructure.eventProcess.0",
+                    "status": "pendingConfirmation",
+                    "source": "assistantProposed",
+                },
+            }
+        }
+        request["recentMessages"] = [
+            {"role": "assistant", "content": "可以先写下一句当前卡点。这个做法可以吗？"},
+            {"role": "user", "content": "我觉得可以调整一下"},
+        ]
+        planner_prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=700,
+                temperature=0.1,
+            )
+        ).system
+
+        self.assertIn("is not acceptance and is not yet a user revision", planner_prompt)
+        self.assertIn("choose proposePractice", planner_prompt)
+        self.assertIn("materially adjusted assistant proposal", planner_prompt)
+        self.assertIn("do not move to Final Narrative", planner_prompt)
+
+        directive = {
+            "semanticOperation": "proposePractice",
+            "responseFocus": "呈现调整后的行动建议",
+            "sourceStage": "optionalAction",
+            "destinationStage": "optionalAction",
+            "nextPrompt": {
+                "kind": "confirmationRequest",
+                "target": "practice",
+                "referenceID": "practice-new",
+            },
+            "localAction": "none",
+            "memoryUpdate": {
+                "practiceTransition": {
+                    "transactionID": "practice-new",
+                    "narrativeReferenceID": None,
+                    "proposal": {
+                        "id": "practice-new",
+                        "kind": "change",
+                        "content": "连续两次修改仍没变清楚时，先只保留一个待验证的假设",
+                        "basis": "episodeStructure.eventProcess.0",
+                        "status": "pendingConfirmation",
+                        "source": "assistantProposed",
+                    },
+                    "noActionReason": None,
+                }
+            },
+            "resolvedConfirmation": {
+                "target": "practice",
+                "decision": "revised",
+                "referenceID": "practice-old",
+            },
+            "rewriteReason": None,
+        }
+        writer_prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="writer",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request, "directive": directive},
+                maxTokens=500,
+                temperature=0.3,
+            )
+        ).system
+
+        self.assertIn("replaces a pending assistant suggestion", writer_prompt)
+        self.assertIn("Present the newly authorized proposal as the adjusted suggestion", writer_prompt)
+        self.assertIn("do not merely reword the previous proposal", writer_prompt)
+        self.assertIn("accept, further revise, or decline", writer_prompt)
 
     def test_practice_acceptance_never_repeats_the_proposal(self) -> None:
         request = self.request()
