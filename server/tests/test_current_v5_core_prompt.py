@@ -14,6 +14,7 @@ from app.prompt_registry import (
     CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE,
     CURRENT_V5_FIERCE_PURPOSE_CONTRACT,
     CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT,
+    CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT,
     CURRENT_V5_PLANNER_JSON_SHAPE,
     CURRENT_V5_PROPOSE_PRACTICE_CONTRACT,
     CURRENT_V5_REALITY_CONNECTION_CONTRACT,
@@ -2164,6 +2165,126 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("rather than copy the committed reflectionDelta exactly", prompt)
         self.assertIn("Swift never fills it", prompt)
         self.assertIn("explicit synthesis", prompt)
+
+    def test_post_fierce_first_synthesis_has_one_atomic_progression_contract(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "synthesis"
+        request["allowedSemanticOperations"] = ["synthesizeDirectReflection"]
+        request["semanticMemory"] = {
+            "reflectionFrame": {
+                "mode": "fierce",
+                "action": "identifyProtectionDirection",
+                "evidenceBasis": [
+                    {"source": "episode", "content": "自己的分析被同事直接拿去汇报"},
+                    {"source": "latestUserAnswer", "content": "劳动没有被尊重"},
+                ],
+                "dimensions": [],
+                "reflectionDelta": "成果归属和劳动被尊重这件事不能继续被忽视",
+                "fierceEvidence": {
+                    "behavior": "",
+                    "impact": "",
+                    "direction": "protect",
+                },
+            }
+        }
+        request["recentMessages"] = [
+            {
+                "id": "00000000-0000-0000-0000-000000000002",
+                "role": "user",
+                "content": "是的",
+                "replyToMessageID": None,
+            }
+        ]
+
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn(CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT, prompt)
+        self.assertIn("At the first Synthesis boundary", prompt)
+        self.assertIn("reflectionProgressionDecision is required", prompt)
+        self.assertIn('"meaning":"synthesize"', prompt)
+        self.assertIn('"reflectionDelta":"<explicit compact synthesis>"', prompt)
+        self.assertIn(
+            "do not treat the latest acceptance of Fierce as acceptance",
+            prompt,
+        )
+        self.assertNotIn(
+            "Natural acceptance/readiness uses semanticOperation=proposePractice",
+            prompt,
+        )
+
+    def test_post_fierce_synthesis_delta_correction_repairs_same_atomic_decision(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "synthesis"
+        request["allowedSemanticOperations"] = ["synthesizeDirectReflection"]
+        request["semanticMemory"] = {
+            "reflectionFrame": {
+                "mode": "fierce",
+                "action": "identifyProtectionDirection",
+                "evidenceBasis": [
+                    {"source": "episode", "content": "自己的分析被同事直接拿去汇报"}
+                ],
+                "dimensions": [],
+                "reflectionDelta": "成果归属和劳动被尊重这件事不能继续被忽视",
+                "fierceEvidence": {
+                    "behavior": "",
+                    "impact": "",
+                    "direction": "protect",
+                },
+            }
+        }
+        request["correction"] = {
+            "rejectedOperation": "synthesizeDirectReflection",
+            "rejectedDraft": {
+                "semanticOperation": None,
+                "reflectionProgressionDecision": {
+                    "meaning": "synthesize",
+                    "candidateRef": None,
+                    "reflectionDelta": None,
+                    "fierceDirection": None,
+                },
+                "semanticEvidencePatch": {"memoryUpdate": {}},
+                "responseFocus": "",
+            },
+            "reason": "projectionInvalid",
+            "payloadFailure": None,
+            "projectionFailure": "synthesisDeltaMissing",
+            "issue": {
+                "fieldPath": "reflectionProgressionDecision.reflectionDelta",
+                "violation": "missingRequiredValue",
+                "requiredConditions": ["provideSynthesisDelta"],
+            },
+            "recoveryPolicy": "repairSameOperation",
+        }
+
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn("REQUIRED INITIAL SYNTHESIS REPAIR", prompt)
+        self.assertIn("reflectionProgressionDecision with meaning=synthesize", prompt)
+        self.assertIn("semanticOperation must be null", prompt)
+        self.assertIn("memoryUpdate must be empty", prompt)
+        self.assertIn("no Synthesis has been committed yet", prompt)
+        self.assertNotIn(
+            "REQUIRED SYNTHESIS REPAIR: keep semanticOperation=synthesizeDirectReflection",
+            prompt,
+        )
 
     def test_writer_receives_swift_directive_and_only_returns_reply(self) -> None:
         directive = {

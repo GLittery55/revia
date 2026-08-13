@@ -931,6 +931,27 @@ Complete structural shape — placeholders are not output wording:
 "fierceDirection":"change"},"semanticEvidencePatch":{"memoryUpdate":{}},"responseFocus":""}
 '''.strip()
 
+
+CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT = r'''
+INITIAL SYNTHESIS TRANSACTION
+When reflectionMode=synthesis but the committed reflectionFrame.action is not
+synthesizeUnderstanding, Fierce has completed and Swift is waiting for the first explicit
+Synthesis. This is not an already-committed Synthesis disposition turn. Do not choose
+proposePractice and do not treat the latest acceptance of Fierce as acceptance of a Synthesis that
+does not yet exist.
+
+Choose exactly one reflectionProgressionDecision with meaning=synthesize. Its reflectionDelta is
+the nonempty compact Synthesis for this turn. candidateRef and fierceDirection are null/absent;
+semanticOperation is null; semanticEvidencePatch.memoryUpdate is empty; responseFocus is empty.
+Never defer the Synthesis to the Writer or put it only in responseFocus. Never return a null or
+empty reflectionDelta and never reopen Tender or Fierce.
+
+Initial Synthesis structural shape — placeholders are not output wording:
+{"semanticOperation":null,"reflectionProgressionDecision":{"meaning":"synthesize",
+"candidateRef":null,"reflectionDelta":"<explicit compact synthesis>","fierceDirection":null},
+"semanticEvidencePatch":{"memoryUpdate":{}},"responseFocus":""}
+'''.strip()
+
 CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE = (
     'semanticEvidencePatch.contextualTrackingDecision={"metricEligibility":['
     '{"profileID":"exact supplied profileID","metric":"exact supplied metric",'
@@ -1682,6 +1703,22 @@ OUTPUT
     )
 
 
+def _current_v5_synthesis_state(request: dict[str, Any]) -> str:
+    if str(request.get("protocolStage") or "") != "directReflection":
+        return "outside"
+    if str(request.get("reflectionMode") or "") != "synthesis":
+        return "outside"
+    semantic_memory = request.get("semanticMemory")
+    semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+    frame = semantic_memory.get("reflectionFrame")
+    frame = frame if isinstance(frame, dict) else {}
+    return (
+        "committed"
+        if str(frame.get("action") or "") == "synthesizeUnderstanding"
+        else "initial"
+    )
+
+
 def _current_v5_stage_contract(request: dict[str, Any]) -> str:
     stage = str(request.get("protocolStage") or "")
     if stage == "contextualDisclosure":
@@ -1775,6 +1812,31 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
         allowed_operations = request.get("allowedSemanticOperations")
         allowed_operations = (
             allowed_operations if isinstance(allowed_operations, list) else []
+        )
+        synthesis_state = _current_v5_synthesis_state(request)
+        synthesis_contract = (
+            "SYNTHESIS. Fierce has completed, but no Synthesis is committed yet. Produce the first "
+            "Synthesis now as one atomic meaning=synthesize progression with a nonempty reflectionDelta; "
+            "semanticOperation, candidateRef, and fierceDirection are null, memoryUpdate is empty, and "
+            "responseFocus is empty. Do not choose proposePractice or treat acceptance of Fierce as "
+            "acceptance of a nonexistent Synthesis. "
+            if synthesis_state == "initial"
+            else (
+                "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed "
+                "context in one revisable delta; add no interpretation or action. A committed Synthesis "
+                "changes only for explicit correction/qualification. Natural acceptance, acknowledgment, "
+                "or readiness chooses proposePractice immediately; require no action wording or second "
+                "confirmation. "
+                if synthesis_state == "committed"
+                else (
+                    "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed "
+                    "context in one revisable delta. When selected from Tender or active Fierce, provide "
+                    "one explicit nonempty Planner synthesisDelta in the same progression decision. It may "
+                    "preserve the accepted Tender/Fierce meaning but must express the integrated understanding "
+                    "rather than copy the committed reflectionDelta exactly; Swift never fills it; add no "
+                    "interpretation or action and do not defer its meaning to the Writer. "
+                )
+            )
         )
         tender_purpose_contract = (
             " " + CURRENT_V5_TENDER_PURPOSE_CONTRACT
@@ -1882,12 +1944,8 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "\"fierceDirection\":\"repair|protect|change\"} with empty responseFocus; decline returns synthesize with an explicit delta. "
             "The delta states the reality, why it matters, and what kind of caring response it calls for—not how to implement it. "
             "Then ask no more; Swift opens Synthesis. Direction labels are internal; non-user material cannot ground Fierce or Action. "
-            "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed context in one revisable delta; add no "
-            "interpretation or action. First Synthesis requires an explicit nonempty Planner synthesisDelta. It may preserve the accepted "
-            "Tender/Fierce meaning but must express the integrated understanding rather than copy the committed reflectionDelta exactly; "
-            "Swift never fills it. A committed Synthesis changes only for explicit correction/qualification. Natural acceptance, "
-            "acknowledgment, or readiness chooses proposePractice immediately; require no action wording or second confirmation. "
-            "PRACTICE. Propose one small executable reality experiment grounded by one exact groundedRealityCandidates.id as basis; "
+            + synthesis_contract
+            + "PRACTICE. Propose one small executable reality experiment grounded by one exact groundedRealityCandidates.id as basis; "
             "apply the operation-specific grounding contract when Action is allowed. noAction requires refusal or no responsible "
             "concrete step. resolvePractice supplies only "
             "acceptance/revision/decline; Swift compiles Final Narrative from committed Synthesis and resolved Action and owns protocol metadata. "
@@ -1942,16 +2000,9 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             rejected_progression if isinstance(rejected_progression, dict) else {}
         )
         rejected_progression_meaning = str(rejected_progression.get("meaning") or "")
-        semantic_memory = request.get("semanticMemory")
-        semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
-        committed_reflection = semantic_memory.get("reflectionFrame")
-        committed_reflection = (
-            committed_reflection if isinstance(committed_reflection, dict) else {}
-        )
-        has_committed_synthesis = (
-            str(request.get("reflectionMode") or "") == "synthesis"
-            and str(committed_reflection.get("action") or "") == "synthesizeUnderstanding"
-        )
+        synthesis_state = _current_v5_synthesis_state(request)
+        has_committed_synthesis = synthesis_state == "committed"
+        needs_initial_synthesis = synthesis_state == "initial"
         exact_issue_repair = ""
         if (
             str(request.get("reflectionMode") or "") == "tender"
@@ -2025,6 +2076,21 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             "synthesisEvidenceInvalid",
             "unexpectedFierceEvidence",
         }
+        if (
+            not exact_issue_repair
+            and rejected_operation == "synthesizeDirectReflection"
+            and projection_failure in synthesis_repair_failures
+            and needs_initial_synthesis
+        ):
+            exact_issue_repair = (
+                " REQUIRED INITIAL SYNTHESIS REPAIR: preserve the first Synthesis decision and return "
+                "exactly one reflectionProgressionDecision with meaning=synthesize, a nonempty "
+                "reflectionDelta containing the current compact Synthesis, candidateRef=null, and "
+                "fierceDirection=null. semanticOperation must be null, semanticEvidencePatch.memoryUpdate "
+                "must be empty, and responseFocus must be empty. Do not put the Synthesis in "
+                "memoryUpdate.reflectionFrame or responseFocus, do not reopen Fierce, and do not choose "
+                "proposePractice because no Synthesis has been committed yet."
+            )
         if (
             not exact_issue_repair
             and rejected_operation == "synthesizeDirectReflection"
@@ -2148,6 +2214,13 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         if stage == "directReflection" and reflection_mode == "fierce"
         else ""
     )
+    synthesis_state = _current_v5_synthesis_state(request)
+    initial_synthesis_contract = (
+        "\n" + CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT
+        if synthesis_state == "initial"
+        and "synthesizeDirectReflection" in allowed
+        else ""
+    )
     uses_tender_progression = (
         stage == "directReflection"
         and reflection_mode == "tender"
@@ -2158,12 +2231,21 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         and reflection_mode == "fierce"
         and isinstance(semantic_memory.get("reflectionFrame"), dict)
     )
-    uses_synthesis_progression = (
+    uses_initial_synthesis_progression = (
         stage == "directReflection"
-        and reflection_mode == "synthesis"
+        and synthesis_state == "initial"
         and "synthesizeDirectReflection" in allowed
     )
-    uses_reflection_progression = uses_tender_progression or uses_fierce_progression
+    uses_committed_synthesis_progression = (
+        stage == "directReflection"
+        and synthesis_state == "committed"
+        and "synthesizeDirectReflection" in allowed
+    )
+    uses_reflection_progression = (
+        uses_tender_progression
+        or uses_fierce_progression
+        or uses_initial_synthesis_progression
+    )
     authority_contract = (
         "At this committed Tender boundary, choose exactly one reflectionProgressionDecision from "
         "reviseTender, inspectReality, or synthesize and omit semanticOperation. Swift compiles that decision into one allowed operation."
@@ -2173,11 +2255,17 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             "clarifyFierce, completeFierce, or synthesize and omit semanticOperation. Swift compiles that decision into the existing operation."
             if uses_fierce_progression
             else (
-                "At committed Synthesis, an explicit correction or qualification uses "
-                "reflectionProgressionDecision={\"meaning\":\"synthesize\",\"reflectionDelta\":\"materially revised synthesis\"} "
-                "and omits semanticOperation. Natural acceptance/readiness uses semanticOperation=proposePractice and no progression decision."
-                if uses_synthesis_progression
-                else "Choose one allowed current act in semanticOperation."
+                "At the first Synthesis boundary, choose exactly one reflectionProgressionDecision "
+                "with meaning=synthesize and a nonempty reflectionDelta; omit semanticOperation. Swift "
+                "compiles that atomic decision into the first committed Synthesis."
+                if uses_initial_synthesis_progression
+                else (
+                    "At committed Synthesis, an explicit correction or qualification uses "
+                    "reflectionProgressionDecision={\"meaning\":\"synthesize\",\"reflectionDelta\":\"materially revised synthesis\"} "
+                    "and omits semanticOperation. Natural acceptance/readiness uses semanticOperation=proposePractice and no progression decision."
+                    if uses_committed_synthesis_progression
+                    else "Choose one allowed current act in semanticOperation."
+                )
             )
         )
     )
@@ -2188,16 +2276,28 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         else (
             "For a Synthesis correction, reflectionProgressionDecision is required and semanticOperation is null; "
             "for accepted Synthesis, semanticOperation=proposePractice and reflectionProgressionDecision is null."
-            if uses_synthesis_progression
+            if uses_committed_synthesis_progression
             else "semanticOperation is required and reflectionProgressionDecision is null."
         )
     )
     output_reflection_delta_contract = (
-        "At committed Tender or active Fierce progression, all progression meaning belongs only to "
-        "reflectionProgressionDecision; do not also emit semanticEvidencePatch.memoryUpdate.reflectionFrame. "
-        "responseFocus is Writer guidance only for reviseTender or clarifyFierce, and must be empty for completeFierce."
-        if uses_reflection_progression or uses_synthesis_progression
-        else ""
+        "At the first Synthesis boundary, all meaning belongs only to "
+        "reflectionProgressionDecision.reflectionDelta; do not emit "
+        "semanticEvidencePatch.memoryUpdate.reflectionFrame, and keep responseFocus empty."
+        if uses_initial_synthesis_progression
+        else (
+            "At committed Tender or active Fierce progression, all progression meaning belongs only to "
+            "reflectionProgressionDecision; do not also emit semanticEvidencePatch.memoryUpdate.reflectionFrame. "
+            "responseFocus is Writer guidance only for reviseTender or clarifyFierce, and must be empty for completeFierce."
+            if uses_tender_progression or uses_fierce_progression
+            else (
+                "At committed Synthesis, an explicit revision belongs only to "
+                "reflectionProgressionDecision.reflectionDelta; do not also emit "
+                "semanticEvidencePatch.memoryUpdate.reflectionFrame."
+                if uses_committed_synthesis_progression
+                else ""
+            )
+        )
     )
     system = f"""
 CURRENT_V5_CORE_PLANNER
@@ -2224,7 +2324,7 @@ append that correction and never reuse it as evidence.
 
 STAGE
 {_current_v5_stage_contract(request)}
-{reflection_contract}{practice_contract}{card_connection_contract}{tender_reflection_contract}{active_fierce_contract}
+{reflection_contract}{practice_contract}{card_connection_contract}{tender_reflection_contract}{active_fierce_contract}{initial_synthesis_contract}
 
 OUTPUT
 Return exactly one JSON object shaped as:
