@@ -7,6 +7,7 @@ from typing import get_args
 
 from app.prompt_registry import (
     CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE,
+    CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT,
     CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE,
     CURRENT_V5_CORE_PROMPT_VERSION,
     CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE,
@@ -2677,10 +2678,14 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
         self.assertIn("repair/protect/change/support/responsibility categories are internal classification only", opening_writer_prompt)
-        self.assertIn("what the person would want to do next or differently", opening_writer_prompt)
-        self.assertIn("下次再遇到这种情况，你最想先做得不一样的是哪一步？", opening_writer_prompt)
-        self.assertIn("下次汇报前，你觉得先把版本核对加回来", opening_writer_prompt)
-        self.assertIn("Do not ask “现在还悬着什么”", opening_writer_prompt)
+        self.assertIn("a confirmation invitation about one exact, already-grounded reality focus", opening_writer_prompt)
+        self.assertIn("an Action question", opening_writer_prompt)
+        self.assertIn("论文还要继续改；一坐下来就转去刷手机", opening_writer_prompt)
+        self.assertIn("do not ask the person to invent the next response, solution, step", opening_writer_prompt)
+        self.assertIn("Do not ask “下次最想先做得不一样的是哪一步”", opening_writer_prompt)
+        self.assertNotIn("what the person would want to do next or differently", opening_writer_prompt)
+        self.assertNotIn("ask the person for the next response they would prefer", opening_writer_prompt)
+        self.assertIn("“现在还悬着什么”", opening_writer_prompt)
         self.assertIn("“哪个具体部分需要回应”", opening_writer_prompt)
         self.assertIn("do not assign that action a positive purpose", opening_writer_prompt)
         self.assertIn("Keep the committed Tender understanding present", opening_writer_prompt)
@@ -2691,6 +2696,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("without a ‘you said/mentioned’ preface or chronology recap", opening_writer_prompt)
         self.assertIn("actual person, situation, action, or consequence", opening_writer_prompt)
         self.assertIn("Action comes later and operationalizes the confirmed direction", opening_writer_prompt)
+        self.assertIn("Concrete practice design remains", opening_writer_prompt)
+        self.assertIn("in Action after the direction is grounded", opening_writer_prompt)
         self.assertIn("the inquiry is legally continuing", opening_writer_prompt)
         self.assertIn("latestAnswerContext.referenceID preserves that same candidate", opening_writer_prompt)
 
@@ -2712,6 +2719,88 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             canonical_opening["semanticEvidencePatch"]["memoryUpdate"],
             {},
         )
+
+    def test_material_tender_revision_precedes_fierce_review_for_the_whole_turn(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "tender"
+        request["allowedSemanticOperations"] = [
+            "continueTenderReflection",
+            "continueTenderGroundedFierceReflection",
+            "synthesizeDirectReflection",
+        ]
+        request["recentMessages"] = [
+            {
+                "id": "00000000-0000-0000-0000-000000000201",
+                "role": "assistant",
+                "content": (
+                    "改论文时走马观花、静不下心，是这次真实的困难；"
+                    "它还不足以单独说明你整体很拖延。你觉得这个理解贴切吗？"
+                ),
+                "replyToMessageID": None,
+            },
+            {
+                "id": "00000000-0000-0000-0000-000000000202",
+                "role": "user",
+                "content": "其实不只是这次论文，我整体上就是挺拖延的。",
+                "replyToMessageID": "00000000-0000-0000-0000-000000000201",
+            },
+        ]
+        request["semanticMemory"] = {
+            "selfCriticalStatement": "我觉得我自己特别拖延",
+            "selfCriticismLink": "论文没推进、一直刷手机 -> 我觉得我自己特别拖延",
+            "reflectionFrame": {
+                "mode": "tender",
+                "action": "softenGlobalSelfJudgment",
+                "evidenceBasis": [
+                    {
+                        "source": "episode",
+                        "content": "昨晚论文没有推进，期间一直刷手机",
+                    }
+                ],
+                "dimensions": ["mindfulness"],
+                "reflectionDelta": (
+                    "这次改论文时走神是真实困难，但不能单独说明整体很拖延"
+                ),
+            },
+        }
+        request["groundedRealityCandidates"] = [
+            {
+                "id": "episodeStructure.behaviorEvidence.0",
+                "source": "episode",
+                "content": "论文没有处理完时一直刷手机",
+            }
+        ]
+
+        planner_prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn(CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT, planner_prompt)
+        self.assertIn("TENDER REVISION HAS EXCLUSIVE TURN PRIORITY", planner_prompt)
+        self.assertIn("scope, time range or recurrence", planner_prompt)
+        self.assertIn("This remains a revision even when", planner_prompt)
+        self.assertIn("do not inspectReality, synthesize", planner_prompt)
+        self.assertIn("Preserve existing", planner_prompt)
+        self.assertIn("grounded reality candidates for the next turn", planner_prompt)
+        self.assertIn("其实不只是这次论文，我整体上就是挺拖延的", planner_prompt)
+        self.assertIn('"meaning":"reviseTender"', planner_prompt)
+        self.assertIn(
+            "不把尚未具体展开的整体标签当作已经证实的行为事实",
+            planner_prompt,
+        )
+        self.assertIn(
+            "ONLY WITHOUT A TENDER REVISION, apply the Fierce review",
+            planner_prompt,
+        )
+        self.assertIn("does not ask the person", planner_prompt)
+        self.assertIn("to invent a solution or practice", planner_prompt)
 
     def test_planner_loads_only_the_current_stage_contract(self) -> None:
         event_item = LLMTurnPromptIn(

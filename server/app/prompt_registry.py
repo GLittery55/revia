@@ -359,6 +359,33 @@ repair/protect/change; distress alone is insufficient.
 """.strip()
 
 
+CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT = """
+COMMITTED TENDER DECISION ORDER
+Classify the latest user answer before reviewing any Fierce candidate.
+
+1. TENDER REVISION HAS EXCLUSIVE TURN PRIORITY. Choose reviseTender when the person rejects, corrects,
+materially qualifies, or changes the bounded Tender understanding. A material revision includes a change
+to its scope, time range or recurrence, domain, degree, certainty, evidence basis, or the part of the
+difficulty the person accepts. This remains a revision even when the new statement also suggests recurring
+reality that may later qualify for Fierce. In this turn, do not inspectReality, synthesize, ask what the
+person will do differently, or require a concrete example before honoring the revision. Preserve existing
+grounded reality candidates for the next turn.
+
+Example: Tender says “这次改论文时走神，不能单独说明你整体很拖延”; the person replies
+“其实不只是这次论文，我整体上就是挺拖延的”. Choose
+{"meaning":"reviseTender","candidateRef":null,"reflectionDelta":"前面的理解需要扩大：对方认为这种情况并非只发生在这次论文，而是反复出现；保留这份更长期的感受，同时不把尚未具体展开的整体标签当作已经证实的行为事实。"}.
+Do not choose inspectReality or ask “下次最想先做得不一样的是哪一步？” in that turn.
+
+2. ONLY WITHOUT A TENDER REVISION, apply the Fierce review. Natural acceptance ends Tender negotiation;
+if one supplied grounded reality candidate is still open, choose inspectReality with its exact id. Opening
+Fierce confirms, qualifies, replaces, or rejects that one concrete reality focus; it does not ask the person
+to invent a solution or practice.
+
+3. ONLY WITHOUT A TENDER REVISION OR A QUALIFYING REALITY CANDIDATE, choose synthesize with an explicit
+nonempty synthesis delta. The person's decline of further reality review also permits synthesis.
+""".strip()
+
+
 CURRENT_V5_FIERCE_PURPOSE_CONTRACT = """
 Fierce finds one user-grounded direction for unfinished reality.
 Before Synthesis, review every groundedRealityCandidates item. If an item is still open—behavior, effect,
@@ -372,16 +399,19 @@ an accepted direction completes Fierce. Action follows.
 CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT = """
 The Planner's repair/protect/change/support/responsibility categories are internal classification only.
 Translate the candidate into ordinary language about the actual person, situation, action, or consequence.
-Lead with the concrete situation that may happen again or is not yet resolved, then ask one direct question
-about what the person would want to do next or differently. If the candidate already contains one narrow
-future direction, ask for a natural confirmation or revision of that direction. If it names only an ongoing
-problem, ask the person for the next response they would prefer; do not make them discover an abstract
-category. Functional forms include “下次再遇到这种情况，你最想先做得不一样的是哪一步？” and
-“下次汇报前，你觉得先把版本核对加回来，是你最想调整的地方吗？”. Adapt the wording to the
-grounded episode; these are functions, not templates. Do not ask “现在还悬着什么”, “哪个具体部分需要回应”,
+Opening Fierce from Tender is a confirmation invitation about one exact, already-grounded reality focus—not
+an Action question. Lead with the concrete situation that may happen again or is not yet resolved, name only
+the candidate Swift supplied, and ask whether that specific part is indeed something the person wants to
+address in the continuing situation. If the candidate already contains one user-authored narrow future
+direction, ask for a natural confirmation or revision of that direction. If it names only an ongoing problem,
+confirm or qualify the problem itself; do not ask the person to invent the next response, solution, step, or
+practice, and do not invent one for them. A functional form is “论文还要继续改；一坐下来就转去刷手机，
+确实是你接下来最想先处理的那部分吗？”. Adapt the wording to the grounded episode; this is a function,
+not a template. Do not ask “下次最想先做得不一样的是哪一步”, “现在还悬着什么”, “哪个具体部分需要回应”,
 or what needs to be protected, repaired, faced, supported, or changed. Do not ask what a completed past
 action meant, and do not assign that action a positive purpose. The question must let a short confirmation,
-qualification, replacement, or rejection answer the actual pending decision.
+qualification, replacement, or rejection answer the actual pending decision. Concrete practice design remains
+in Action after the direction is grounded.
 """.strip()
 
 
@@ -1562,6 +1592,14 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             if grounded_candidates
             else " No canonical grounded reality candidate is currently projected."
         )
+        semantic_memory = request.get("semanticMemory")
+        semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+        committed_tender_progression_contract = (
+            " " + CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT
+            if str(request.get("reflectionMode") or "") == "tender"
+            and isinstance(semantic_memory.get("reflectionFrame"), dict)
+            else ""
+        )
         contextual_contract = (
             " Compact temporal Tracking profiles contain cleaned daily aggregates, personal baselines, units, and coverage. When "
             "eventAnchorDate is present, classify a metric from that exact recentDaily day, or an adjacent observed day only when the exact "
@@ -1638,8 +1676,8 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "{\"meaning\":\"inspectReality\",\"candidateRef\":\"exact candidate id\",\"reflectionDelta\":null}, or "
             "{\"meaning\":\"synthesize\",\"candidateRef\":null,\"reflectionDelta\":\"explicit synthesis\"}. "
             "Delta is nonempty for revise/synthesize and null for inspect; never use memoryUpdate.reflectionFrame here. "
-            "At committed Tender, revise only explicit rejection or material revision; otherwise apply "
-            "the Fierce review. Acceptance ends Tender negotiation, not reality review. "
+            + committed_tender_progression_contract
+            + " Acceptance ends Tender negotiation, not reality review. "
             + CURRENT_V5_FIERCE_PURPOSE_CONTRACT
             + " From Tender, synthesize only when no item qualifies or the person declines—not merely on acceptance. FIERCE. Use only "
             "reflectionProgressionDecision; omit "
