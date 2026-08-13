@@ -50,6 +50,11 @@ def _current_v5_allowed_operations(messages: list[dict[str, str]]) -> list[str]:
     return [value for value in operations if isinstance(value, str)]
 
 
+def _current_v5_reflection_mode(messages: list[dict[str, str]]) -> Optional[str]:
+    value = _current_v5_request(messages).get("reflectionMode")
+    return value if isinstance(value, str) else None
+
+
 def _current_v5_tracking_profile_summary(
     messages: list[dict[str, str]],
 ) -> dict[str, Any] | None:
@@ -681,6 +686,7 @@ class ProviderGateway:
             return canonicalize_current_v5_planner_contract(
                 content,
                 allowed_semantic_operations=_current_v5_allowed_operations(messages),
+                reflection_mode=_current_v5_reflection_mode(messages),
             )
         except CurrentV5PlannerContractError as error:
             # Log only the schema location and violation class. The model body and reflection text

@@ -800,6 +800,41 @@ Invalid: continueTenderReflection with a missing/null/empty reflectionFrame or r
 Never put the Tender meaning only in responseFocus.
 '''.strip()
 
+CURRENT_V5_ACTIVE_FIERCE_CONTRACT = r'''
+ACTIVE FIERCE DECISION
+When reflectionMode=fierce, one prior inspectReality has already opened exactly one Swift-owned
+reality candidate. inspectReality is one-shot and Tender-only; never choose it or reviseTender here.
+Choose exactly one reflectionProgressionDecision and keep semanticOperation null; Swift compiles the
+existing operation.
+
+Choose clarifyFierce when the answer confirms, qualifies, corrects, or partly responds to the active
+focus but does not yet ground a clear caring direction. candidateRef, reflectionDelta, and
+fierceDirection are null/absent; responseFocus is one nonempty grounded clarification of that same
+focus. Do not ask for an action or practice.
+
+Choose completeFierce only when the answer grounds a clear caring direction in the active focus.
+candidateRef is null/absent; reflectionDelta is one nonempty completed Fierce understanding;
+fierceDirection is repair|protect|change; responseFocus is empty. Do not invent an implementation
+step, technique, duration, or location. A declined direction uses synthesize with a nonempty explicit
+reflectionDelta and no candidateRef/fierceDirection.
+
+Semantic examples — classify, do not copy wording:
+- Active focus concerns returning to a paper instead of shifting to the phone; “是的，我还是想尽快把论文干好”
+  confirms the goal but not a direction → clarifyFierce, never inspectReality.
+- “对，我主要想改变一焦虑就马上拿手机这一段” grounds what should change → completeFierce(change).
+
+Clarify structural shape — placeholders are not output wording:
+{"semanticOperation":null,"reflectionProgressionDecision":{"meaning":"clarifyFierce",
+"candidateRef":null,"reflectionDelta":null,"fierceDirection":null},
+"semanticEvidencePatch":{"memoryUpdate":{}},
+"responseFocus":"<one grounded clarification of the active Fierce focus>"}
+
+Complete structural shape — placeholders are not output wording:
+{"semanticOperation":null,"reflectionProgressionDecision":{"meaning":"completeFierce",
+"candidateRef":null,"reflectionDelta":"<completed Fierce understanding>",
+"fierceDirection":"change"},"semanticEvidencePatch":{"memoryUpdate":{}},"responseFocus":""}
+'''.strip()
+
 CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE = (
     'semanticEvidencePatch.contextualTrackingDecision={"metricEligibility":['
     '{"profileID":"exact supplied profileID","metric":"exact supplied metric",'
@@ -881,18 +916,43 @@ PLANNER_PRACTICE_CONTRACT = """
 practiceTransition=null or {"transactionID":"","narrativeReferenceID":null,"proposal":{"id":"","kind":"care|repair|protect|change|noAction","content":"","basis":"","status":"pendingConfirmation|confirmed","source":"assistantProposed|userRevised"},"noActionReason":null}. noAction needs content+basis; proposal IDs match transaction and practice-confirmation IDs. Current directReflection uses narrativeReferenceID=null; legacy preserves it. Retired practice arrays/scalars are forbidden.
 """.strip()
 
+CURRENT_V5_PROPOSE_PRACTICE_CONTRACT = r'''
+PROPOSE PRACTICE DECISION
+For proposePractice, emit one complete practiceTransition:
+{"proposal":{"content":"<one small action grounded in the established direction>",
+"basis":"<one exact groundedRealityCandidates.id>"},"noActionReason":null}.
+The proposal remains assistantProposed and pending until the person accepts or revises it; Swift owns
+source, status, category, transaction, and provenance metadata.
+
+Grounding rule: preserve the person's already-established reflection direction and make it only as
+concrete as the conversation safely supports. Compress that direction into one small observable
+experiment; do not replace it with a productivity system or a method imported from general advice.
+By default, do not introduce an exact duration, frequency, location, device placement, named technique,
+arbitrary numeric target, tool, reminder, or environmental arrangement. Such an implementation detail
+is allowed only when the person explicitly supplied it or explicitly asked the assistant to help design
+implementation. Any newly suggested detail is an optional candidate for confirmation, never something
+the person has already chosen. Missing a user-authored method is not a reason for noAction.
+
+Semantic regression — classify grounding, do not copy wording:
+- Established direction: allow a short pause while keeping the paper primary.
+- Invalid default proposal: put the phone in another room, work for 25 minutes, rest for 5 minutes.
+  It invents location, device placement, duration, numbers, and a technique.
+- Grounded default function: preserve a brief pause, then return attention to the paper instead of
+  letting the pause continue indefinitely. Add no timer, room, frequency, or named method.
+- If the person asks “具体怎么做比较好？”, one optional implementation candidate may be proposed,
+  but it must remain explicitly negotiable rather than being written as their decision.
+
+A request to adjust, shrink, or change an assistant proposal without stating the replacement is not
+acceptance and is not yet a user revision. Choose proposePractice again, materially adjust the method,
+trigger, scope, or use of support within the same grounded direction, and leave it pending. Do not merely
+paraphrase the active proposal.
+'''.strip()
+
 CURRENT_V5_PRACTICE_CONTRACT = """
-For proposePractice, including replacement of a pending proposal, practiceTransition is
-{"proposal":{"content":"one small action","basis":"one exact groundedRealityCandidates.id"},
-"noActionReason":null}. A request to adjust, shrink, or change an assistant proposal without stating
-the replacement is not acceptance and is not yet a user revision: choose proposePractice, supply one
-materially adjusted assistant proposal, and leave it pending for the person's decision. Change the
-method, trigger, scope, or use of support rather than merely paraphrasing the active proposal. For
-resolvePractice, include a revised proposal's content/basis only when the person has actually stated
+For resolvePractice, include a revised proposal's content/basis only when the person has actually stated
 that replacement, or noActionReason when the person declines/is not ready; omission means clear
-acceptance of the active proposal. Do not emit memoryUpdate.finalNarrative on
-resolvePractice: Swift compiles the final narrative from the committed Synthesis and resolved Action.
-Never emit kind,
+acceptance of the active proposal. Do not emit memoryUpdate.finalNarrative on resolvePractice: Swift
+compiles the final narrative from the committed Synthesis and resolved Action. Never emit kind,
 transactionID, narrativeReferenceID, proposal.id, status, or source. Swift derives the internal
 category and owns all transaction/provenance metadata. Retired arrays, menus, and scalar practice
 fields are forbidden.
@@ -1709,7 +1769,8 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "Swift never fills it. A committed Synthesis changes only for explicit correction/qualification. Natural acceptance, "
             "acknowledgment, or readiness chooses proposePractice immediately; require no action wording or second confirmation. "
             "PRACTICE. Propose one small executable reality experiment grounded by one exact groundedRealityCandidates.id as basis; "
-            "the person need not invent it. noAction requires refusal or no responsible concrete step. resolvePractice supplies only "
+            "apply the operation-specific grounding contract when Action is allowed. noAction requires refusal or no responsible "
+            "concrete step. resolvePractice supplies only "
             "acceptance/revision/decline; Swift compiles Final Narrative from committed Synthesis and resolved Action and owns protocol metadata. "
             + grounded_candidate_contract
             + " "
@@ -1807,6 +1868,9 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
                     "responseFocus. completeFierce colocates nonempty reflectionDelta and "
                     "fierceDirection=repair|protect|change; responseFocus is empty. Swift recovers candidate identity "
                     "and evidence from the active candidate, latest answer, and committed lineage. "
+                    "If the rejected draft used inspectReality or reviseTender, do not preserve that meaning: "
+                    "inspectReality was consumed when Active Fierce opened. Reclassify only as clarifyFierce, "
+                    "completeFierce, or synthesize. "
                     "Use synthesize with candidateRef=null and an explicit delta only when the direction is declined "
                     "or no meaningful Fierce direction remains."
                 )
@@ -1936,11 +2000,14 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         if stage == "directReflection"
         else ""
     )
+    practice_contracts: list[str] = []
+    if "proposePractice" in allowed:
+        practice_contracts.append(CURRENT_V5_PROPOSE_PRACTICE_CONTRACT)
+    if stage in {"optionalAction", "narrativeConfirmation"} or "resolvePractice" in allowed:
+        practice_contracts.append(CURRENT_V5_PRACTICE_CONTRACT)
     practice_contract = (
-        "\nOPTIONAL ACTION STRUCTURE\n" + CURRENT_V5_PRACTICE_CONTRACT
-        if stage in {"optionalAction", "narrativeConfirmation"}
-        or stage == "directReflection"
-        and any(operation in {"proposePractice", "resolvePractice"} for operation in allowed)
+        "\nOPTIONAL ACTION STRUCTURE\n" + "\n".join(practice_contracts)
+        if practice_contracts
         else ""
     )
     card_connection_contract = ""
@@ -1955,6 +2022,11 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         and reflection_mode == "tender"
         and not isinstance(semantic_memory.get("reflectionFrame"), dict)
         and "continueTenderReflection" in allowed
+        else ""
+    )
+    active_fierce_contract = (
+        "\n" + CURRENT_V5_ACTIVE_FIERCE_CONTRACT
+        if stage == "directReflection" and reflection_mode == "fierce"
         else ""
     )
     uses_tender_progression = (
@@ -2033,7 +2105,7 @@ append that correction and never reuse it as evidence.
 
 STAGE
 {_current_v5_stage_contract(request)}
-{reflection_contract}{practice_contract}{card_connection_contract}{tender_reflection_contract}
+{reflection_contract}{practice_contract}{card_connection_contract}{tender_reflection_contract}{active_fierce_contract}
 
 OUTPUT
 Return exactly one JSON object shaped as:
@@ -2344,8 +2416,10 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "introduce another action. proposal.basis is an exact groundedRealityCandidates.id; resolve it against the request's candidate list and use only "
             "that candidate's reality content as the reason. Never display the internal id. Its reason must "
             "continue the same accepted synthesis relationship and target a confirmed difficulty, goal, behavior, impact, support need, "
-            "or constraint. The method may be a new assistant proposal, but it must remain a tentative small experiment rather than a "
-            "known solution, and cannot invent a fresh problem or psychological explanation. Never use Card objects or metaphors in the "
+            "or constraint. Present the authorized content as one tentative assistant suggestion awaiting the person's decision, never "
+            "as a method they already chose. Do not embellish it with a duration, frequency, location, device placement, named technique, "
+            "numeric target, tool, or environmental arrangement absent from the authorized proposal. It cannot invent a fresh problem "
+            "or psychological explanation. Never use Card objects or metaphors in the "
             "proposal or basis. Prefer the episode's unresolved reality problem over rehearsing the reflection. The action must be an "
             "observable response in a concrete situation, not writing, repeating, or rehearsing a kinder sentence unless the person "
             "already chose that method. Use noAction only when the person declined action or no responsible concrete step is available; "

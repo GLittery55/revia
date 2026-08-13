@@ -298,6 +298,9 @@ class CurrentV5PracticeProposal(_CurrentV5ContractModel):
     basis: str
 
 
+_CURRENT_V5_PRACTICE_PROPOSAL_ADAPTER = TypeAdapter(CurrentV5PracticeProposal)
+
+
 class CurrentV5PracticeTransition(_CurrentV5ContractModel):
     proposal: Optional[CurrentV5PracticeProposal] = None
     noActionReason: Optional[
@@ -354,6 +357,61 @@ class CurrentV5ReflectionProgressionDecision(_CurrentV5ContractModel):
     # Decode-only legacy metadata. Swift derives Fierce evidence from the active canonical
     # candidate and latest user answer; this value has no current semantic authority.
     groundedEvidence: Optional[str] = None
+
+
+class CurrentV5ActiveFierceClarify(_CurrentV5ContractModel):
+    """Executable meaning shape while one Swift-owned Fierce candidate is active."""
+
+    meaning: Literal["clarifyFierce"]
+    candidateRef: None = None
+    reflectionDelta: None = None
+    fierceDirection: None = None
+
+
+class CurrentV5ActiveFierceComplete(_CurrentV5ContractModel):
+    """Atomic completion of the already-active Fierce inquiry."""
+
+    meaning: Literal["completeFierce"]
+    candidateRef: None = None
+    reflectionDelta: str
+    fierceDirection: Literal["repair", "protect", "change"]
+
+    @field_validator("reflectionDelta")
+    @classmethod
+    def require_nonempty_reflection_delta(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reflectionDelta must be nonempty")
+        return value
+
+
+class CurrentV5ActiveFierceSynthesize(_CurrentV5ContractModel):
+    """Explicit decline/no-direction exit from Active Fierce into Synthesis."""
+
+    meaning: Literal["synthesize"]
+    candidateRef: None = None
+    reflectionDelta: str
+    fierceDirection: None = None
+
+    @field_validator("reflectionDelta")
+    @classmethod
+    def require_nonempty_reflection_delta(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reflectionDelta must be nonempty")
+        return value
+
+
+CurrentV5ActiveFierceDecision = Annotated[
+    Union[
+        CurrentV5ActiveFierceClarify,
+        CurrentV5ActiveFierceComplete,
+        CurrentV5ActiveFierceSynthesize,
+    ],
+    Field(discriminator="meaning"),
+]
+
+_CURRENT_V5_ACTIVE_FIERCE_DECISION_ADAPTER = TypeAdapter(
+    CurrentV5ActiveFierceDecision
+)
 
 
 class CurrentV5PlannerContract(_CurrentV5ContractModel):
@@ -665,7 +723,11 @@ _CURRENT_V5_PROGRESSION_MEANINGS = frozenset(
 _CURRENT_V5_PROGRESSION_MEANING_ALIASES = ("decision", "value")
 
 
-def _canonicalize_current_v5_progression_syntax(decoded: dict[str, Any]) -> dict[str, Any]:
+def _canonicalize_current_v5_progression_syntax(
+    decoded: dict[str, Any],
+    *,
+    preserve_active_fierce_payload: bool = False,
+) -> dict[str, Any]:
     """Normalize only mechanically unique progression transport syntax.
 
     The model still decides the progression meaning and Swift still compiles that meaning into an
@@ -735,11 +797,12 @@ def _canonicalize_current_v5_progression_syntax(decoded: dict[str, Any]) -> dict
         if meaning in {"inspectReality", "clarifyFierce"}:
             # Inquiry has no semantic conclusion. These are redundant fields, not another
             # authority capable of turning the inquiry into a completed Reflection act.
-            decision.pop("reflectionDelta", None)
-            decision.pop("fierceDirection", None)
-            decision.pop("groundedEvidence", None)
-            if meaning == "clarifyFierce":
-                decision.pop("candidateRef", None)
+            if meaning == "inspectReality" or not preserve_active_fierce_payload:
+                decision.pop("reflectionDelta", None)
+                decision.pop("fierceDirection", None)
+                decision.pop("groundedEvidence", None)
+                if meaning == "clarifyFierce":
+                    decision.pop("candidateRef", None)
             if memory is not None:
                 memory.pop("reflectionFrame", None)
         elif meaning in {"reviseTender", "synthesize", "completeFierce"} and memory is not None:
@@ -758,8 +821,9 @@ def _canonicalize_current_v5_progression_syntax(decoded: dict[str, Any]) -> dict
             if meaning == "completeFierce":
                 # Direction/delta are model meaning. Candidate and evidence identity are compiled
                 # deterministically from Swift-owned pre-turn state and cannot compete here.
-                decision.pop("candidateRef", None)
-                decision.pop("groundedEvidence", None)
+                if not preserve_active_fierce_payload:
+                    decision.pop("candidateRef", None)
+                    decision.pop("groundedEvidence", None)
     return projected
 
 
@@ -1230,10 +1294,239 @@ def _enforce_current_v5_tender_reflection_contract(
     return projected
 
 
+def _enforce_current_v5_active_fierce_contract(
+    projected: dict[str, Any],
+    *,
+    reflection_mode: Optional[str],
+) -> dict[str, Any]:
+    """Validate the Planner-owned branch while Swift owns one active Fierce candidate.
+
+    This contract does not infer which branch the latest answer means. It verifies that the
+    Planner's declared clarify/complete/synthesize meaning carries exactly the payload that Swift
+    can execute. Candidate identity and evidence remain recoverable only from Swift's pre-turn
+    state, so a provider cannot repeat or replace them here.
+    """
+
+    if reflection_mode != "fierce":
+        return projected
+
+    decision = projected.get("reflectionProgressionDecision")
+    if not isinstance(decision, dict):
+        raise CurrentV5PlannerContractError(
+            field_path="reflectionProgressionDecision",
+            violation="active_fierce_progression_required",
+        )
+
+    meaning = _unwrap_current_v5_string_syntax(
+        decision.get("meaning"),
+        field_name="meaning",
+    )
+    if meaning in {"inspectReality", "reviseTender"}:
+        raise CurrentV5PlannerContractError(
+            field_path="reflectionProgressionDecision.meaning",
+            violation="invalid_for_active_fierce",
+        )
+    if meaning not in {"clarifyFierce", "completeFierce", "synthesize"}:
+        raise CurrentV5PlannerContractError(
+            field_path="reflectionProgressionDecision.meaning",
+            violation="invalid_active_fierce_branch",
+        )
+    decision["meaning"] = meaning
+
+    expected_operation = (
+        "synthesizeDirectReflection"
+        if meaning == "synthesize"
+        else "continueTenderGroundedFierceReflection"
+    )
+    raw_operation = projected.get("semanticOperation")
+    if raw_operation is not None:
+        operation = _unwrap_current_v5_string_syntax(
+            raw_operation,
+            field_name="semanticOperation",
+        )
+        if operation != expected_operation:
+            raise CurrentV5PlannerContractError(
+                field_path="semanticOperation",
+                violation="conflicts_with_active_fierce_branch",
+            )
+        projected["semanticOperation"] = operation
+
+    for field_name in ("candidateRef", "groundedEvidence"):
+        if decision.get(field_name) is not None:
+            raise CurrentV5PlannerContractError(
+                field_path=f"reflectionProgressionDecision.{field_name}",
+                violation="swift_owned_during_active_fierce",
+            )
+        decision.pop(field_name, None)
+
+    raw_delta = decision.get("reflectionDelta")
+    raw_direction = decision.get("fierceDirection")
+    raw_focus = projected.get("responseFocus")
+
+    if meaning == "clarifyFierce":
+        if raw_delta is not None:
+            raise CurrentV5PlannerContractError(
+                field_path="reflectionProgressionDecision.reflectionDelta",
+                violation="must_be_null_for_clarify_fierce",
+            )
+        if raw_direction is not None:
+            raise CurrentV5PlannerContractError(
+                field_path="reflectionProgressionDecision.fierceDirection",
+                violation="must_be_null_for_clarify_fierce",
+            )
+        focus = _unwrap_current_v5_string_syntax(
+            raw_focus,
+            field_name="responseFocus",
+        )
+        if not isinstance(focus, str) or not focus.strip():
+            raise CurrentV5PlannerContractError(
+                field_path="responseFocus",
+                violation="required_for_clarify_fierce",
+            )
+        decision.pop("reflectionDelta", None)
+        decision.pop("fierceDirection", None)
+        projected["responseFocus"] = focus
+
+    elif meaning == "completeFierce":
+        delta = _unwrap_current_v5_string_syntax(
+            raw_delta,
+            field_name="reflectionDelta",
+        )
+        if not isinstance(delta, str) or not delta.strip():
+            raise CurrentV5PlannerContractError(
+                field_path="reflectionProgressionDecision.reflectionDelta",
+                violation="required_for_complete_fierce",
+            )
+        direction = _unwrap_current_v5_string_syntax(
+            raw_direction,
+            field_name="fierceDirection",
+        )
+        if direction not in {"repair", "protect", "change"}:
+            raise CurrentV5PlannerContractError(
+                field_path="reflectionProgressionDecision.fierceDirection",
+                violation="required_for_complete_fierce",
+            )
+        if raw_focus is not None:
+            focus = _unwrap_current_v5_string_syntax(
+                raw_focus,
+                field_name="responseFocus",
+            )
+            if not isinstance(focus, str) or focus.strip():
+                raise CurrentV5PlannerContractError(
+                    field_path="responseFocus",
+                    violation="must_be_empty_for_complete_fierce",
+                )
+        decision["reflectionDelta"] = delta
+        decision["fierceDirection"] = direction
+        projected["responseFocus"] = ""
+
+    else:
+        delta = _unwrap_current_v5_string_syntax(
+            raw_delta,
+            field_name="reflectionDelta",
+        )
+        if not isinstance(delta, str) or not delta.strip():
+            raise CurrentV5PlannerContractError(
+                field_path="reflectionProgressionDecision.reflectionDelta",
+                violation="required_for_active_fierce_synthesis",
+            )
+        if raw_direction is not None:
+            raise CurrentV5PlannerContractError(
+                field_path="reflectionProgressionDecision.fierceDirection",
+                violation="must_be_null_for_active_fierce_synthesis",
+            )
+        decision["reflectionDelta"] = delta
+        decision.pop("fierceDirection", None)
+
+    try:
+        _CURRENT_V5_ACTIVE_FIERCE_DECISION_ADAPTER.validate_python(decision)
+    except ValidationError as error:
+        raise CurrentV5PlannerContractError(
+            field_path="reflectionProgressionDecision",
+            violation="invalid_active_fierce_payload",
+        ) from error
+    return projected
+
+
+def _enforce_current_v5_propose_practice_contract(
+    projected: dict[str, Any],
+) -> dict[str, Any]:
+    """Require one complete proposal when the Planner chooses ``proposePractice``.
+
+    The backend validates only the operation-owned wire shape. Whether the proposed Chinese text
+    stays within the user's grounded direction is Planner meaning and remains outside this
+    structural validator; Swift still validates the exact candidate basis and owns transaction,
+    source, status, category, and workflow progression.
+    """
+
+    operation = _unwrap_current_v5_string_syntax(
+        projected.get("semanticOperation"),
+        field_name="semanticOperation",
+    )
+    if operation != "proposePractice":
+        return projected
+    projected["semanticOperation"] = operation
+
+    patch = projected.get("semanticEvidencePatch")
+    memory = patch.get("memoryUpdate") if isinstance(patch, dict) else None
+    transition = memory.get("practiceTransition") if isinstance(memory, dict) else None
+    if not isinstance(transition, dict):
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition",
+            violation="practice_proposal_required",
+        )
+    proposal = transition.get("proposal")
+    if not isinstance(proposal, dict):
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal",
+            violation="practice_proposal_required",
+        )
+    if transition.get("noActionReason") is not None:
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.noActionReason",
+            violation="must_be_null_for_propose_practice",
+        )
+
+    content = _unwrap_current_v5_string_syntax(
+        proposal.get("content"),
+        field_name="content",
+    )
+    if not isinstance(content, str) or not content.strip():
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal.content",
+            violation="required_for_propose_practice",
+        )
+    basis = _unwrap_current_v5_string_syntax(
+        proposal.get("basis"),
+        field_name="basis",
+    )
+    if not isinstance(basis, str) or not basis.strip():
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal.basis",
+            violation="required_for_propose_practice",
+        )
+
+    try:
+        _CURRENT_V5_PRACTICE_PROPOSAL_ADAPTER.validate_python(
+            {"content": content, "basis": basis}
+        )
+    except ValidationError as error:
+        raise CurrentV5PlannerContractError(
+            field_path="semanticEvidencePatch.memoryUpdate.practiceTransition.proposal",
+            violation="invalid_practice_proposal",
+        ) from error
+
+    proposal["content"] = content
+    proposal["basis"] = basis
+    transition.pop("noActionReason", None)
+    return projected
+
+
 def canonicalize_current_v5_planner_contract(
     content: str,
     *,
     allowed_semantic_operations: Optional[list[str]] = None,
+    reflection_mode: Optional[str] = None,
 ) -> str:
     """Project every parseable object onto the Swift-decodable current-v5 sparse surface.
 
@@ -1261,9 +1554,17 @@ def canonicalize_current_v5_planner_contract(
     # operation resolution belong exclusively to Swift and are deliberately not consulted here.
     _ = allowed_semantic_operations
     projected = _canonicalize_current_v5_semantic_aliases(projected)
-    projected = _canonicalize_current_v5_progression_syntax(projected)
+    projected = _canonicalize_current_v5_progression_syntax(
+        projected,
+        preserve_active_fierce_payload=reflection_mode == "fierce",
+    )
     projected = _enforce_current_v5_reality_connection_contract(projected)
     projected = _enforce_current_v5_tender_reflection_contract(projected)
+    projected = _enforce_current_v5_active_fierce_contract(
+        projected,
+        reflection_mode=reflection_mode,
+    )
+    projected = _enforce_current_v5_propose_practice_contract(projected)
     projected = _project_current_v5_decodable_contract(projected)
 
     try:

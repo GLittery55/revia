@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import get_args
 
 from app.prompt_registry import (
+    CURRENT_V5_ACTIVE_FIERCE_CONTRACT,
     CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE,
     CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT,
     CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE,
     CURRENT_V5_CORE_PROMPT_VERSION,
     CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE,
     CURRENT_V5_PLANNER_JSON_SHAPE,
+    CURRENT_V5_PROPOSE_PRACTICE_CONTRACT,
     CURRENT_V5_REALITY_CONNECTION_CONTRACT,
     CURRENT_V5_TENDER_REFLECTION_CONTRACT,
     PLANNER_SEMANTIC_OPERATION_VALUES,
@@ -280,6 +282,60 @@ class CurrentV5CorePromptTests(unittest.TestCase):
                 canonicalize_current_v5_planner_contract(
                     json.dumps(invalid, ensure_ascii=False)
                 )
+
+    def test_active_fierce_contract_is_explicit_and_mode_specific(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "fierce"
+        request["allowedSemanticOperations"] = [
+            "continueTenderGroundedFierceReflection",
+            "synthesizeDirectReflection",
+        ]
+        request["semanticMemory"] = {
+            "reflectionFrame": {
+                "reflectionDelta": "一次具体选择不能自动证明整个人就是拖延的",
+            },
+            "nextPrompt": {
+                "purpose": "fierceReflection",
+                "referenceID": "episodeStructure.behaviorEvidence.0",
+            },
+        }
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn(CURRENT_V5_ACTIVE_FIERCE_CONTRACT, prompt)
+        self.assertIn("inspectReality is one-shot and Tender-only", prompt)
+        self.assertIn("never choose it or reviseTender here", prompt)
+        self.assertIn("Choose clarifyFierce", prompt)
+        self.assertIn("responseFocus is one nonempty grounded clarification", prompt)
+        self.assertIn("Choose completeFierce only", prompt)
+        self.assertIn("reflectionDelta is one nonempty completed Fierce understanding", prompt)
+        self.assertIn("fierceDirection is repair|protect|change", prompt)
+        self.assertIn("是的，我还是想尽快把论文干好", prompt)
+        self.assertIn("→ clarifyFierce, never inspectReality", prompt)
+        self.assertIn("一焦虑就马上拿手机", prompt)
+        self.assertIn("→ completeFierce(change)", prompt)
+        self.assertIn('"semanticOperation":null', prompt)
+        self.assertIn('"reflectionDelta":"<completed Fierce understanding>"', prompt)
+
+        request["reflectionMode"] = "tender"
+        tender_prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+        self.assertNotIn(CURRENT_V5_ACTIVE_FIERCE_CONTRACT, tender_prompt)
 
     def test_tender_reflection_rejects_missing_branch_frame_and_fierce_payload(self) -> None:
         base = {
@@ -651,6 +707,225 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "reflectionFrame",
             clarified["semanticEvidencePatch"]["memoryUpdate"],
         )
+
+    def test_active_fierce_executable_contract_accepts_only_complete_branch_shapes(self) -> None:
+        base = {
+            "semanticOperation": None,
+            "semanticEvidencePatch": {"memoryUpdate": {}},
+            "responseFocus": "",
+        }
+
+        clarify = dict(
+            base,
+            reflectionProgressionDecision={
+                "meaning": "clarifyFierce",
+                "candidateRef": None,
+                "reflectionDelta": None,
+                "fierceDirection": None,
+            },
+            responseFocus="继续确认当前已经打开的现实问题",
+        )
+        canonical_clarify = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(clarify, ensure_ascii=False),
+                reflection_mode="fierce",
+            )
+        )
+        self.assertEqual(
+            canonical_clarify["reflectionProgressionDecision"],
+            {"meaning": "clarifyFierce"},
+        )
+        self.assertEqual(
+            canonical_clarify["responseFocus"],
+            "继续确认当前已经打开的现实问题",
+        )
+
+        complete = dict(
+            base,
+            reflectionProgressionDecision={
+                "meaning": "completeFierce",
+                "candidateRef": None,
+                "reflectionDelta": "用户想改变一感到焦虑就马上转去刷手机的这一段",
+                "fierceDirection": "change",
+            },
+        )
+        canonical_complete = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(complete, ensure_ascii=False),
+                reflection_mode="fierce",
+            )
+        )
+        self.assertEqual(
+            canonical_complete["reflectionProgressionDecision"],
+            {
+                "meaning": "completeFierce",
+                "reflectionDelta": "用户想改变一感到焦虑就马上转去刷手机的这一段",
+                "fierceDirection": "change",
+            },
+        )
+        self.assertEqual(canonical_complete["responseFocus"], "")
+
+        synthesize = dict(
+            base,
+            reflectionProgressionDecision={
+                "meaning": "synthesize",
+                "candidateRef": None,
+                "reflectionDelta": "用户暂时不想继续讨论这一现实方向，保留此前形成的理解",
+                "fierceDirection": None,
+            },
+        )
+        canonical_synthesis = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(synthesize, ensure_ascii=False),
+                reflection_mode="fierce",
+            )
+        )
+        self.assertEqual(
+            canonical_synthesis["reflectionProgressionDecision"]["meaning"],
+            "synthesize",
+        )
+
+    def test_active_fierce_executable_contract_rejects_incomplete_or_stale_branches(self) -> None:
+        def payload(decision: object, *, focus: str = "") -> dict:
+            return {
+                "semanticOperation": None,
+                "semanticEvidencePatch": {"memoryUpdate": {}},
+                "reflectionProgressionDecision": decision,
+                "responseFocus": focus,
+            }
+
+        invalid_cases = (
+            (
+                payload({"meaning": "clarifyFierce"}),
+                "required_for_clarify_fierce",
+            ),
+            (
+                payload(
+                    {
+                        "meaning": "clarifyFierce",
+                        "reflectionDelta": "不属于 clarification 的结论",
+                    },
+                    focus="继续确认",
+                ),
+                "must_be_null_for_clarify_fierce",
+            ),
+            (
+                payload(
+                    {
+                        "meaning": "clarifyFierce",
+                        "candidateRef": "episodeStructure.behaviorEvidence.0",
+                    },
+                    focus="继续确认",
+                ),
+                "swift_owned_during_active_fierce",
+            ),
+            (
+                payload(
+                    {
+                        "meaning": "completeFierce",
+                        "fierceDirection": "change",
+                    }
+                ),
+                "required_for_complete_fierce",
+            ),
+            (
+                payload(
+                    {
+                        "meaning": "completeFierce",
+                        "reflectionDelta": "已经形成一个现实方向",
+                    }
+                ),
+                "required_for_complete_fierce",
+            ),
+            (
+                payload(
+                    {
+                        "meaning": "completeFierce",
+                        "reflectionDelta": "已经形成一个现实方向",
+                        "fierceDirection": "change",
+                    },
+                    focus="不应再继续提问",
+                ),
+                "must_be_empty_for_complete_fierce",
+            ),
+            (
+                payload(
+                    {
+                        "meaning": "inspectReality",
+                        "candidateRef": "episodeStructure.behaviorEvidence.0",
+                    }
+                ),
+                "invalid_for_active_fierce",
+            ),
+            (
+                payload(
+                    {
+                        "meaning": "reviseTender",
+                        "reflectionDelta": "再次回到 Tender",
+                    }
+                ),
+                "invalid_for_active_fierce",
+            ),
+            (
+                payload(None),
+                "active_fierce_progression_required",
+            ),
+        )
+
+        for invalid, violation in invalid_cases:
+            with self.subTest(violation=violation):
+                with self.assertRaisesRegex(CurrentV5PlannerContractError, violation):
+                    canonicalize_current_v5_planner_contract(
+                        json.dumps(invalid, ensure_ascii=False),
+                        reflection_mode="fierce",
+                    )
+
+        tender_inspection = payload(
+            {
+                "meaning": "inspectReality",
+                "candidateRef": "episodeStructure.behaviorEvidence.0",
+            }
+        )
+        canonical_tender = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(tender_inspection),
+                reflection_mode="tender",
+            )
+        )
+        self.assertEqual(
+            canonical_tender["reflectionProgressionDecision"]["meaning"],
+            "inspectReality",
+        )
+
+    def test_active_fierce_operation_must_match_the_declared_progression_when_supplied(self) -> None:
+        valid = {
+            "semanticOperation": "continueTenderGroundedFierceReflection",
+            "semanticEvidencePatch": {"memoryUpdate": {}},
+            "reflectionProgressionDecision": {
+                "meaning": "clarifyFierce",
+            },
+            "responseFocus": "继续确认当前现实焦点",
+        }
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(valid, ensure_ascii=False),
+                reflection_mode="fierce",
+            )
+        )
+        self.assertEqual(
+            canonical["semanticOperation"],
+            "continueTenderGroundedFierceReflection",
+        )
+
+        invalid = dict(valid, semanticOperation="synthesizeDirectReflection")
+        with self.assertRaisesRegex(
+            CurrentV5PlannerContractError,
+            "conflicts_with_active_fierce_branch",
+        ):
+            canonicalize_current_v5_planner_contract(
+                json.dumps(invalid, ensure_ascii=False),
+                reflection_mode="fierce",
+            )
 
     def test_card_connection_transport_never_derives_outcome_metadata(self) -> None:
         payload = {
@@ -1078,6 +1353,115 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertNotIn("status", transition["proposal"])
         self.assertNotIn("source", transition["proposal"])
         self.assertEqual(transition["proposal"]["content"], "先停十分钟再回来排查")
+
+    def test_propose_practice_requires_one_atomic_content_and_basis(self) -> None:
+        valid = {
+            "semanticOperation": "proposePractice",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "practiceTransition": {
+                        "proposal": {
+                            "content": "短暂放松后，把注意力重新带回论文",
+                            "basis": "episodeStructure.behaviorEvidence.0",
+                        },
+                        "noActionReason": None,
+                    }
+                }
+            },
+            "responseFocus": "把这个行动作为一个待确认的小尝试",
+        }
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(valid, ensure_ascii=False)
+            )
+        )
+        transition = canonical["semanticEvidencePatch"]["memoryUpdate"][
+            "practiceTransition"
+        ]
+        self.assertEqual(
+            transition["proposal"],
+            {
+                "content": "短暂放松后，把注意力重新带回论文",
+                "basis": "episodeStructure.behaviorEvidence.0",
+            },
+        )
+        self.assertNotIn("noActionReason", transition)
+
+        wrapped = json.loads(json.dumps(valid, ensure_ascii=False))
+        proposal = wrapped["semanticEvidencePatch"]["memoryUpdate"][
+            "practiceTransition"
+        ]["proposal"]
+        proposal["content"] = {
+            "content": "短暂放松后，把注意力重新带回论文",
+            "confidence": "high",
+        }
+        proposal["basis"] = {"value": "episodeStructure.behaviorEvidence.0"}
+        canonical_wrapped = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(wrapped, ensure_ascii=False)
+            )
+        )
+        self.assertEqual(
+            canonical_wrapped["semanticEvidencePatch"]["memoryUpdate"]
+            ["practiceTransition"]["proposal"],
+            transition["proposal"],
+        )
+
+    def test_propose_practice_rejects_incomplete_or_no_action_payload(self) -> None:
+        base = {
+            "semanticOperation": "proposePractice",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "practiceTransition": {
+                        "proposal": {
+                            "content": "短暂放松后回到论文",
+                            "basis": "episodeStructure.behaviorEvidence.0",
+                        }
+                    }
+                }
+            },
+            "responseFocus": "呈现建议",
+        }
+
+        invalid_cases = []
+        for missing in ("content", "basis"):
+            invalid = json.loads(json.dumps(base, ensure_ascii=False))
+            invalid["semanticEvidencePatch"]["memoryUpdate"]["practiceTransition"][
+                "proposal"
+            ].pop(missing)
+            invalid_cases.append((invalid, "required_for_propose_practice"))
+        for field_name in ("content", "basis"):
+            for empty in (None, "", "   "):
+                invalid = json.loads(json.dumps(base, ensure_ascii=False))
+                invalid["semanticEvidencePatch"]["memoryUpdate"][
+                    "practiceTransition"
+                ]["proposal"][field_name] = empty
+                invalid_cases.append((invalid, "required_for_propose_practice"))
+
+        missing_transition = json.loads(json.dumps(base, ensure_ascii=False))
+        missing_transition["semanticEvidencePatch"]["memoryUpdate"].pop(
+            "practiceTransition"
+        )
+        invalid_cases.append((missing_transition, "practice_proposal_required"))
+
+        missing_proposal = json.loads(json.dumps(base, ensure_ascii=False))
+        missing_proposal["semanticEvidencePatch"]["memoryUpdate"][
+            "practiceTransition"
+        ].pop("proposal")
+        invalid_cases.append((missing_proposal, "practice_proposal_required"))
+
+        no_action = json.loads(json.dumps(base, ensure_ascii=False))
+        no_action["semanticEvidencePatch"]["memoryUpdate"]["practiceTransition"][
+            "noActionReason"
+        ] = "userDeclined"
+        invalid_cases.append((no_action, "must_be_null_for_propose_practice"))
+
+        for invalid, violation in invalid_cases:
+            with self.subTest(violation=violation):
+                with self.assertRaisesRegex(CurrentV5PlannerContractError, violation):
+                    canonicalize_current_v5_planner_contract(
+                        json.dumps(invalid, ensure_ascii=False)
+                    )
 
     def test_canonical_tracking_owner_wins_over_conflicting_misplaced_alias(self) -> None:
         decision = {
@@ -1777,6 +2161,16 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ]
         direct_request["semanticMemory"] = {}
         direct_request["reflectionMode"] = "exploratory"
+        fierce_request = self.request()
+        fierce_request["protocolStage"] = "directReflection"
+        fierce_request["allowedSemanticOperations"] = [
+            "continueTenderGroundedFierceReflection",
+            "synthesizeDirectReflection",
+        ]
+        fierce_request["semanticMemory"] = {
+            "reflectionFrame": {"reflectionDelta": "已经提交的 Tender 理解"},
+        }
+        fierce_request["reflectionMode"] = "fierce"
         tender_request = self.request()
         tender_request["protocolStage"] = "directReflection"
         tender_request["allowedSemanticOperations"] = ["continueTenderReflection"]
@@ -1808,9 +2202,58 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertLess(system_length("planner", {"request": card_request}), 6000)
         self.assertLess(system_length("planner", {"request": direct_request}), 10000)
+        self.assertLess(system_length("planner", {"request": fierce_request}), 13000)
         self.assertLess(
             system_length("writer", {"request": tender_request, "directive": directive}),
             4000,
+        )
+
+    def test_active_fierce_correction_does_not_preserve_consumed_inspection(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "fierce"
+        request["allowedSemanticOperations"] = [
+            "continueTenderGroundedFierceReflection",
+            "synthesizeDirectReflection",
+        ]
+        request["semanticMemory"] = {
+            "reflectionFrame": {"reflectionDelta": "已经提交的 Tender 理解"},
+        }
+        request["correction"] = {
+            "rejectedOperation": "continueTenderGroundedFierceReflection",
+            "reason": "projectionInvalid",
+            "projectionFailure": "reflectionProgressionInvalid",
+            "rejectedDraft": {
+                "semanticOperation": None,
+                "semanticEvidencePatch": {"memoryUpdate": {}},
+                "reflectionProgressionDecision": {
+                    "meaning": "inspectReality",
+                    "candidateRef": "episodeStructure.behaviorEvidence.0",
+                },
+                "responseFocus": "再次打开同一个现实候选",
+            },
+            "issue": {
+                "fieldPath": "reflectionProgressionDecision.meaning",
+                "violation": "invalid_for_active_fierce",
+                "requiredConditions": [],
+            },
+            "recoveryPolicy": "repairSameOperation",
+        }
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn("inspectReality was consumed when Active Fierce opened", prompt)
+        self.assertIn("do not preserve that meaning", prompt)
+        self.assertIn(
+            "Reclassify only as clarifyFierce, completeFierce, or synthesize",
+            prompt,
         )
 
     def test_projection_correction_is_specific_and_stays_in_exploration(self) -> None:
@@ -4064,13 +4507,37 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
+        planner_prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+        normalized_planner_prompt = " ".join(planner_prompt.split())
+        self.assertIn(CURRENT_V5_PROPOSE_PRACTICE_CONTRACT, planner_prompt)
+        self.assertIn("preserve the person's already-established reflection direction", normalized_planner_prompt)
+        self.assertIn("only as concrete as the conversation safely supports", normalized_planner_prompt)
+        self.assertIn("do not introduce an exact duration, frequency, location", normalized_planner_prompt)
+        self.assertIn("device placement, named technique", normalized_planner_prompt)
+        self.assertIn("explicitly asked the assistant to help design implementation", normalized_planner_prompt)
+        self.assertIn("optional candidate for confirmation", normalized_planner_prompt)
+        self.assertIn("allow a short pause while keeping the paper primary", normalized_planner_prompt)
+        self.assertIn("put the phone in another room, work for 25 minutes", normalized_planner_prompt)
+        self.assertIn("It invents location, device placement, duration", normalized_planner_prompt)
+        self.assertIn("Add no timer, room, frequency, or named method", normalized_planner_prompt)
+
         self.assertIn("exactly the one authorized small action", prompt)
         self.assertIn("Start directly with exactly the one authorized small action", prompt)
         self.assertIn("Do not repeat or paraphrase Tender, Synthesis", prompt)
         self.assertIn("continue the same accepted synthesis relationship", prompt)
-        self.assertIn("The method may be a new assistant proposal", prompt)
+        self.assertIn("tentative assistant suggestion awaiting the person's decision", prompt)
+        self.assertIn("never as a method they already chose", prompt)
+        self.assertIn("Do not embellish it with a duration, frequency, location", prompt)
         self.assertIn("target a confirmed difficulty, goal, behavior", prompt)
-        self.assertIn("tentative small experiment rather than a known solution", prompt)
+        self.assertIn("one tentative assistant suggestion awaiting the person's decision", prompt)
         self.assertIn("accept it, make it smaller or revise it", prompt)
         self.assertIn("decline it without pressure", prompt)
         self.assertIn("End with exactly one natural", prompt)
@@ -4110,9 +4577,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("is not acceptance and is not yet a user revision", planner_prompt)
-        self.assertIn("choose proposePractice", planner_prompt)
-        self.assertIn("materially adjusted assistant proposal", planner_prompt)
+        self.assertIn(
+            "is not acceptance and is not yet a user revision",
+            " ".join(planner_prompt.split()),
+        )
+        self.assertIn("choose proposepractice", " ".join(planner_prompt.lower().split()))
+        self.assertIn("materially different, still-grounded proposal", planner_prompt)
         self.assertIn("do not move to Final Narrative", planner_prompt)
 
         directive = {

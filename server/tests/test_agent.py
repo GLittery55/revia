@@ -1313,6 +1313,73 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         repair.assert_not_awaited()
 
+    def test_current_v5_provider_applies_active_fierce_contract_from_request_context(self) -> None:
+        messages = [
+            {
+                "role": "user",
+                "content": "CURRENT V5 TURN REQUEST JSON:\n"
+                + json.dumps(
+                    {
+                        "protocolStage": "directReflection",
+                        "reflectionMode": "fierce",
+                        "allowedSemanticOperations": [
+                            "continueTenderGroundedFierceReflection",
+                            "synthesizeDirectReflection",
+                        ],
+                    }
+                ),
+            }
+        ]
+        valid = json.dumps(
+            {
+                "semanticOperation": None,
+                "semanticEvidencePatch": {"memoryUpdate": {}},
+                "reflectionProgressionDecision": {
+                    "meaning": "clarifyFierce",
+                },
+                "responseFocus": "继续确认当前已经打开的现实问题",
+            },
+            ensure_ascii=False,
+        )
+        canonical = json.loads(
+            self.gateway._validate_current_v5_contract(
+                valid,
+                provider="deepseek",
+                agent_task="current_v5_core_planner",
+                request_id="active-fierce-valid",
+                messages=messages,
+            )
+        )
+        self.assertEqual(
+            canonical["reflectionProgressionDecision"],
+            {"meaning": "clarifyFierce"},
+        )
+
+        stale_inspection = json.dumps(
+            {
+                "semanticOperation": None,
+                "semanticEvidencePatch": {"memoryUpdate": {}},
+                "reflectionProgressionDecision": {
+                    "meaning": "inspectReality",
+                    "candidateRef": "episodeStructure.behaviorEvidence.0",
+                },
+                "responseFocus": "再次打开同一个候选",
+            },
+            ensure_ascii=False,
+        )
+        with self.assertRaises(ProviderError) as raised:
+            self.gateway._validate_current_v5_contract(
+                stale_inspection,
+                provider="deepseek",
+                agent_task="current_v5_core_planner",
+                request_id="active-fierce-stale-inspection",
+                messages=messages,
+            )
+        self.assertEqual(
+            raised.exception.reason,
+            "current_v5_planner_contract_invalid",
+        )
+
     async def test_parseable_current_v5_protocol_residue_is_canonicalized_without_repair(self) -> None:
         with_residue = Completion(
             (
