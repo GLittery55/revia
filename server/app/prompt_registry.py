@@ -359,6 +359,42 @@ repair/protect/change; distress alone is insufficient.
 """.strip()
 
 
+CURRENT_V5_TENDER_PURPOSE_CONTRACT = """
+TENDER REFLECTION PURPOSE
+Tender is neither exoneration nor an argument against the person. It holds together, in a natural order
+appropriate to the conversation: the lived difficulty and any user-grounded contextual constraints; the
+reality of what happened, including a disappointing behavior, outcome, impact, or recurring pattern; and,
+when relevant, a distinction between that concrete reality and a harsh condemnation of the person's whole
+identity or worth.
+
+Tender distinguishes “what happened / what I did / what pattern I notice” from “what this supposedly says
+about my whole self.” Do not erase a real problem in order to be compassionate. Do not use context as an
+excuse. Do not call a user-reported recurring pattern merely an impression or unproven. Do not invent context,
+behavior, impact, recurrence, or whole-self judgment that the person has not grounded. Preserve the reality,
+acknowledge the difficulty that belongs to the account, and differentiate concrete behavior or patterns from
+whole-self attack when relevant. These are semantic requirements, not a required writing order. Prefer
+compassionate differentiation over rebuttal.
+""".strip()
+
+
+CURRENT_V5_TENDER_VISIBLE_LANGUAGE_CONTRACT = """
+TENDER WRITING CONTRACT
+Use compassionate differentiation, not correction, debate, reassurance, or exoneration. Integrate
+only grounded behavior/outcome/impact/recurrence, difficulty/context, and—when relevant—a distinction from
+harsh whole-self judgment. These are semantic components, not three required statements or a fixed order.
+Difficulty does not deny what happened; a real problem need not degrade the whole person.
+
+Avoid “不能证明你……”, “这只能说明……”, “不能因此断定……”, “这不代表你……”, “这只是一次……”,
+and “这只是你的印象……”. Functions—not templates—include
+“这件事本身可以承认，同时……”, “理解当时为什么难，并不需要否认这件事确实发生了。”, and
+“这个模式可以认真面对，而不必进一步变成对整个人的否定。”.
+
+Do not over-comfort or erase behavior/outcome/impact/recurrence. Do not use Tender to determine responsibility,
+repair, protection, or change before those meanings are grounded, or ask the person to prove/disprove their
+judgment. Keep grounded reality visible for later Fierce without contradicting Tender.
+""".strip()
+
+
 CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT = """
 COMMITTED TENDER DECISION ORDER
 Classify the latest user answer before reviewing any Fierce candidate. First compare it with the
@@ -373,9 +409,10 @@ reality that may later qualify for Fierce. In this turn, do not inspectReality, 
 person will do differently, or require a concrete example before honoring the revision. Preserve existing
 grounded reality candidates for the next turn. The nonempty reflectionDelta must contain the complete
 revised bounded understanding, not a user-facing reply, question, evidence request, or statement that the
-person's correction is merely an impression or unproven. When recurrence is the new axis, acknowledge it
-as the person's reported recurring pattern while keeping a behavior pattern distinct from a whole-person
-identity label. responseFocus may only instruct the Writer to present that revision and invite correction.
+person's correction is merely an impression or unproven. Revision repairs the scope of the understanding;
+it never overturns grounded reality to defend the person. When recurrence is the new axis, preserve it as
+the person's reported recurring pattern while keeping that pattern distinct from a degrading conclusion
+about the whole person. responseFocus may only instruct the Writer to present that revision and invite correction.
 
 STRUCTURAL DECISION EXAMPLE — DO NOT COPY AS OUTPUT:
 - committed delta scope = one isolated meeting; latest answer expands scope = similar difficulty across
@@ -390,8 +427,9 @@ semantically equivalent Tender delta as a revision.
 
 2. ONLY WITHOUT A TENDER REVISION, apply the Fierce review. Natural acceptance ends Tender negotiation;
 if one supplied grounded reality candidate is still open, choose inspectReality with its exact id. Opening
-Fierce confirms, qualifies, replaces, or rejects that one concrete reality focus; it does not ask the person
-to invent a solution or practice.
+Fierce opens that one concrete reality for candid examination. It asks what behavior, impact,
+responsibility, need, or boundary should not be obscured by the compassionate understanding. It does not
+ask which problem the person wants to solve first, or ask them to invent a solution or practice.
 
 3. ONLY WITHOUT A TENDER REVISION OR A QUALIFYING REALITY CANDIDATE, choose synthesize with an explicit
 nonempty synthesis delta. The person's decline of further reality review also permits synthesis.
@@ -399,31 +437,62 @@ nonempty synthesis delta. The person's decline of further reality review also pe
 
 
 CURRENT_V5_FIERCE_PURPOSE_CONTRACT = """
-Fierce finds one user-grounded direction for unfinished reality.
-Before Synthesis, review every groundedRealityCandidates item. If an item is still open—behavior, effect,
-relationship, constraint, boundary, help, or different response—inspectReality with its exact id.
-One fact suffices; no cause, responsibility, second fact, or action needed.
-Completed responses without ongoing effect do not qualify. Person may confirm/qualify/replace/reject;
-an accepted direction completes Fierce. Action follows.
+FIERCE REFLECTION PURPOSE
+After Tender has acknowledged the difficulty, preserved the real problem, and separated it from whole-self
+attack, Fierce helps
+the person face what that compassionate understanding must not obscure: an actual behavior, resulting
+impact, user-recognized responsibility, neglected need, or unprotected boundary. Compassion does not
+excuse grounded behavior; accountability does not require self-attack.
+
+Before Synthesis, review every groundedRealityCandidates item. inspectReality opens one exact supplied
+candidate for candid examination; it does not ask which problem the person wants to solve first. A fact may
+justify opening Fierce, but Fierce completes only when user-authored material grounds all three:
+1. what reality needs to be faced—a behavior, pattern, impact, responsibility, need, or boundary;
+2. why it matters—the consequence, impact, responsibility, unmet need, violated value, unprotected boundary,
+   or recurring cost that makes this reality worth facing;
+3. whether that reality genuinely calls for change, repair, or protection.
+Fierce depth is semantic, not turn-count based. Do not ask for a layer already grounded in prior or latest
+user-authored material. If all three are present, complete Fierce without another clarification or confirmation.
+The person does not need an implementation plan. change means a grounded behavior or pattern should not
+continue in the same way; repair means a grounded impact or responsibility calls for repair; protect means
+a grounded need, value, or boundary should no longer remain unprotected. These are reflective directions,
+not implementation plans. Fierce recognizes WHAT calls for a caring response; Action is the first stage
+that asks HOW the person might concretely respond. A fully resolved past event with no remaining impact,
+responsibility, recurring pattern, unmet need, or unprotected boundary does not require Fierce. The person
+may qualify, replace, reject, or decline the reality review; never manufacture Fierce material to complete the route.
 """.strip()
 
 
 CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT = """
-The Planner's repair/protect/change/support/responsibility categories are internal classification only.
-Translate the candidate into ordinary language about the actual person, situation, action, or consequence.
-Opening Fierce from Tender is a confirmation invitation about one exact, already-grounded reality focus—not
-an Action question. Lead with the concrete situation that may happen again or is not yet resolved, name only
-the candidate Swift supplied, and ask whether that specific part is indeed something the person wants to
-address in the continuing situation. If the candidate already contains one user-authored narrow future
-direction, ask for a natural confirmation or revision of that direction. If it names only an ongoing problem,
-confirm or qualify the problem itself; do not ask the person to invent the next response, solution, step, or
-practice, and do not invent one for them. A functional form is “论文还要继续改；一坐下来就转去刷手机，
-确实是你接下来最想先处理的那部分吗？”. Adapt the wording to the grounded episode; this is a function,
-not a template. Do not ask “下次最想先做得不一样的是哪一步”, “现在还悬着什么”, “哪个具体部分需要回应”,
-or what needs to be protected, repaired, faced, supported, or changed. Do not ask what a completed past
-action meant, and do not assign that action a positive purpose. The question must let a short confirmation,
-qualification, replacement, or rejection answer the actual pending decision. Concrete practice design remains
-in Action after the direction is grounded.
+FIERCE WRITING CONTRACT
+The Planner's repair/protect/change directions are internal classification only. Behavior, impact,
+responsibility, need, and boundary are grounding dimensions, not user-facing categories. Translate the active
+reality into ordinary language about the person's actual situation, behavior, consequence, responsibility,
+need, or boundary.
+
+Fierce language is candid without becoming coaching. Keep the grounded contextual difficulty visible while
+naming the supplied reality that should not be skipped merely because the situation has been understood
+compassionately. Opening Fierce examines that reality rather than confirming a system-selected change target.
+A natural opening may ask what cannot simply be explained away, what the person genuinely needs to face, what
+impact remained, or what responsibility, need, or boundary they themselves recognize.
+
+During clarification, ask only a genuinely missing layer of the same reality: what occurred, what followed,
+what was within the person's agency, why the consequence matters, what responsibility they recognize, what
+need/value/boundary is neglected, or whether something should not continue unchanged, should be made right,
+or should no longer remain unprotected. Do not ask for a layer already grounded in prior or latest user-authored
+material. Fierce depth is semantic, not turn-count based; when reality, importance, and reflective direction
+are already grounded, add no clarification merely to prolong Fierce.
+
+Use ordinary situation-specific Chinese and never expose “Fierce”, “protect”, “repair”, “direction”,
+“candidate”, or other protocol labels. Do not ask what to handle first, which problem to solve, what solution
+or technique to use, how to change, when/where to act, or what implementation step to take. Avoid
+“你最想先处理的是……吗？”, “这是你接下来最想改变的吗？”, “那你准备怎么改变？”,
+“你接下来打算怎么做？”, and “最想先解决哪一个？”.
+
+When Fierce completes, state the grounded reality, why it matters, and what—if anything—needs to be different,
+made right, or no longer left unprotected. Express reflective recognition, not an implementation commitment:
+the person may recognize the direction without deciding how. Fierce ends with WHAT calls for change, repair,
+or protection; Synthesis integrates it with Tender; Action first asks HOW to respond concretely.
 """.strip()
 
 
@@ -771,22 +840,41 @@ Exploration shape; placeholders are not wording:
 '''.strip()
 
 CURRENT_V5_TENDER_REFLECTION_CONTRACT = r'''
-TENDER REFLECTION DECISION
+CONTINUE TENDER REFLECTION
 For continueTenderReflection, emit exactly one atomic turn-local decision in
 semanticEvidencePatch.memoryUpdate.reflectionFrame. This operation means Exploration is complete
 and the first bounded Tender understanding is established; if that understanding is not yet
 grounded, choose continueExploratoryReflection instead.
 
 The only legal branch is tenderEstablished. It requires a nonempty declarative reflectionDelta
-that keeps the concrete difficulty while limiting only the unsupported reach of the broader
-self-judgment. fierceEvidence must be null or absent. evidenceBasis and dimensions remain optional.
-The branch is decision syntax only; Backend consumes it and Swift constructs the committed frame.
+formed entirely from already-grounded material. A complete delta preserves the grounded layers available
+in the account: lived difficulty or contextual constraint, when grounded; real behavior, outcome, impact,
+or recurrence that should not be erased; and, when a harsh whole-self judgment is present, a distinction
+between that concrete reality and degrading the whole person. Do not invent missing context, behavior,
+impact, recurrence, or whole-self judgment merely to complete the structure. fierceEvidence must be null
+or absent. evidenceBasis and dimensions remain optional. The branch is decision syntax only; Backend
+consumes it and Swift constructs the committed frame.
 
-Semantic example — classify function, do not copy wording:
-- concrete difficulty = repeated attempts did not resolve the problem
-- broader self-judgment = whole-person unsuitability for the work
-- valid Tender function = retain the concrete difficulty while limiting what that episode alone can
-  establish about the whole self
+Do not reduce the situation to “only one bad episode” unless the person has actually limited the issue
+to that episode. Do not make “this does not prove…”, “this only shows…”, or “you cannot conclude…” the
+main compassionate move. Prefer a differentiation that keeps the real problem visible over a rebuttal.
+
+Semantic structure — placeholders describe meaning, not output wording:
+- grounded difficulty = <context or task condition that made the situation hard>
+- preserved reality = <behavior, outcome, impact, or recurring pattern that genuinely mattered>
+- bounded judgment = <that concrete reality remains distinct from degrading the whole person>
+
+Semantic regression — classify the function, do not copy wording:
+- paper difficulty and deadline pressure + prolonged phone use and no paper progress + whole-person
+  procrastination condemnation → preserve both the context and the lack of progress, then differentiate
+  that concrete reality from condemning the whole person.
+- “only one bad night, so it cannot prove procrastination” → invalid rebuttal and unsupported scope limit.
+- a later report that the same delay recurs across other tasks → revise Tender to preserve the recurrence;
+  do not dismiss it, demand examples, or turn the pattern into a degrading identity conclusion.
+- a missed promised file and the friend's resulting wait, with no grounded fatigue, stress, or workload
+  constraint → preserve the missed commitment and impact; do not invent a compassionate explanation.
+- regret about speaking harshly, without a whole-self condemnation → acknowledge only the grounded regret
+  and behavior; do not introduce a “bad person/child” identity judgment in order to refute it.
 
 Tender structural shape — placeholders are not output wording:
 {"semanticOperation":"continueTenderReflection","reflectionProgressionDecision":null,
@@ -803,25 +891,33 @@ Never put the Tender meaning only in responseFocus.
 CURRENT_V5_ACTIVE_FIERCE_CONTRACT = r'''
 ACTIVE FIERCE DECISION
 When reflectionMode=fierce, one prior inspectReality has already opened exactly one Swift-owned
-reality candidate. inspectReality is one-shot and Tender-only; never choose it or reviseTender here.
-Choose exactly one reflectionProgressionDecision and keep semanticOperation null; Swift compiles the
-existing operation.
+candidate. inspectReality is one-shot and Tender-only; never choose it or reviseTender here. Choose one
+reflectionProgressionDecision, keep semanticOperation null, and let Swift compile the operation.
 
-Choose clarifyFierce when the answer confirms, qualifies, corrects, or partly responds to the active
-focus but does not yet ground a clear caring direction. candidateRef, reflectionDelta, and
-fierceDirection are null/absent; responseFocus is one nonempty grounded clarification of that same
-focus. Do not ask for an action or practice.
+Choose clarifyFierce when the person has identified something worth facing but the exchange does not
+yet ground all three completion layers: the reality, why it matters, and whether it calls for change,
+repair, or protection. A broad wish such as “我想改变分心” is insufficient. Clarify only a missing
+conduct/result, agency/responsibility, consequence/impact, need/value/boundary/recurring cost, or direction.
+Never re-ask grounded user-authored material; all three layers present means complete Fierce directly.
+candidateRef, reflectionDelta, and fierceDirection are null/absent;
+responseFocus is one nonempty clarification of the missing layer in that same focus. Do not ask for a
+concrete action, technique, timing, preferred solution, or what to handle first.
 
-Choose completeFierce only when the answer grounds a clear caring direction in the active focus.
-candidateRef is null/absent; reflectionDelta is one nonempty completed Fierce understanding;
-fierceDirection is repair|protect|change; responseFocus is empty. Do not invent an implementation
-step, technique, duration, or location. A declined direction uses synthesize with a nonempty explicit
-reflectionDelta and no candidateRef/fierceDirection.
+Choose completeFierce only when user-authored material is sufficient to state what reality needs to be
+faced; why it matters through consequence, impact, responsibility, unmet need, violated value, unprotected
+boundary, or recurring cost; and whether it calls for a caring change, repair, or protection. reflectionDelta
+is one nonempty completed candid understanding;
+fierceDirection is repair|protect|change; candidateRef is absent and responseFocus is empty.
+change means the grounded response should not continue in the same way; repair means a grounded impact
+or responsibility calls for repair; protect means a grounded need/value/boundary should no longer remain
+unprotected. These are reflective directions, not implementation plans. Do not invent an implementation
+step. A declined direction uses synthesize with an explicit delta and no candidateRef/fierceDirection.
 
 Semantic examples — classify, do not copy wording:
-- Active focus concerns returning to a paper instead of shifting to the phone; “是的，我还是想尽快把论文干好”
-  confirms the goal but not a direction → clarifyFierce, never inspectReality.
-- “对，我主要想改变一焦虑就马上拿手机这一段” grounds what should change → completeFierce(change).
+- Given illness, poor sleep, paper pressure, phone use, and no paper progress, “我想改变赶论文时分心的状态”
+  is a broad desired direction without the specific response and why it matters → clarifyFierce, never completeFierce.
+- “我确实是在躲论文；论文没动，后面的压力反而更大，这种反应不能继续忽略” grounds the reality,
+  impact, and reflective direction → completeFierce(change) directly, with no extra confirmation.
 
 Clarify structural shape — placeholders are not output wording:
 {"semanticOperation":null,"reflectionProgressionDecision":{"meaning":"clarifyFierce",
@@ -1676,6 +1772,22 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
         )
         semantic_memory = request.get("semanticMemory")
         semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+        allowed_operations = request.get("allowedSemanticOperations")
+        allowed_operations = (
+            allowed_operations if isinstance(allowed_operations, list) else []
+        )
+        tender_purpose_contract = (
+            " " + CURRENT_V5_TENDER_PURPOSE_CONTRACT
+            if "continueTenderReflection" in allowed_operations
+            and "continueExploratoryReflection" not in allowed_operations
+            else ""
+        )
+        fierce_purpose_contract = (
+            " " + CURRENT_V5_FIERCE_PURPOSE_CONTRACT
+            if "continueTenderGroundedFierceReflection" in allowed_operations
+            and str(request.get("reflectionMode") or "") != "fierce"
+            else ""
+        )
         committed_tender_progression_contract = (
             " " + CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT
             if str(request.get("reflectionMode") or "") == "tender"
@@ -1744,11 +1856,12 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             + "In direct Reflection, append to "
             "episodeStructure only a newly user-grounded behavior, process, condition, consequence, constraint, or controllable part; "
             "exclude Card, Tracking, reference guidance, model inference, emotion, self-evaluation, solutions, and the whole link. "
-            "TENDER. Form one bounded compassionate understanding that keeps the concrete difficulty, impact, limits, and responsibility "
-            "visible while limiting only the unsupported reach of the broader judgment. Invent no positive function, alternative cause, "
+            "TENDER. "
+            + tender_purpose_contract
+            + " Form one bounded compassionate understanding from grounded material. Invent no positive function, alternative cause, "
             "or ability claim. Never replace the person's explanation with an exclusive formulation such as ‘不是 X，而是 Y’, or enlarge "
-            "workload, responsibility, motive, or circumstance beyond their own account. Context is at most one possible condition. Its "
-            "reflectionDelta is declarative, never a request for new material. The first proposal is not completion. "
+            "workload, responsibility, motive, or circumstance beyond their own account. Context is at most one possible condition, never "
+            "an excuse. Its reflectionDelta is declarative, never a request for new material. The first proposal is not completion. "
             "Tender completes when the person authors a bounded account, accepts or qualifies it, or declines; emotional improvement is "
             "not required. Continue only to repair explicit rejection, misunderstanding, or material revision. Do not ask where the judgment "
             "is weakest, what the distinction means, whether it feels less true, or confirm it again. Extra detail, distress, uncertainty, "
@@ -1760,14 +1873,15 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "Delta is nonempty for revise/synthesize and null for inspect; never use memoryUpdate.reflectionFrame here. "
             + committed_tender_progression_contract
             + " Acceptance ends Tender negotiation, not reality review. "
-            + CURRENT_V5_FIERCE_PURPOSE_CONTRACT
+            + fierce_purpose_contract
             + " From Tender, synthesize only when no item qualifies or the person declines—not merely on acceptance. FIERCE. Use only "
             "reflectionProgressionDecision; omit "
             "semanticOperation and reflectionFrame; keep latestAnswerContext.referenceID read-only. clarifyFierce requires responseFocus. "
-            "A grounded direction returns "
+            "A completed candid recognition returns "
             "{\"meaning\":\"completeFierce\",\"reflectionDelta\":\"bounded understanding\","
             "\"fierceDirection\":\"repair|protect|change\"} with empty responseFocus; decline returns synthesize with an explicit delta. "
-            "ask no more; Swift opens Synthesis. Direction labels are internal; non-user material cannot ground Fierce or Action. "
+            "The delta states the reality, why it matters, and what kind of caring response it calls for—not how to implement it. "
+            "Then ask no more; Swift opens Synthesis. Direction labels are internal; non-user material cannot ground Fierce or Action. "
             "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed context in one revisable delta; add no "
             "interpretation or action. First Synthesis requires an explicit nonempty Planner synthesisDelta. It may preserve the accepted "
             "Tender/Fierce meaning but must express the integrated understanding rather than copy the committed reflectionDelta exactly; "
@@ -1889,8 +2003,8 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         elif projection_failure == "fierceFrameIncomplete":
             exact_issue_repair = (
                 " REQUIRED FIERCE REPAIR: replace the partial frame with one atomic reflectionProgressionDecision. "
-                "Use completeFierce with nonempty reflectionDelta and fierceDirection when the latest answer grounds "
-                "a direction; otherwise use clarifyFierce with one responseFocus. Do not repeat candidateRef or "
+                "Use completeFierce with nonempty reflectionDelta and fierceDirection only when user-authored material grounds "
+                "the reality, why it matters, and a reflective direction; otherwise use clarifyFierce with one responseFocus. Do not repeat candidateRef or "
                 "groundedEvidence; Swift recovers both from canonical state. Omit semanticOperation and "
                 "memoryUpdate.reflectionFrame; Swift constructs the existing Fierce frame and post-turn phase."
             )
@@ -2200,23 +2314,17 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         "limitation, or consequence a beneficial function, positive intention, virtue, lesson, strength, "
         "protection, reminder, motivation, or hidden benefit unless the person explicitly authored that exact function."
     )
-    tender_language_contract = (
-        "Realize the one committed bounded compassionate understanding without making the person argue against themselves. The visible Tender "
-        "content is declarative, never a request for new material. Briefly acknowledge "
-        "one concrete difficulty, show its connection to the broader judgment, and limit only unsupported scope; never retell chronology. "
-        "On explicit doubt, correction, or qualification, revise only that mismatch. Otherwise do not replay the "
-        "understanding or ask for its weakness, meaning, emotional effect, truth level, or another confirmation. If a responseFocus is "
-        "question-shaped, ignore its inquiry and render the grounded bounded proposition instead. Invalid Tender functions include asking "
-        "‘这个标准具体是什么？’, ‘还让你想到什么？’, ‘还有什么压力或感受？’, or ‘你会怎么安顿自己？’. The only optional question "
-        "lets the person accept, correct, reject, or qualify the understanding; collect no new evidence. Do not say the response is natural or is not "
-        "a real measure. Use a neutral reference instead of repeating "
-        "self-critical wording."
+    tender_language_contract = CURRENT_V5_TENDER_VISIBLE_LANGUAGE_CONTRACT + " " + (
+        "Render the committed delta declaratively; seek no new material, recap, examples, causes, or proof. A correction, rejection, "
+        "or qualification overrides only conflicting meaning: preserve unaffected evidence and never restate the superseded claim. "
+        "Otherwise do not replay it or ask about weakness, meaning, emotion, truth, recurrence, or confirmation. Ignore any "
+        "question-shaped responseFocus. Never ask ‘这个标准具体是什么？’, ‘还让你想到什么？’, ‘还有什么压力或感受？’, "
+        "‘你能再举一个例子吗？’, ‘为什么会这样？’, or ‘你会怎么安顿自己？’. Only a protocol-authorized confirmation may "
+        "invite acceptance, correction, rejection, or qualification; rendering a delta alone never authorizes one. Collect no evidence."
     )
-    tender_language_contract += unsupported_positive_function_contract
     tender_language_contract += (
-        " Insufficient evidence bounds only what facts establish; it supplies neither an alternative explanation nor unaffected ability. "
         "Never use ‘不是 X，而是 Y’ or enlarge workload, responsibility, motive, or context beyond "
-        "the person's account. Card, referenceGuidance, and tracking cannot supply the Tender understanding."
+        "the person's account. Card, referenceGuidance, and tracking cannot supply Tender."
     )
     request_semantic_memory = request.get("semanticMemory")
     request_semantic_memory = (
@@ -2231,8 +2339,10 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     if is_committed_tender_revision:
         tender_language_contract += (
             " This directive revises an already committed Tender understanding. Realize only the semantic change in the new "
-            "reflectionDelta and honor the person's correction at its stated scope. Do not call a reported recurring pattern "
-            "merely an impression, unproven, or not a fact. Do not ask for examples, occasions, origins, causes, frequency, "
+            "reflectionDelta and honor the person's correction at its stated scope. Revision repairs the range of the understanding; "
+            "it does not overturn grounded reality to defend the person. Preserve a reported recurring pattern as real material worth "
+            "facing while keeping it distinct from degrading the whole person. Do not call it merely an impression, unproven, or not a fact. "
+            "Do not ask for examples, occasions, origins, causes, frequency, "
             "proof, or further evidence, even if responseFocus requests them. If a question is authorized, its sole function is "
             "to let the person accept, correct, reject, or qualify the revised understanding; it must not reopen Exploration."
         )
@@ -2387,12 +2497,13 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "Use the latest answer and only that candidate. Do not switch candidates, recap Tender, expose the reference, or turn a "
             "completed past response into evidence of a positive purpose. A tentative relation between two facts is optional, never required. "
             "Keep the question compact, without a ‘you said/mentioned’ preface or chronology recap. When a complete Fierce frame is present, "
-            "reflect only the ordinary-language future direction the person has now grounded. That direction completes Fierce: do not ask "
+            "reflect only the grounded candid recognition: what reality the person faced, why it matters, and what genuinely should not "
+            "continue unchanged, remain unaddressed, or remain unprotected. That recognition completes Fierce: do not ask "
             "another Fierce question, request more detail, or open a second direction. Use one short natural bridge that "
             "lets the next turn put the existing reflection together, while leaving room for a spontaneous correction. Do not quote, emphasize, paraphrase, or otherwise "
             "replay the person's self-critical judgment, replay the Tender distinction, or repackage either through the Card "
             "metaphor. Do not state the answer or assign responsibility. Do not produce timing, a checklist, a menu, or a multi-step "
-            "solution; Action comes later and operationalizes the confirmed direction. Card material, "
+            "solution; Action is the first stage that asks how to respond concretely. Card material, "
             "referenceGuidance, and tracking remain background; model inference cannot become need, responsibility, or action evidence."
         ),
         "synthesizeDirectReflection": (
@@ -2471,8 +2582,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         operation_contract = operation_contracts["inviteRealityConnection"]
     elif operation == "continueTenderGroundedFierceReflection" and next_purpose == "synthesisReflection":
         operation_contract = operation_contract + " " + (
-            "The person has now said how they want to meet the unresolved or recurring reality and Swift has closed Fierce. State only "
-            "that user-grounded future direction in ordinary language, then use one short natural transition toward putting the existing understanding "
+            "The person has now recognized what unresolved or recurring reality matters and whether it calls for change, repair, or protection; "
+            "Swift has closed Fierce. State only that user-grounded candid recognition in ordinary language, then use one short natural transition toward putting the existing understanding "
             "together. Do not ask another Fierce question, request a reason, implication, detail, confirmation, or action, and do not create "
             "the Synthesis yourself. Leave room only for a spontaneous correction; never expose route names."
         )
@@ -2484,7 +2595,7 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     elif reflection_realization == "bridgeToSynthesis":
         operation_contract = (
             "The latest answer has completed Fierce and the post-turn phase is Synthesis. State the "
-            "person's committed way of meeting the unresolved or recurring reality once in ordinary language, then add one "
+            "person's grounded recognition of what reality matters, why it matters, and what should not continue unchanged, remain unaddressed, or remain unprotected, then add one "
             "short declarative bridge toward putting the existing understanding together. Ask no question, "
             "seek no reason or confirmation, do not reconnect the direction to earlier material, and do not "
             "create Synthesis or Action content. Ignore any stale responseFocus or earlier Fierce task."
