@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Literal, Optional, get_args, get_origin
+from typing import Any, Literal, Optional, Union, get_args, get_origin
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -358,12 +358,10 @@ _CURRENT_V5_TOP_LEVEL_OWNERS = frozenset(
 _CURRENT_V5_PATCH_OWNERS = frozenset(
     {
         "cardConnectionEvidence",
-        # Decode-only alias. It is consumed before typed transport validation and never appears in
-        # canonical output.
-        "cardConnectionTurnOutcome",
         "contextualTrackingDecision",
     }
 )
+_CURRENT_V5_SEMANTIC_ALIAS_FIELDS = frozenset({"cardConnectionTurnOutcome"})
 _CURRENT_V5_MEMORY_OWNERS = frozenset(CurrentV5SemanticMemoryUpdate.model_fields)
 _CURRENT_V5_NESTED_MEMORY_FIELDS: dict[str, frozenset[str]] = {
     "episodeStructure": frozenset(CurrentV5EpisodeStructurePatch.model_fields),
@@ -378,57 +376,34 @@ _CURRENT_V5_NESTED_MEMORY_FIELDS: dict[str, frozenset[str]] = {
 }
 
 
-def _merge_unique_value(
-    target: dict[str, Any],
-    *,
-    key: str,
-    value: Any,
-    field_path: str,
-) -> None:
-    if key in target and target[key] != value:
-        raise CurrentV5PlannerContractError(
-            field_path=field_path,
-            violation="duplicate_conflict",
-        )
-    target[key] = value
-
-
-def _merge_object_candidates(
-    candidates: list[dict[str, Any]],
-    *,
-    field_path: str,
-) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    for candidate in candidates:
-        for key, value in candidate.items():
-            _merge_unique_value(
-                merged,
-                key=key,
-                value=value,
-                field_path=f"{field_path}.{key}",
-            )
-    return merged
-
-
 def _relocate_uniquely_owned_fields(
     *,
     containers: list[dict[str, Any]],
     owner: dict[str, Any],
     owned_fields: frozenset[str],
-    owner_path: str,
 ) -> None:
+    """Move a unique alias only when the canonical owner has not supplied the field.
+
+    Canonical placement is authoritative. Misplaced copies are syntax aliases, not peers: they
+    are discarded when the owner is present, moved when they agree, and omitted when they
+    conflict. No alias conflict is allowed to reject the complete Planner response.
+    """
+
     for key in owned_fields:
-        occurrences: list[Any] = []
+        owner_is_present = key in owner
+        aliases: list[Any] = []
         for container in containers:
+            if container is owner:
+                continue
             if key in container:
-                occurrences.append(container.pop(key))
-        for value in occurrences:
-            _merge_unique_value(
-                owner,
-                key=key,
-                value=value,
-                field_path=f"{owner_path}.{key}" if owner_path else key,
-            )
+                aliases.append(container.pop(key))
+        if owner_is_present or not aliases:
+            continue
+        first = aliases[0]
+        if all(alias == first for alias in aliases[1:]):
+            owner[key] = first
+        else:
+            owner.pop(key, None)
 
 
 def _lift_misnested_owned_fields(memory: dict[str, Any]) -> None:
@@ -437,10 +412,16 @@ def _lift_misnested_owned_fields(memory: dict[str, Any]) -> None:
     A nested model keeps its own declared fields. If a provider puts an envelope or memory field
     inside that object, moving the unchanged value is structural canonicalization, not semantic
     inference. Fields with no current-v5 owner are discarded by the final typed projection; a
-    supplied value for a known field remains authoritative and is still validated strictly.
+    supplied value for a known field remains syntax-only input for the final lossy projection.
     """
 
-    owned = _CURRENT_V5_TOP_LEVEL_OWNERS | _CURRENT_V5_PATCH_OWNERS | _CURRENT_V5_MEMORY_OWNERS
+    owned = (
+        _CURRENT_V5_TOP_LEVEL_OWNERS
+        | _CURRENT_V5_PATCH_OWNERS
+        | _CURRENT_V5_MEMORY_OWNERS
+        | _CURRENT_V5_SEMANTIC_ALIAS_FIELDS
+    )
+    aliases_by_key: dict[str, list[Any]] = {}
     for container_key, allowed_nested_fields in _CURRENT_V5_NESTED_MEMORY_FIELDS.items():
         nested = memory.get(container_key)
         if not isinstance(nested, dict):
@@ -450,12 +431,13 @@ def _lift_misnested_owned_fields(memory: dict[str, Any]) -> None:
                 nested.pop(key)
                 continue
             if key not in allowed_nested_fields and key in owned:
-                _merge_unique_value(
-                    memory,
-                    key=key,
-                    value=nested.pop(key),
-                    field_path=f"semanticEvidencePatch.memoryUpdate.{key}",
-                )
+                aliases_by_key.setdefault(key, []).append(nested.pop(key))
+    for key, aliases in aliases_by_key.items():
+        if key in memory:
+            continue
+        first = aliases[0]
+        if all(alias == first for alias in aliases[1:]):
+            memory[key] = first
 
 
 def _project_optional_patch_owner(
@@ -493,84 +475,53 @@ def _canonicalize_current_v5_ownership(decoded: dict[str, Any]) -> dict[str, Any
 
     root = dict(decoded)
     raw_patch = root.pop("semanticEvidencePatch", {})
-    if not isinstance(raw_patch, dict):
-        root["semanticEvidencePatch"] = raw_patch
-        return root
-    patch = dict(raw_patch)
+    patch = dict(raw_patch) if isinstance(raw_patch, dict) else {}
 
-    memory_candidates: list[dict[str, Any]] = []
-    invalid_memory: Any = None
-    has_invalid_memory = False
-    for container in (root, patch):
-        if "memoryUpdate" not in container:
-            continue
-        candidate = container.pop("memoryUpdate")
-        if isinstance(candidate, dict):
-            memory_candidates.append(dict(candidate))
-        elif has_invalid_memory and invalid_memory != candidate:
-            raise CurrentV5PlannerContractError(
-                field_path="semanticEvidencePatch.memoryUpdate",
-                violation="duplicate_conflict",
-            )
-        else:
-            invalid_memory = candidate
-            has_invalid_memory = True
+    raw_canonical_memory = patch.pop("memoryUpdate", {})
+    memory = dict(raw_canonical_memory) if isinstance(raw_canonical_memory, dict) else {}
+    memory_aliases: list[dict[str, Any]] = []
+    raw_root_memory = root.pop("memoryUpdate", None)
+    if isinstance(raw_root_memory, dict):
+        memory_aliases.append(dict(raw_root_memory))
 
-    if has_invalid_memory:
-        if memory_candidates:
-            raise CurrentV5PlannerContractError(
-                field_path="semanticEvidencePatch.memoryUpdate",
-                violation="duplicate_conflict",
-            )
-        memory: Any = invalid_memory
-    else:
-        tracking_alias_containers = [root]
-        for candidate in memory_candidates:
-            tracking_alias_containers.append(candidate)
-            for nested_key in _CURRENT_V5_NESTED_MEMORY_FIELDS:
-                nested = candidate.get(nested_key)
-                if not isinstance(nested, dict):
-                    continue
-                nested_copy = dict(nested)
-                candidate[nested_key] = nested_copy
-                tracking_alias_containers.append(nested_copy)
-        _project_optional_patch_owner(
-            patch=patch,
-            alias_containers=tracking_alias_containers,
-            key="contextualTrackingDecision",
-        )
-        memory = _merge_object_candidates(
-            memory_candidates,
-            field_path="semanticEvidencePatch.memoryUpdate",
-        )
+    memory_containers = [memory, *memory_aliases]
+    tracking_alias_containers = [root, *memory_containers]
+    for candidate in memory_containers:
+        for nested_key in _CURRENT_V5_NESTED_MEMORY_FIELDS:
+            nested = candidate.get(nested_key)
+            if not isinstance(nested, dict):
+                continue
+            nested_copy = dict(nested)
+            candidate[nested_key] = nested_copy
+            tracking_alias_containers.append(nested_copy)
+        _lift_misnested_owned_fields(candidate)
 
-    if isinstance(memory, dict):
-        _lift_misnested_owned_fields(memory)
-        containers = [root, patch, memory]
-        _relocate_uniquely_owned_fields(
-            containers=containers,
-            owner=root,
-            owned_fields=_CURRENT_V5_TOP_LEVEL_OWNERS,
-            owner_path="",
-        )
-        _relocate_uniquely_owned_fields(
-            containers=containers,
-            owner=patch,
-            owned_fields=_CURRENT_V5_PATCH_OWNERS,
-            owner_path="semanticEvidencePatch",
-        )
-        _relocate_uniquely_owned_fields(
-            containers=containers,
-            owner=memory,
-            owned_fields=_CURRENT_V5_MEMORY_OWNERS,
-            owner_path="semanticEvidencePatch.memoryUpdate",
-        )
-        for container in containers:
-            for key in _CURRENT_V5_PROTOCOL_RESIDUE_FIELDS:
-                container.pop(key, None)
-        patch["memoryUpdate"] = memory
-    else:
-        patch["memoryUpdate"] = memory
+    _project_optional_patch_owner(
+        patch=patch,
+        alias_containers=tracking_alias_containers,
+        key="contextualTrackingDecision",
+    )
+
+    containers = [root, patch, *memory_containers]
+    _relocate_uniquely_owned_fields(
+        containers=containers,
+        owner=root,
+        owned_fields=_CURRENT_V5_TOP_LEVEL_OWNERS,
+    )
+    _relocate_uniquely_owned_fields(
+        containers=containers,
+        owner=patch,
+        owned_fields=_CURRENT_V5_PATCH_OWNERS,
+    )
+    _relocate_uniquely_owned_fields(
+        containers=containers,
+        owner=memory,
+        owned_fields=_CURRENT_V5_MEMORY_OWNERS,
+    )
+    for container in containers:
+        for key in _CURRENT_V5_PROTOCOL_RESIDUE_FIELDS:
+            container.pop(key, None)
+    patch["memoryUpdate"] = memory
 
     root["semanticEvidencePatch"] = patch
     return root
@@ -590,28 +541,30 @@ def _canonicalize_current_v5_semantic_aliases(decoded: dict[str, Any]) -> dict[s
     if not isinstance(memory, dict):
         return decoded
 
-    connection_candidates: list[dict[str, Any]] = []
+    current_is_present = "cardConnectionEvidence" in patch
     current = patch.get("cardConnectionEvidence")
-    if isinstance(current, dict):
-        connection_candidates.append(current)
-    legacy_outcome = patch.pop("cardConnectionTurnOutcome", None)
-    if isinstance(legacy_outcome, dict):
-        nested = legacy_outcome.get("connection")
-        connection_candidates.append(nested if isinstance(nested, dict) else legacy_outcome)
-    legacy_memory_connection = memory.pop("cardRealityConnection", None)
-    if isinstance(legacy_memory_connection, dict):
-        connection_candidates.append(legacy_memory_connection)
+    semantic_connection = dict(current) if isinstance(current, dict) else {}
 
-    semantic_connection: dict[str, Any] = {}
-    for candidate in connection_candidates:
-        for key in ("imageRelation", "realityMapping"):
-            if key in candidate:
-                _merge_unique_value(
-                    semantic_connection,
-                    key=key,
-                    value=candidate[key],
-                    field_path=f"semanticEvidencePatch.cardConnectionEvidence.{key}",
-                )
+    legacy_values: list[Any] = []
+    for container in (decoded, patch, memory):
+        if "cardConnectionTurnOutcome" in container:
+            legacy_values.append(container.pop("cardConnectionTurnOutcome"))
+    if "cardRealityConnection" in memory:
+        legacy_values.append(memory.pop("cardRealityConnection"))
+
+    # The canonical envelope wins even when one of its leaves is malformed; the final syntax
+    # projector drops that leaf rather than allowing a legacy alias to replace it. Without a
+    # canonical owner, legacy aliases are usable only when their complete values agree.
+    if not current_is_present and legacy_values:
+        first = legacy_values[0]
+        if all(alias == first for alias in legacy_values[1:]) and isinstance(first, dict):
+            nested = first.get("connection")
+            candidate = nested if isinstance(nested, dict) else first
+            semantic_connection = {
+                key: candidate[key]
+                for key in ("imageRelation", "realityMapping")
+                if key in candidate
+            }
     if semantic_connection:
         patch["cardConnectionEvidence"] = semantic_connection
     else:
@@ -651,7 +604,8 @@ def _canonicalize_current_v5_progression_syntax(decoded: dict[str, Any]) -> dict
     The model still decides the progression meaning and Swift still compiles that meaning into an
     operation. This pass only prevents a valid, unambiguous meaning from becoming an HTTP failure
     because a provider returned the enum as a scalar, a one-item list, a JSON-encoded value, or
-    under a known syntax alias. Unknown and ambiguous values remain strict validation failures.
+    under a known syntax alias. Unknown and ambiguous optional values are later omitted so Swift
+    receives the remaining semantic material and decides whether the turn can progress.
     """
 
     if "reflectionProgressionDecision" not in decoded:
@@ -755,39 +709,290 @@ def _current_v5_model_from_annotation(annotation: Any) -> Optional[type[BaseMode
     return None
 
 
-def _current_v5_list_member_model(annotation: Any) -> Optional[type[BaseModel]]:
-    if get_origin(annotation) is list:
-        arguments = get_args(annotation)
-        return _current_v5_model_from_annotation(arguments[0]) if arguments else None
-    for member in get_args(annotation):
-        nested = _current_v5_list_member_model(member)
-        if nested is not None:
-            return nested
-    return None
+_CURRENT_V5_DROP = object()
+_CURRENT_V5_UNOWNED_WRAPPER_METADATA_FIELDS = frozenset(
+    {
+        "kind",
+        "source",
+        "status",
+        "mode",
+        "action",
+        "phase",
+        "transactionID",
+        "id",
+        "confidence",
+    }
+)
 
 
-def _strip_unowned_current_v5_fields(value: Any, model: type[BaseModel]) -> Any:
-    """Keep only declared fields while preserving every supplied authoritative value unchanged."""
+def _current_v5_unique_wrapper_payload(
+    value: Any,
+    *,
+    allowed_payload_keys: frozenset[str],
+) -> Any:
+    """Return one mechanically unique payload after deleting known legacy metadata."""
 
     if not isinstance(value, dict):
-        return value
-    projected: dict[str, Any] = {}
-    for key, item in value.items():
-        field = model.model_fields.get(key)
-        if field is None:
+        return _CURRENT_V5_DROP
+    payloads = [
+        (key, item)
+        for key, item in value.items()
+        if key not in _CURRENT_V5_UNOWNED_WRAPPER_METADATA_FIELDS
+    ]
+    if not payloads or any(key not in allowed_payload_keys for key, _ in payloads):
+        return _CURRENT_V5_DROP
+    first = payloads[0][1]
+    return (
+        first
+        if all(payload == first for _, payload in payloads[1:])
+        else _CURRENT_V5_DROP
+    )
+
+
+def _unwrap_current_v5_scalar_syntax(
+    value: Any,
+    *,
+    field_name: Optional[str],
+) -> Any:
+    """Unwrap nested one-value scalar envelopes without selecting among meanings."""
+
+    candidate = value
+    for _ in range(8):
+        if isinstance(candidate, list) and len(candidate) == 1:
+            candidate = candidate[0]
             continue
-        annotation = field.annotation
-        member_model = _current_v5_list_member_model(annotation)
-        nested_model = _current_v5_model_from_annotation(annotation)
-        if member_model is not None and isinstance(item, list):
-            projected[key] = (
-                [_strip_unowned_current_v5_fields(member, member_model) for member in item]
+        keys = {"value", "text", "content"}
+        if field_name:
+            keys.add(field_name)
+        payload = _current_v5_unique_wrapper_payload(
+            candidate,
+            allowed_payload_keys=frozenset(keys),
+        )
+        if payload is not _CURRENT_V5_DROP:
+            candidate = payload
+            continue
+        break
+    return candidate
+
+
+def _unwrap_current_v5_string_syntax(
+    value: Any,
+    *,
+    field_name: Optional[str],
+    depth: int = 0,
+) -> Any:
+    """Decode a string from authoritative text keys without treating metadata as meaning.
+
+    Providers sometimes wrap one string in a richer object. Only the field's own name and the
+    conventional content/text/value keys can own that scalar. Unknown siblings are metadata and
+    do not compete. Multiple authoritative keys are safe only when their nonempty string values
+    normalize to exactly the same text; conflicting text remains ambiguous and is dropped.
+    """
+
+    if isinstance(value, str):
+        # A directly supplied string already has the schema's scalar shape and remains unchanged.
+        # Empty strings inside a wrapper are not evidence that the wrapper carries text.
+        return value if depth == 0 or value.strip() else _CURRENT_V5_DROP
+    if depth >= 8:
+        return _CURRENT_V5_DROP
+    if isinstance(value, list):
+        if len(value) != 1:
+            return _CURRENT_V5_DROP
+        return _unwrap_current_v5_string_syntax(
+            value[0],
+            field_name=field_name,
+            depth=depth + 1,
+        )
+    if not isinstance(value, dict):
+        return _CURRENT_V5_DROP
+
+    authority_keys: list[str] = []
+    for key in (field_name, "content", "text", "value"):
+        if key and key not in authority_keys:
+            authority_keys.append(key)
+
+    candidates: list[str] = []
+    for key in authority_keys:
+        if key not in value:
+            continue
+        candidate = _unwrap_current_v5_string_syntax(
+            value[key],
+            field_name=field_name,
+            depth=depth + 1,
+        )
+        if isinstance(candidate, str) and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates[0] if len(candidates) == 1 else _CURRENT_V5_DROP
+
+
+def _unwrap_current_v5_container_syntax(
+    value: Any,
+    *,
+    declared_fields: Optional[set[str]] = None,
+    field_name: Optional[str],
+) -> Any:
+    """Remove an outer one-value envelope while preserving the expected container itself."""
+
+    candidate = value
+    for _ in range(8):
+        if isinstance(candidate, list):
+            if declared_fields is not None and len(candidate) == 1:
+                candidate = candidate[0]
+                continue
+            break
+        if not isinstance(candidate, dict):
+            break
+        if declared_fields is not None and any(key in declared_fields for key in candidate):
+            break
+        keys = (
+            {"value", "data", "payload"}
+            if declared_fields is not None
+            else {"items", "values", "content"}
+        )
+        if field_name:
+            keys.add(field_name)
+        payload = _current_v5_unique_wrapper_payload(
+            candidate,
+            allowed_payload_keys=frozenset(keys),
+        )
+        if payload is _CURRENT_V5_DROP:
+            break
+        candidate = payload
+    return candidate
+
+
+def _project_current_v5_decodable_value(
+    value: Any,
+    annotation: Any,
+    *,
+    field_name: Optional[str] = None,
+) -> Any:
+    """Lossily project one value onto syntax Swift can decode without coercing meaning.
+
+    Invalid optional leaves disappear at the smallest typed boundary. Required malformed content
+    makes only its containing optional model disappear. Lists retain independently valid members.
+    This is deliberately not semantic repair: no text is extracted from objects, no enum is
+    guessed, and no absent workflow decision is created.
+    """
+
+    if annotation is Any:
+        return value
+
+    model = _current_v5_model_from_annotation(annotation)
+    origin = get_origin(annotation)
+
+    if origin is Union:
+        members = get_args(annotation)
+        if value is None and type(None) in members:
+            return None
+        for member in members:
+            if member is type(None):
+                continue
+            projected = _project_current_v5_decodable_value(
+                value,
+                member,
+                field_name=field_name,
             )
-        elif nested_model is not None:
-            projected[key] = _strip_unowned_current_v5_fields(item, nested_model)
-        else:
-            projected[key] = item
-    return projected
+            if projected is not _CURRENT_V5_DROP:
+                return projected
+        return _CURRENT_V5_DROP
+
+    if origin is Literal:
+        value = _unwrap_current_v5_scalar_syntax(value, field_name=field_name)
+        for allowed in get_args(annotation):
+            if type(value) is type(allowed) and value == allowed:
+                return value
+        return _CURRENT_V5_DROP
+
+    if origin is list:
+        value = _unwrap_current_v5_container_syntax(
+            value,
+            field_name=field_name,
+        )
+        if not isinstance(value, list):
+            return _CURRENT_V5_DROP
+        arguments = get_args(annotation)
+        member_annotation = arguments[0] if arguments else Any
+        members = []
+        for item in value:
+            projected = _project_current_v5_decodable_value(item, member_annotation)
+            if projected is not _CURRENT_V5_DROP:
+                members.append(projected)
+        return members
+
+    if model is not None:
+        value = _unwrap_current_v5_container_syntax(
+            value,
+            declared_fields=set(model.model_fields),
+            field_name=field_name,
+        )
+        if not isinstance(value, dict):
+            return _CURRENT_V5_DROP
+        projected_model: dict[str, Any] = {}
+        for key, field in model.model_fields.items():
+            if key not in value:
+                if field.is_required():
+                    return _CURRENT_V5_DROP
+                continue
+            projected = _project_current_v5_decodable_value(
+                value[key],
+                field.annotation,
+                field_name=key,
+            )
+            if projected is _CURRENT_V5_DROP:
+                if field.is_required():
+                    return _CURRENT_V5_DROP
+                continue
+            projected_model[key] = projected
+        try:
+            validated = model.model_validate(projected_model)
+        except ValidationError:
+            return _CURRENT_V5_DROP
+        return validated.model_dump(mode="json", exclude_unset=True)
+
+    if annotation is str:
+        value = _unwrap_current_v5_string_syntax(value, field_name=field_name)
+        return value if isinstance(value, str) else _CURRENT_V5_DROP
+    if annotation is bool:
+        value = _unwrap_current_v5_scalar_syntax(value, field_name=field_name)
+        return value if type(value) is bool else _CURRENT_V5_DROP
+    if annotation is int:
+        value = _unwrap_current_v5_scalar_syntax(value, field_name=field_name)
+        return value if type(value) is int else _CURRENT_V5_DROP
+    if annotation is float:
+        value = _unwrap_current_v5_scalar_syntax(value, field_name=field_name)
+        return value if type(value) is float else _CURRENT_V5_DROP
+    if annotation is type(None):
+        return None if value is None else _CURRENT_V5_DROP
+
+    return value
+
+
+def _project_current_v5_decodable_contract(projected: dict[str, Any]) -> dict[str, Any]:
+    """Make every parseable object a Swift-decodable sparse Planner response."""
+
+    shaped = dict(projected)
+    patch = shaped.get("semanticEvidencePatch")
+    if not isinstance(patch, dict):
+        shaped["semanticEvidencePatch"] = {"memoryUpdate": {}}
+    elif not isinstance(patch.get("memoryUpdate"), dict):
+        patch["memoryUpdate"] = {}
+
+    decision = shaped["semanticEvidencePatch"].get("contextualTrackingDecision")
+    eligibility = decision.get("metricEligibility") if isinstance(decision, dict) else None
+    if isinstance(eligibility, list):
+        for item in eligibility:
+            if isinstance(item, dict):
+                # Missing preference is transport syntax, not a semantic no-use decision. Swift
+                # still decides whether a supplied set is coherent and authorized for this turn.
+                item.setdefault("preferred", False)
+
+    decodable = _project_current_v5_decodable_value(shaped, CurrentV5PlannerContract)
+    if decodable is _CURRENT_V5_DROP:
+        # Ownership normalization always constructs this required sparse envelope. Keep a safe
+        # invariant fallback so a provider's optional typed mistake cannot become HTTP 502.
+        return {"semanticEvidencePatch": {"memoryUpdate": {}}}
+    return decodable
 
 
 def canonicalize_current_v5_planner_contract(
@@ -795,11 +1000,13 @@ def canonicalize_current_v5_planner_contract(
     *,
     allowed_semantic_operations: Optional[list[str]] = None,
 ) -> str:
-    """Project parseable output onto the one writable current-v5 surface, then validate it.
+    """Project every parseable object onto the Swift-decodable current-v5 sparse surface.
 
-    Fields without a current-v5 owner are discarded, while malformed or conflicting values for
-    known authoritative fields remain strict contract failures. `exclude_unset` preserves
-    sparse-patch omission rather than expanding absent fields into destructive defaults.
+    The backend owns JSON syntax, legacy alias movement, and removal of unowned metadata. It does
+    not veto a complete model turn because an optional field is malformed or ambiguous: the
+    smallest invalid optional portion is omitted and Swift's compiler/Gate remains the only
+    workflow and semantic authority. Only invalid JSON or a non-object root is a transport
+    contract failure.
     """
 
     try:
@@ -821,34 +1028,16 @@ def canonicalize_current_v5_planner_contract(
     _ = allowed_semantic_operations
     projected = _canonicalize_current_v5_semantic_aliases(projected)
     projected = _canonicalize_current_v5_progression_syntax(projected)
-    projected = _strip_unowned_current_v5_fields(projected, CurrentV5PlannerContract)
-    # A decision containing only retired, unowned metadata has no remaining semantic content.
-    # Drop the optional envelope instead of turning legacy syntax into a required-field failure.
-    projected_patch = projected.get("semanticEvidencePatch")
-    if isinstance(projected_patch, dict) and projected_patch.get(
-        "contextualTrackingDecision"
-    ) == {}:
-        projected_patch.pop("contextualTrackingDecision", None)
-    elif isinstance(projected_patch, dict):
-        decision = projected_patch.get("contextualTrackingDecision")
-        eligibility = decision.get("metricEligibility") if isinstance(decision, dict) else None
-        if isinstance(eligibility, list):
-            for item in eligibility:
-                if isinstance(item, dict):
-                    # Missing preference is syntax, not a semantic no-use decision. Swift may
-                    # compile the sole qualifying metric; ambiguous multi-qualifier output still
-                    # follows the existing one-correction Gate path.
-                    item.setdefault("preferred", False)
+    projected = _project_current_v5_decodable_contract(projected)
 
     try:
         validated = CurrentV5PlannerContract.model_validate(projected)
     except ValidationError as error:
-        first = error.errors(include_url=False, include_input=False)[0]
-        location = first.get("loc") or ("root",)
-        field_path = ".".join(str(part) for part in location)
+        # Reaching this branch is a projector implementation defect, not a provider contract
+        # violation. Keep the public error type for observability without blaming a user turn.
         raise CurrentV5PlannerContractError(
-            field_path=field_path,
-            violation=str(first.get("type") or "invalid"),
+            field_path="root",
+            violation="canonical_projection_invalid",
         ) from error
     return json.dumps(
         validated.model_dump(mode="json", exclude_unset=True),

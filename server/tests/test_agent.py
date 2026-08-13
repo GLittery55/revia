@@ -1261,12 +1261,15 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         openai.assert_not_awaited()
 
-    async def test_parseable_invalid_current_v5_authoritative_evidence_fails_without_repair(self) -> None:
+    async def test_parseable_invalid_current_v5_optional_evidence_reaches_swift_without_repair(self) -> None:
         invalid_contract = Completion(
             (
                 '{"semanticOperation":"continueExploratoryReflection",'
                 '"semanticEvidencePatch":{"memoryUpdate":"not-an-object",'
-                '"cardConnectionTurnOutcome":null},"responseFocus":"继续现实探索"}'
+                '"cardConnectionTurnOutcome":null,'
+                '"cardConnectionEvidence":{"realityMapping":{'
+                '"content":"用户已经形成的现实关系","source":"latestUserAnswer"}}},'
+                '"responseFocus":"继续现实探索"}'
             ),
             "deepseek",
             "deepseek-v4-pro",
@@ -1286,17 +1289,28 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
                 "_repair_deepseek_turn_controller_json",
                 new=AsyncMock(),
             ) as repair:
-            with self.assertRaises(HTTPException) as raised:
-                await self.gateway.complete(
-                    role="writer",
-                    agent_task="current_v5_core_planner",
-                    request_id="current-v5-authoritative-invalid",
-                    messages=[],
-                    max_tokens=1300,
-                    temperature=0.28,
-                )
+            result = await self.gateway.complete(
+                role="writer",
+                agent_task="current_v5_core_planner",
+                request_id="current-v5-authoritative-invalid",
+                messages=[],
+                max_tokens=1300,
+                temperature=0.28,
+            )
 
-        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(
+            json.loads(result.content),
+            {
+                "semanticOperation": "continueExploratoryReflection",
+                "semanticEvidencePatch": {
+                    "memoryUpdate": {},
+                    "cardConnectionEvidence": {
+                        "realityMapping": "用户已经形成的现实关系"
+                    },
+                },
+                "responseFocus": "继续现实探索",
+            },
+        )
         repair.assert_not_awaited()
 
     async def test_parseable_current_v5_protocol_residue_is_canonicalized_without_repair(self) -> None:

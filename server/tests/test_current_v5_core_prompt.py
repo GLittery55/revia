@@ -125,11 +125,18 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         payload["semanticEvidencePatch"]["memoryUpdate"]["cardDevelopmentEvidence"][
             "actorsOrElements"
         ] = "人物和瓷器"
-        with self.assertRaises(CurrentV5PlannerContractError) as failure:
-            validate_current_v5_planner_contract(json.dumps(payload, ensure_ascii=False))
+        canonical_invalid_leaf = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(payload, ensure_ascii=False)
+            )
+        )
+        projected_development = canonical_invalid_leaf["semanticEvidencePatch"][
+            "memoryUpdate"
+        ]["cardDevelopmentEvidence"]
+        self.assertNotIn("actorsOrElements", projected_development)
         self.assertEqual(
-            failure.exception.field_path,
-            "semanticEvidencePatch.memoryUpdate.cardDevelopmentEvidence.actorsOrElements",
+            projected_development["relationOrAction"],
+            "先扶住架子并把瓷器搬下来",
         )
 
     def test_nonsemantic_planner_envelope_omissions_default_without_weakening_core_shape(self) -> None:
@@ -189,7 +196,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             {"meaning": "reviseTender", "candidateRef": None},
         )
 
-    def test_ambiguous_or_unknown_progression_syntax_remains_invalid(self) -> None:
+    def test_ambiguous_or_unknown_progression_syntax_is_omitted_for_swift_gate(self) -> None:
         base = {
             "semanticOperation": None,
             "semanticEvidencePatch": {"memoryUpdate": {}},
@@ -201,10 +208,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "moveForward",
         ):
             with self.subTest(value=value):
-                with self.assertRaises(CurrentV5PlannerContractError):
+                canonical = json.loads(
                     canonicalize_current_v5_planner_contract(
                         json.dumps(dict(base, reflectionProgressionDecision=value))
                     )
+                )
+                self.assertNotIn("reflectionProgressionDecision", canonical)
 
     def test_progression_delta_has_one_atomic_owner_with_legacy_alias_migration(self) -> None:
         canonical_payload = {
@@ -551,11 +560,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         payload["semanticEvidencePatch"]["contextualTrackingDecision"] = {
             "metricEligibility": "sleep"
         }
-        with self.assertRaises(CurrentV5PlannerContractError) as failure:
-            validate_current_v5_planner_contract(json.dumps(payload))
-        self.assertEqual(
-            failure.exception.field_path,
-            "semanticEvidencePatch.contextualTrackingDecision.metricEligibility",
+        canonical_invalid_decision = json.loads(
+            canonicalize_current_v5_planner_contract(json.dumps(payload))
+        )
+        self.assertNotIn(
+            "contextualTrackingDecision",
+            canonical_invalid_decision["semanticEvidencePatch"],
         )
 
     def test_uniquely_owned_fields_are_canonicalized_across_all_envelopes(self) -> None:
@@ -885,7 +895,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             {"concreteFacts": ["登录后的功能反复修改仍有问题"]},
         )
 
-    def test_conflicting_self_criticism_statement_owners_remain_invalid(self) -> None:
+    def test_canonical_self_criticism_statement_wins_over_conflicting_alias(self) -> None:
         payload = {
             "semanticOperation": "clarifyEvent",
             "semanticEvidencePatch": {
@@ -899,15 +909,14 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "responseFocus": "询问问题如何发展",
         }
 
-        with self.assertRaises(CurrentV5PlannerContractError) as failure:
+        canonical = json.loads(
             canonicalize_current_v5_planner_contract(
                 json.dumps(payload, ensure_ascii=False)
             )
-        self.assertEqual(
-            failure.exception.field_path,
-            "semanticEvidencePatch.memoryUpdate.selfCriticalStatement",
         )
-        self.assertEqual(failure.exception.violation, "duplicate_conflict")
+        memory = canonical["semanticEvidencePatch"]["memoryUpdate"]
+        self.assertEqual(memory["selfCriticalStatement"], "我不适合做开发")
+        self.assertEqual(memory["episodeStructure"], {})
 
     def test_misnested_card_connection_outcome_moves_to_its_unique_patch_owner(self) -> None:
         outcome = {
@@ -945,7 +954,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         )
         self.assertNotIn("cardConnectionTurnOutcome", patch["memoryUpdate"])
 
-    def test_conflicting_card_connection_outcome_owners_remain_invalid(self) -> None:
+    def test_conflicting_card_connection_legacy_aliases_are_omitted(self) -> None:
         canonical_outcome = {
             "kind": "connectionStillUnclear",
             "connection": None,
@@ -970,17 +979,286 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             "responseFocus": "继续",
         }
 
-        with self.assertRaises(CurrentV5PlannerContractError) as failure:
+        canonical = json.loads(
             canonicalize_current_v5_planner_contract(
                 json.dumps(payload, ensure_ascii=False)
             )
-        self.assertEqual(
-            failure.exception.field_path,
-            "semanticEvidencePatch.cardConnectionTurnOutcome",
         )
-        self.assertEqual(failure.exception.violation, "duplicate_conflict")
+        self.assertNotIn(
+            "cardConnectionEvidence",
+            canonical["semanticEvidencePatch"],
+        )
 
-    def test_unknown_extras_have_no_authority_but_invalid_typed_evidence_remains_strict(self) -> None:
+    def test_unambiguous_card_connection_wrapper_is_decoded_without_rejecting_the_turn(self) -> None:
+        payload = {
+            "semanticOperation": "continueOpenCardConnection",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {},
+                "cardConnectionEvidence": {
+                    "imageRelation": "画面里的人正在收拾东西",
+                    # Production incident: the provider returned a structured object where the
+                    # wire contract accepts optional text. The backend must not turn this into 502.
+                    "realityMapping": {
+                        "content": "我也在考虑接下来怎么处理这段关系",
+                        "confidenceLabel": "high",
+                        "reasonCode": "grounded_user_relation",
+                        "provenance": "latest_user_answer",
+                    },
+                },
+            },
+            "responseFocus": "继续邀请用户形成现实侧关系",
+        }
+
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(payload, ensure_ascii=False)
+            )
+        )
+        self.assertEqual(canonical["semanticOperation"], "continueOpenCardConnection")
+        self.assertEqual(
+            canonical["semanticEvidencePatch"]["cardConnectionEvidence"],
+            {
+                "imageRelation": "画面里的人正在收拾东西",
+                "realityMapping": "我也在考虑接下来怎么处理这段关系",
+            },
+        )
+
+    def test_string_scalar_wrappers_use_only_consistent_authority_text(self) -> None:
+        cases = (
+            ("plain string", "hello", "hello"),
+            ("content", {"content": "hello"}, "hello"),
+            (
+                "content with unknown metadata",
+                {"content": "hello", "confidenceLabel": "high"},
+                "hello",
+            ),
+            (
+                "content with several unknown metadata fields",
+                {
+                    "content": "hello",
+                    "confidenceLabel": "high",
+                    "reason": "grounded",
+                    "provenance": "user",
+                },
+                "hello",
+            ),
+            (
+                "field-name authority",
+                {"realityMapping": "hello", "confidenceLabel": "high"},
+                "hello",
+            ),
+            (
+                "equal authority keys",
+                {"content": "hello", "text": "hello"},
+                "hello",
+            ),
+            (
+                "conflicting authority keys",
+                {"content": "hello", "text": "different"},
+                None,
+            ),
+            ("non-string authority", {"content": {"foo": "bar"}}, None),
+            ("empty authority", {"content": "", "confidenceLabel": "high"}, None),
+        )
+
+        for label, wrapped, expected in cases:
+            with self.subTest(label=label):
+                canonical = json.loads(
+                    canonicalize_current_v5_planner_contract(
+                        json.dumps(
+                            {
+                                "semanticEvidencePatch": {
+                                    "memoryUpdate": {},
+                                    "cardConnectionEvidence": {
+                                        "imageRelation": "画面里有人在整理东西",
+                                        "realityMapping": wrapped,
+                                    },
+                                }
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                )
+                evidence = canonical["semanticEvidencePatch"][
+                    "cardConnectionEvidence"
+                ]
+                if expected is None:
+                    self.assertNotIn("realityMapping", evidence)
+                else:
+                    self.assertEqual(evidence["realityMapping"], expected)
+
+    def test_invalid_canonical_card_leaf_is_not_replaced_by_a_legacy_alias(self) -> None:
+        payload = {
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "cardConnectionTurnOutcome": {
+                        "connection": {"realityMapping": "旧位置的解释"}
+                    }
+                },
+                "cardConnectionEvidence": {
+                    "imageRelation": "canonical image relation",
+                    "realityMapping": {"unexpected": "object"},
+                },
+            }
+        }
+
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(json.dumps(payload))
+        )
+        self.assertEqual(
+            canonical["semanticEvidencePatch"]["cardConnectionEvidence"],
+            {"imageRelation": "canonical image relation"},
+        )
+
+    def test_unambiguous_typed_wrappers_are_decoded_across_current_v5_surfaces(self) -> None:
+        payload = {
+            "semanticOperation": {"value": "continueExploratoryReflection"},
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "selfCriticalStatement": {
+                        "content": "我是不是根本不适合做开发",
+                        "source": "latestUserAnswer",
+                    },
+                    "cardObservationEvidence": {
+                        "userDescribedElements": {
+                            "items": [
+                                {"text": "一个人在门口"},
+                                {"content": "手里拿着文件"},
+                            ]
+                        }
+                    },
+                    "reflectionFrame": {
+                        "data": {
+                            "reflectionDelta": {
+                                "text": "这次卡住不能单独说明整体能力"
+                            },
+                            "fierceEvidence": {
+                                "direction": {"value": "change"}
+                            },
+                        }
+                    },
+                    "practiceTransition": {
+                        "proposal": {
+                            "content": {"text": "先只验证当前最怀疑的一处"},
+                            "basis": {"value": "用户已经描述了同时修改多处"},
+                        }
+                    },
+                },
+                "contextualTrackingDecision": {
+                    "metricEligibility": {
+                        "items": [
+                            {
+                                "profileID": {"value": "sleep"},
+                                "metric": {"text": "sleepTiming"},
+                                "status": {"value": "qualifies"},
+                                "preferred": {"value": True},
+                            }
+                        ]
+                    }
+                },
+            },
+            "responseFocus": {"text": "沿用户已经形成的理解继续"},
+        }
+
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(payload, ensure_ascii=False)
+            )
+        )
+        self.assertEqual(canonical["semanticOperation"], "continueExploratoryReflection")
+        self.assertEqual(canonical["responseFocus"], "沿用户已经形成的理解继续")
+        patch = canonical["semanticEvidencePatch"]
+        memory = patch["memoryUpdate"]
+        self.assertEqual(memory["selfCriticalStatement"], "我是不是根本不适合做开发")
+        self.assertEqual(
+            memory["cardObservationEvidence"]["userDescribedElements"],
+            ["一个人在门口", "手里拿着文件"],
+        )
+        self.assertEqual(
+            memory["reflectionFrame"],
+            {
+                "reflectionDelta": "这次卡住不能单独说明整体能力",
+                "fierceEvidence": {"direction": "change"},
+            },
+        )
+        self.assertEqual(
+            memory["practiceTransition"]["proposal"],
+            {
+                "content": "先只验证当前最怀疑的一处",
+                "basis": "用户已经描述了同时修改多处",
+            },
+        )
+        self.assertEqual(
+            patch["contextualTrackingDecision"]["metricEligibility"],
+            [
+                {
+                    "profileID": "sleep",
+                    "metric": "sleepTiming",
+                    "status": "qualifies",
+                    "preferred": True,
+                }
+            ],
+        )
+
+    def test_ambiguous_typed_wrappers_are_omitted_without_guessing(self) -> None:
+        payload = {
+            "semanticOperation": "continueExploratoryReflection",
+            "semanticEvidencePatch": {
+                "memoryUpdate": {
+                    "selfCriticalStatement": {
+                        "content": "第一种理解",
+                        "text": "另一种理解",
+                    },
+                    "cardObservationEvidence": {
+                        "userDescribedElements": {
+                            "items": ["一个人在门口"],
+                            "values": ["一扇关着的门"],
+                        }
+                    },
+                }
+            },
+            "responseFocus": {
+                "content": "继续探索",
+                "text": "直接综合",
+            },
+        }
+
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(payload, ensure_ascii=False)
+            )
+        )
+        self.assertEqual(canonical["semanticOperation"], "continueExploratoryReflection")
+        self.assertNotIn("responseFocus", canonical)
+        memory = canonical["semanticEvidencePatch"]["memoryUpdate"]
+        self.assertNotIn("selfCriticalStatement", memory)
+        self.assertNotIn("cardObservationEvidence", memory)
+
+    def test_only_invalid_json_or_non_object_root_is_a_contract_failure(self) -> None:
+        for content, violation in (("not-json", "invalid_json"), ("[]", "json_not_object")):
+            with self.subTest(content=content):
+                with self.assertRaises(CurrentV5PlannerContractError) as failure:
+                    canonicalize_current_v5_planner_contract(content)
+                self.assertEqual(failure.exception.field_path, "root")
+                self.assertEqual(failure.exception.violation, violation)
+
+        canonical = json.loads(
+            canonicalize_current_v5_planner_contract(
+                json.dumps(
+                    {
+                        "semanticOperation": "clarifyEvent",
+                        "semanticEvidencePatch": "not-an-object",
+                        "responseFocus": "继续",
+                    }
+                )
+            )
+        )
+        self.assertEqual(
+            canonical["semanticEvidencePatch"],
+            {"memoryUpdate": {}},
+        )
+
+    def test_unknown_extras_and_invalid_optional_evidence_have_no_transport_authority(self) -> None:
         unknown = {
             "semanticOperation": "continueCardDevelopment",
             "semanticEvidencePatch": {
@@ -1019,11 +1297,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             },
             "responseFocus": "继续",
         }
-        with self.assertRaises(CurrentV5PlannerContractError) as invalid_failure:
+        canonical_invalid = json.loads(
             canonicalize_current_v5_planner_contract(json.dumps(invalid))
-        self.assertEqual(
-            invalid_failure.exception.field_path,
-            "semanticEvidencePatch.memoryUpdate.cardObservationEvidence.userDescribedElements",
+        )
+        self.assertNotIn(
+            "cardObservationEvidence",
+            canonical_invalid["semanticEvidencePatch"]["memoryUpdate"],
         )
 
     def test_current_memory_writable_surface_excludes_swift_and_legacy_metadata(self) -> None:
@@ -1739,10 +2018,16 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ]
         malformed_frame["dimensions"] = ["mindfulness", "unsupported"]
         malformed_frame["fierceEvidence"]["impact"] = {"not": "text"}
-        with self.assertRaises(CurrentV5PlannerContractError):
+        canonical_malformed = json.loads(
             canonicalize_current_v5_planner_contract(
                 json.dumps(malformed_sibling, ensure_ascii=False)
             )
+        )
+        projected_frame = canonical_malformed["semanticEvidencePatch"]["memoryUpdate"][
+            "reflectionFrame"
+        ]
+        self.assertEqual(projected_frame["dimensions"], ["mindfulness"])
+        self.assertNotIn("impact", projected_frame["fierceEvidence"])
 
         no_grounded_evidence = json.loads(json.dumps(payload, ensure_ascii=False))
         no_grounded_evidence["semanticEvidencePatch"]["memoryUpdate"]["reflectionFrame"][
