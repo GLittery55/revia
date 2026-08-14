@@ -2208,6 +2208,11 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ).system
 
         self.assertIn(CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT, prompt)
+        self.assertEqual(prompt.count("INITIAL SYNTHESIS TRANSACTION"), 1)
+        self.assertNotIn(
+            "Fierce has completed, but no Synthesis is committed yet",
+            prompt,
+        )
         self.assertIn("At the first Synthesis boundary", prompt)
         self.assertIn("reflectionProgressionDecision is required", prompt)
         self.assertIn('"meaning":"synthesize"', prompt)

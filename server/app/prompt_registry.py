@@ -1815,19 +1815,15 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
         )
         synthesis_state = _current_v5_synthesis_state(request)
         synthesis_contract = (
-            "SYNTHESIS. Fierce has completed, but no Synthesis is committed yet. Produce the first "
-            "Synthesis now as one atomic meaning=synthesize progression with a nonempty reflectionDelta; "
-            "semanticOperation, candidateRef, and fierceDirection are null, memoryUpdate is empty, and "
-            "responseFocus is empty. Do not choose proposePractice or treat acceptance of Fierce as "
-            "acceptance of a nonexistent Synthesis. "
-            if synthesis_state == "initial"
+            "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed "
+            "context in one revisable delta; add no interpretation or action. A committed Synthesis "
+            "changes only for explicit correction/qualification. Natural acceptance, acknowledgment, "
+            "or readiness chooses proposePractice immediately; require no action wording or second "
+            "confirmation. "
+            if synthesis_state == "committed"
             else (
-                "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed "
-                "context in one revisable delta; add no interpretation or action. A committed Synthesis "
-                "changes only for explicit correction/qualification. Natural acceptance, acknowledgment, "
-                "or readiness chooses proposePractice immediately; require no action wording or second "
-                "confirmation. "
-                if synthesis_state == "committed"
+                ""
+                if synthesis_state == "initial"
                 else (
                     "SYNTHESIS. Use only canonical link, Tender, grounded/declined Fierce, and confirmed "
                     "context in one revisable delta. When selected from Tender or active Fierce, provide "
