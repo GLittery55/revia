@@ -12,6 +12,7 @@ from app.prompt_registry import (
     CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE,
     CURRENT_V5_CORE_PROMPT_VERSION,
     CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE,
+    CURRENT_V5_EVENT_SELF_CRITICISM_ACCEPTANCE_CONTRACT,
     CURRENT_V5_FIERCE_PURPOSE_CONTRACT,
     CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT,
     CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT,
@@ -3662,6 +3663,11 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("choose clarifyEvent even when the latest answer completes it", event_prompt)
         self.assertIn("Swift project the post-turn Card Consent", event_prompt)
         self.assertIn("implementation, troubleshooting, hypothetical alternatives", event_prompt)
+        self.assertIn(CURRENT_V5_EVENT_SELF_CRITICISM_ACCEPTANCE_CONTRACT, event_prompt)
+        self.assertIn("Commit selfCriticalStatement only for an explicit user-authored", event_prompt)
+        self.assertIn("Do not infer it from regret", event_prompt)
+        self.assertIn("If wording could be emotion, regret", event_prompt)
+        self.assertIn("selfCriticismLink is Exploration-only", event_prompt)
         self.assertIn("self-criticism statement is separate from episode impacts", event_prompt)
         self.assertIn("memoryUpdate.selfCriticalStatement", event_prompt)
         self.assertIn("as a sibling of episodeStructure", event_prompt)
@@ -3671,6 +3677,53 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertNotIn("CARD CONNECTION SHAPE", event_prompt)
         self.assertNotIn("REFLECTION STRUCTURE", event_prompt)
         self.assertNotIn("OPTIONAL ACTION STRUCTURE", event_prompt)
+
+    def test_event_self_criticism_acceptance_rejects_regret_and_preserves_exploration_link_boundary(
+        self,
+    ) -> None:
+        request = self.request()
+        request["protocolStage"] = "contextualDisclosure"
+        request["allowedSemanticOperations"] = ["clarifyEvent"]
+        request["recentMessages"] = [
+            {
+                "id": "00000000-0000-0000-0000-000000000210",
+                "role": "user",
+                "content": "我昨晚一直刷手机，什么都没学，今天很后悔。压力大，学不进去。",
+                "replyToMessageID": None,
+            }
+        ]
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        for rejected_example in (
+            "今天很后悔",
+            "我很难过",
+            "我有点内疚",
+            "压力很大",
+            "学不进去",
+            "事情没做好",
+            "最后什么都没完成",
+            "别人觉得我做得不好",
+        ):
+            self.assertIn(rejected_example, prompt)
+        for accepted_example in (
+            "我怎么这么没有自制力",
+            "我觉得自己太懒了",
+            "我明明该学习却一直刷，真不该这样",
+            "我觉得这是我自己的问题",
+            "我又把事情搞砸了",
+        ):
+            self.assertIn(accepted_example, prompt)
+        self.assertIn("prefer absent", prompt)
+        self.assertIn("never create or preserve it at Event", prompt)
+        self.assertIn("pressure, behavior, outcome, regret, or emotion", prompt)
 
         card_request = self.request()
         card_request["protocolStage"] = "cardReflection"

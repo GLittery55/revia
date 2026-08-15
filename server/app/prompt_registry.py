@@ -799,11 +799,30 @@ CURRENT_V5_PLANNER_JSON_SHAPE = (
 # beside the compact top-level shape makes the sparse-patch contract explicit without restoring
 # the retired all-stage Planner tuple.
 CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE = (
-    '{"selfCriticalStatement":"exact grounded broad self-judgment when newly supplied",'
+    '{"selfCriticalStatement":"exact explicit user-authored self-criticism when accepted",'
     '"episodeStructure":{"concreteFacts":["grounded focal event"],'
     '"eventProcess":["grounded development"],'
     '"behaviorEvidence":["grounded action or omission"]}}'
 )
+
+CURRENT_V5_EVENT_SELF_CRITICISM_ACCEPTANCE_CONTRACT = r'''
+EVENT SELF-CRITICAL STATEMENT ACCEPTANCE
+Commit selfCriticalStatement only for an explicit user-authored self-directed criticism, negative
+self-evaluation, self-blame, or condemnation of their own behavior. Do not infer it from regret,
+feeling bad, guilt, anxiety, pressure, difficulty concentrating, an unfinished task, a bad outcome, or
+another person's evaluation.
+
+Not sufficient alone: “今天很后悔”, “我很难过”, “我有点内疚”, “压力很大”, “学不进去”, “事情没做好”,
+“最后什么都没完成”, or “别人觉得我做得不好”.
+Sufficient: “我怎么这么没有自制力”, “我觉得自己太懒了”, “我明明该学习却一直刷，真不该这样”,
+“我觉得这是我自己的问题”, or “我又把事情搞砸了”. A behavior-specific criticism is sufficient;
+it need not judge the whole self.
+
+If wording could be emotion, regret, outcome dissatisfaction, or self-criticism, prefer absent. Leave
+selfCriticalStatement missing so later Exploration can ask directly. selfCriticismLink is Exploration-only:
+never create or preserve it at Event, and never create it without an accepted selfCriticalStatement.
+A relation among pressure, behavior, outcome, regret, or emotion is not selfCriticismLink.
+'''.strip()
 
 CURRENT_V5_CARD_EVIDENCE_PATCH_SHAPE = (
     '{"cardObservationEvidence":{"userDescribedElements":["visible user-described element"]},'
@@ -1760,12 +1779,14 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             "usable in the current clarifyEvent act, stop adding Event questions; responseFocus should support a brief "
             "transition rather than supply another missing-field question. Do not continue into implementation, troubleshooting, hypothetical alternatives, "
             "or what the person should have done differently. Impact, importance, motive, responsibility, and "
-            "self-judgment are optional context and never disclosure gates. In episodeStructure emit only new "
+            "self-judgment are optional context and never disclosure gates. "
+            + CURRENT_V5_EVENT_SELF_CRITICISM_ACCEPTANCE_CONTRACT
+            + " In episodeStructure emit only new "
             "grounded items from the latest user message; Swift accumulates them with committed memory. A "
             "non-empty eventProcess or behaviorEvidence is enough; omit an unchanged relation and never "
             "emit status metadata or an empty list for it. The typed "
-            "self-criticism statement is separate from episode impacts: when the person states a broad "
-            "self-judgment, copy its exact grounded wording only to memoryUpdate.selfCriticalStatement, "
+            "self-criticism statement is separate from episode impacts: when the person states an accepted explicit "
+            "self-criticism, copy its exact grounded wording only to memoryUpdate.selfCriticalStatement, "
             "as a sibling of episodeStructure rather than a member inside it. Swift derives the persisted "
             "presence summary. Never store an emotion, worry, self-evaluation, "
             "repair response, or intended action as an episode impact; impacts are concrete consequences "
