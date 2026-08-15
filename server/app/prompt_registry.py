@@ -115,6 +115,16 @@ def _encoded(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def _has_self_criticism_link(memory: dict[str, Any]) -> bool:
+    link = memory.get("selfCriticismLink")
+    if isinstance(link, str):
+        return bool(link.strip())
+    if not isinstance(link, dict):
+        return False
+    grounded_difficulty = link.get("groundedDifficulty")
+    return isinstance(grounded_difficulty, str) and bool(grounded_difficulty.strip())
+
+
 def _pending_confirmation(request: dict[str, Any]) -> bool:
     memory = request.get("semanticMemory")
     prompt = memory.get("nextPrompt") if isinstance(memory, dict) else None
@@ -837,6 +847,16 @@ Exploration shape; placeholders are not wording:
 "semanticEvidencePatch":{"memoryUpdate":{},"cardConnectionEvidence":
 {"branch":"needsMoreExploration","realityMapping":null},"contextualTrackingDecision":null},
 "responseFocus":"<one concrete reality-oriented question>"}
+'''.strip()
+
+CURRENT_V5_EXPLORATION_MISSING_TARGET_CONTRACT = r'''
+EXPLORATION MISSING TARGET
+Read memory and user history. Missing selfCriticalStatement has priority. Copy only explicit user-authored
+self-criticism; never infer it from facts, feelings, others, or Assistant text. If absent, ask one direct
+self-evaluation question only. If statement exists without a difficulty→judgment link, commit an already
+grounded relation or ask one attribution question. Brief affirmation never repeats summary validation:
+commit one unique prior user-grounded relation or ask the missing target once. If one answer supplies
+statement+relation, return both atomically with empty responseFocus and no reflectionFrame; completion wins.
 '''.strip()
 
 CURRENT_V5_TENDER_REFLECTION_CONTRACT = r'''
@@ -1884,10 +1904,16 @@ def _current_v5_stage_contract(request: dict[str, Any]) -> str:
             if contextual_profiles
             else " No new contextual tracking profile is available; omit contextualTrackingDecision."
         )
+        exploration_missing_target_contract = (
+            CURRENT_V5_EXPLORATION_MISSING_TARGET_CONTRACT + " "
+            if str(request.get("reflectionMode") or "") == "exploratory"
+            else ""
+        )
         return (
             "Use Swift's read-only reflectionMode. Canonical lineage is cardRealityConnection -> selfCriticismLink -> "
             "reflectionFrame -> optional fierceEvidence -> synthesis -> practice; never rebuild or reorder it. "
-            "selfCriticismLink carries relationship meaning, not Swift's stored protocol string. Prefer "
+            + exploration_missing_target_contract
+            + "selfCriticismLink carries relationship meaning, not Swift's stored protocol string. Prefer "
             "{\"groundedDifficulty\":\"user-grounded difficulty or pattern\"}; a legacy plain relation is accepted. "
             "Swift joins the grounded meaning to the current judgment and owns metadata. Card material, emotion, impact, or blockage "
             "cannot replace this relationship. "
@@ -2312,9 +2338,9 @@ Use user messages and confirmed typed memory only. The latest answer may add sev
 Preserve uncertainty; infer no emotion, motive, personality, diagnosis, responsibility, causality, or
 an actual Tracking relationship. The Planner may select one supplied, temporally plausible Tracking
 profile as a contextual cue for the person to evaluate, but must not assert that it is related or
-causal. memoryUpdate is sparse: omit unchanged fields and never overwrite evidence with
-empty/default values. selfCriticalStatement is the sole writable self-criticism evidence: copy the
-exact nonempty new broad self-judgment, never an inferred trait; Swift derives presence.
+causal. memoryUpdate is sparse; omit unchanged fields and empty/default overwrites. Only
+selfCriticalStatement may store exact nonempty user-authored self-directed criticism, specific or
+broad; never infer it. Swift derives presence.
 invalidatedInterpretations contains only assistant interpretations explicitly rejected by the person;
 append that correction and never reuse it as evidence.
 
@@ -2364,7 +2390,6 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     destination_stage = str(directive.get("destinationStage") or "")
     directive_memory = directive.get("memoryUpdate")
     directive_memory = directive_memory if isinstance(directive_memory, dict) else {}
-    projected_reflection_phase = str(directive_memory.get("reflectionPhase") or "")
     next_purpose = str(next_prompt.get("purpose") or "")
     selected_contextual_metric_ref = directive.get("contextualTrackingMetricRef")
     selected_contextual_metric_ref = (
@@ -2426,6 +2451,54 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     request_semantic_memory = (
         request_semantic_memory if isinstance(request_semantic_memory, dict) else {}
     )
+    request_statement = str(
+        request_semantic_memory.get("selfCriticalStatement") or ""
+    ).strip()
+    directive_statement = str(
+        directive_memory.get("selfCriticalStatement") or ""
+    ).strip()
+    effective_self_critical_statement = directive_statement or request_statement
+    effective_has_self_criticism_link = _has_self_criticism_link(
+        directive_memory
+    ) or _has_self_criticism_link(request_semantic_memory)
+
+    if selected_contextual_metric_ref and selected_contextual_metric:
+        exploration_language_contract = (
+            "The Planner selected exactly this contextual metric reference "
+            + _encoded(selected_contextual_metric_ref)
+            + " with this supplied factual metric "
+            + _encoded(selected_contextual_metric)
+            + ". This contextual question is the whole visible reply; do not also ask an Exploration question. "
+            + contextual_tracking_language_contract
+            + " Continue Reflection only after the person's contextual appraisal."
+        )
+    elif not effective_self_critical_statement:
+        exploration_language_contract = (
+            "The committed selfCriticalStatement is missing. The exclusive visible task is one direct, neutral, "
+            "low-burden question asking whether the concrete event led the person to blame, criticize, or negatively "
+            "evaluate themselves. Use at most one short event anchor. Do not propose a judgment, use the internal term "
+            "‘self-criticism’, recap the emotional or Card discussion, ask whether an Assistant summary is accurate, "
+            "fitting, or matches the person's experience, request more detail, or move toward a goal or action. A brief "
+            "affirmation never authorizes repeating an earlier Assistant-summary confirmation. Ask only the canonical "
+            "missing self-evaluation target and end with exactly one question."
+        )
+    elif not effective_has_self_criticism_link:
+        exploration_language_contract = (
+            "The exact selfCriticalStatement exists but selfCriticismLink is missing. Ask exactly one direct, neutral "
+            "attribution question connecting the grounded event, behavior, or accumulated result to that exact statement. "
+            "Keep attempts, their result, and the later judgment separate; never frame one action as causing the judgment "
+            "unless the person explicitly did. "
+            "Do not seek another example, one precise moment, deeper causes, emotion, importance, goals, action, or validation "
+            "of an Assistant summary. Do not strengthen or replace the committed wording. End with exactly one question."
+        )
+    else:
+        exploration_language_contract = (
+            "Exploration is semantically complete. Ask no question and do not request confirmation, accuracy checking, more "
+            "detail, another example, causes, goals, or action. Add no interpretation. Use at most one brief transition sentence "
+            "grounded entirely in committed user-authored material; the first bounded understanding belongs to the next Tender act."
+        )
+        question_contract = "Do not add a question."
+
     is_committed_tender_revision = (
         operation == "continueTenderReflection"
         and reflection_mode == "tender"
@@ -2547,42 +2620,7 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "the current self-critical statement, without assuming a cause or specific trigger. Do not deepen Card content, solve the real-world task, or add "
             "Tender, personality, motive, advice, or card meaning."
         ),
-        "continueExploratoryReflection": (
-            "Use the person's projective frame only to help them discover whether and how the exact self-critical "
-            "statement became connected to the grounded difficulty. Do not fill a missing relation. Sufficiency, not "
-            "maximal specificity, is the stopping criterion. Cumulative, gradual, situational, outcome-based, comparative, "
-            "explicit-standard, and user-described loose relations are sufficient when they explain the connection in the "
-            "person's own terms. Never convert a cumulative pattern into a demand for one moment, attempt, bug, step, or "
-            "exact threshold. When the operation is legitimately still exploratory, ask one easy neutral question only for "
-            "the relationship that remains unclear; do not default to onset precision. Never use a "
-            "causal-presupposing question that asks how or why a candidate fact made, caused, or led to the judgment, "
-            "or whether the judgment happened because of that fact. "
-            "Keep attempts separate from their effectiveness, accumulated blockage, and later judgment. Never word "
-            "an isolated action as causing self-criticism unless the person explicitly made that link; ignore any "
-            "responseFocus that does so and ask from the grounded overall result or pattern instead. "
-            "Do not reopen Card meaning, collect a new topic, seek complete causes, soften the judgment, troubleshoot, "
-            "or ask about action. If the person says there was no specific trigger and describes accumulated lack of "
-            "progress instead, preserve that correction as the relationship and do not rephrase the onset question. If a "
-            "dispensable link is unknown, do not rephrase it. referenceGuidance is silent "
-            "question-selection support, never reply content or evidence. Honor corrections at their exact scope. "
-            + (
-                "The Planner selected exactly this contextual metric reference "
-                + _encoded(selected_contextual_metric_ref)
-                + " with this supplied factual metric "
-                + _encoded(selected_contextual_metric)
-                + ". "
-                + contextual_tracking_language_contract
-                + " This contextual question is the whole visible reply; continue Reflection after the person's appraisal. "
-                if selected_contextual_metric_ref and selected_contextual_metric
-                else (
-                    "Exploration has completed and the projected phase is Tender. Briefly carry forward only the grounded "
-                    "difficulty-to-judgment relationship and invite the person to continue; do not state a Tender distinction yet. "
-                    if projected_reflection_phase == "tender"
-                    else "No contextual profile was selected; do not mention tracking or its review. "
-                )
-            )
-            + "Keep Exploration centered on the one unresolved difficulty-to-judgment relationship and do not repeat a recorded relationship."
-        ),
+        "continueExploratoryReflection": exploration_language_contract,
         "continueTenderReflection": tender_language_contract,
         "continueTenderGroundedFierceReflection": (
             CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT

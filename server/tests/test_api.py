@@ -37,6 +37,7 @@ class APITests(unittest.TestCase):
         self.alice = TestClient(app)
         self.bob = TestClient(app)
         self.manager = TestClient(app)
+        self.registration_users: dict[str, dict] = {}
         suffix = uuid.uuid4().hex[:8]
         self.alice_username = f"alice-{suffix}"
         self.bob_username = f"bob-{suffix}"
@@ -51,6 +52,7 @@ class APITests(unittest.TestCase):
                 json={"username": username, "password": "correct-horse-battery", "consentAccepted": True},
             )
             self.assertEqual(response.status_code, 201, response.text)
+            self.registration_users[username] = response.json()
         config.STUDY_ADMIN_USERNAMES = frozenset({self.manager_username})
         alice_id = self.alice.get("/api/auth/me").json()["id"]
         response = self.manager.put(
@@ -70,6 +72,26 @@ class APITests(unittest.TestCase):
         study = self.alice.get("/api/study/me").json()
         self.assertEqual(study["status"], "active")
         self.assertEqual(study["condition"], "cardMediated")
+
+    def test_auth_user_dates_use_second_precision_utc(self) -> None:
+        login = self.alice.post(
+            "/api/auth/login",
+            json={"username": self.alice_username, "password": "correct-horse-battery"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+
+        current_user = self.alice.get("/api/auth/me")
+        self.assertEqual(current_user.status_code, 200, current_user.text)
+
+        for payload in (
+            self.registration_users[self.alice_username],
+            login.json(),
+            current_user.json(),
+        ):
+            self.assertRegex(
+                payload["consentedAt"],
+                r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+            )
 
     def test_chat_payload_persists_and_is_isolated(self) -> None:
         session_id = self.alice.post(

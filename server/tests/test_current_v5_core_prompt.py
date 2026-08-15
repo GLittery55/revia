@@ -3751,7 +3751,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("ask one easy neutral question only", prompt)
+        self.assertIn("exactly one direct, neutral attribution question", prompt)
+        self.assertIn("Do not seek another example", prompt)
         self.assertIn("Do not paraphrase the latest answer merely", prompt)
         self.assertIn("Avoid recap–progress–question templates", prompt)
         self.assertIn("Once a relation is stated, use it rather", prompt)
@@ -4016,9 +4017,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ).system
 
         self.assertIn("Do not paraphrase the latest answer merely", prompt)
-        self.assertIn("referenceGuidance is silent", prompt)
-        self.assertIn("never reply content or evidence", prompt)
-        self.assertIn("Do not reopen Card meaning", prompt)
+        self.assertIn("The committed selfCriticalStatement is missing", prompt)
+        self.assertIn("one direct, neutral", prompt)
+        self.assertIn("recap the emotional or Card discussion", prompt)
         self.assertIn("Use at most one necessary factual anchor", prompt)
 
     def test_exploration_completion_writer_carries_link_without_tender_distinction(self) -> None:
@@ -4053,11 +4054,10 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Exploration has completed", prompt)
-        self.assertIn("projected phase is Tender", prompt)
-        self.assertIn("Briefly carry forward only the grounded", prompt)
-        self.assertIn("invite the person to continue", prompt)
-        self.assertIn("do not state a Tender distinction yet", prompt)
+        self.assertIn("Exploration is semantically complete", prompt)
+        self.assertIn("Ask no question", prompt)
+        self.assertIn("at most one brief transition sentence", prompt)
+        self.assertIn("first bounded understanding belongs to the next Tender act", prompt)
         self.assertNotIn("already-authorized first bounded Tender understanding", prompt)
         self.assertNotIn("Express that exact semantic proposition", prompt)
 
@@ -4427,6 +4427,157 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("append to episodeStructure only a newly user-grounded", prompt)
         self.assertIn("exclude Card, Tracking, reference guidance, model inference", prompt)
         self.assertIn("REFLECTION STRUCTURE", prompt)
+
+    def test_exploration_prioritizes_missing_self_criticism_over_more_reflection(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["allowedSemanticOperations"] = ["continueExploratoryReflection"]
+        request["reflectionMode"] = "exploratory"
+        request["semanticMemory"] = {
+            "selfCriticismStatus": "unresolved",
+            "selfCriticalStatement": None,
+            "selfCriticismLink": None,
+            "episodeStructure": {
+                "concreteFacts": ["昨晚没有学习并且熬夜"],
+                "eventProcess": ["熬夜时一直刷手机"],
+                "behaviorEvidence": ["一直刷手机"],
+            },
+        }
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn("EXPLORATION MISSING TARGET", prompt)
+        self.assertIn("Missing selfCriticalStatement has priority", prompt)
+        self.assertIn("self-directed criticism, specific or", prompt)
+        self.assertIn("ask one direct", prompt)
+        self.assertIn("self-evaluation question only", prompt)
+        self.assertIn("Brief affirmation never repeats summary validation", prompt)
+        self.assertIn("return both atomically", prompt)
+        self.assertIn("no reflectionFrame; completion wins", prompt)
+
+    def test_exploration_writer_asks_the_missing_self_evaluation_without_confirmation(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["allowedSemanticOperations"] = ["continueExploratoryReflection"]
+        request["reflectionMode"] = "exploratory"
+        request["semanticMemory"] = {
+            "selfCriticismStatus": "unresolved",
+            "selfCriticalStatement": None,
+            "selfCriticismLink": None,
+        }
+        directive = {
+            "semanticOperation": "continueExploratoryReflection",
+            "responseFocus": "询问这件事是否让对方责怪或负面评价自己",
+            "sourceStage": "directReflection",
+            "destinationStage": "directReflection",
+            "nextPrompt": {"kind": "openQuestion", "purpose": "exploratoryReflection"},
+            "localAction": "none",
+            "memoryUpdate": {},
+            "rewriteReason": None,
+        }
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="writer",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request, "directive": directive},
+                maxTokens=500,
+                temperature=0.3,
+            )
+        ).system
+
+        self.assertIn("The committed selfCriticalStatement is missing", prompt)
+        self.assertIn("The exclusive visible task", prompt)
+        self.assertIn("blame, criticize, or negatively evaluate themselves", prompt)
+        self.assertIn("Do not propose a judgment", prompt)
+        self.assertIn("Assistant summary is accurate", prompt)
+        self.assertIn("fitting, or matches the person's experience", prompt)
+        self.assertIn("never authorizes repeating", prompt)
+        self.assertIn("End with exactly one natural", prompt)
+
+    def test_exploration_writer_asks_only_for_missing_attribution_link(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["allowedSemanticOperations"] = ["continueExploratoryReflection"]
+        request["reflectionMode"] = "exploratory"
+        request["semanticMemory"] = {
+            "selfCriticismStatus": "present",
+            "selfCriticalStatement": "我觉得自己太没自制力了",
+            "selfCriticismLink": None,
+        }
+        directive = {
+            "semanticOperation": "continueExploratoryReflection",
+            "responseFocus": "询问具体经历与既有自我评价之间的关系",
+            "sourceStage": "directReflection",
+            "destinationStage": "directReflection",
+            "nextPrompt": {"kind": "openQuestion", "purpose": "exploratoryReflection"},
+            "localAction": "none",
+            "memoryUpdate": {},
+            "rewriteReason": None,
+        }
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="writer",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request, "directive": directive},
+                maxTokens=500,
+                temperature=0.3,
+            )
+        ).system
+
+        self.assertNotIn("The committed selfCriticalStatement is missing", prompt)
+        self.assertIn("selfCriticismLink is missing", prompt)
+        self.assertIn("exactly one direct, neutral attribution question", prompt)
+        self.assertIn("Do not seek another example", prompt)
+        self.assertIn("validation of an Assistant summary", prompt)
+
+    def test_exploration_writer_does_not_reopen_missing_statement_after_atomic_update(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["allowedSemanticOperations"] = ["continueExploratoryReflection"]
+        request["reflectionMode"] = "exploratory"
+        request["semanticMemory"] = {
+            "selfCriticismStatus": "unresolved",
+            "selfCriticalStatement": None,
+            "selfCriticismLink": None,
+        }
+        directive = {
+            "semanticOperation": "continueExploratoryReflection",
+            "responseFocus": "",
+            "sourceStage": "directReflection",
+            "destinationStage": "directReflection",
+            "nextPrompt": {"kind": "openQuestion", "purpose": "tenderReflection"},
+            "localAction": "none",
+            "memoryUpdate": {
+                "selfCriticalStatement": "我觉得自己太没自制力了",
+                "selfCriticismLink": {
+                    "groundedDifficulty": "明知需要休息却反复熬夜刷手机"
+                },
+                "reflectionPhase": "tender",
+            },
+            "rewriteReason": None,
+        }
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="writer",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request, "directive": directive},
+                maxTokens=500,
+                temperature=0.3,
+            )
+        ).system
+
+        self.assertNotIn("The committed selfCriticalStatement is missing", prompt)
+        self.assertIn("Exploration is semantically complete", prompt)
+        self.assertIn("Ask no question", prompt)
+        self.assertIn("first bounded understanding belongs to the next Tender act", prompt)
+        self.assertIn("Do not add a question", prompt)
 
     def test_self_criticism_link_transport_preserves_meaning_without_backend_compilation(self) -> None:
         request = self.request()
@@ -5220,16 +5371,13 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("projective frame only to help them discover", prompt)
-        self.assertIn("Do not fill a missing relation", prompt)
-        self.assertIn("one easy neutral question", prompt)
-        self.assertIn("exact self-critical statement", prompt)
-        self.assertIn("Do not reopen Card meaning", prompt)
-        self.assertIn("seek complete causes", prompt)
-        self.assertIn("troubleshoot, or ask about action", prompt)
+        self.assertIn("The committed selfCriticalStatement is missing", prompt)
+        self.assertIn("exclusive visible task", prompt)
+        self.assertIn("Do not propose a judgment", prompt)
+        self.assertIn("recap the emotional or Card discussion", prompt)
+        self.assertIn("move toward a goal or action", prompt)
         self.assertIn("operation contract outranks it", prompt)
-        self.assertIn("do not rephrase it", prompt)
-        self.assertIn("Honor corrections at their exact scope", prompt)
+        self.assertIn("Ask only the canonical missing self-evaluation target", prompt)
 
     def test_exploration_does_not_turn_an_attempt_into_the_cause_of_self_criticism(self) -> None:
         request = self.request()
@@ -5281,14 +5429,13 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Keep attempts separate from their effectiveness", writer_prompt)
-        self.assertIn("Never use a causal-presupposing question", writer_prompt)
-        self.assertIn("whether the judgment happened because of that fact", writer_prompt)
-        self.assertIn("Never word an isolated action as causing self-criticism", writer_prompt)
-        self.assertIn("ignore any responseFocus that does so", writer_prompt)
-        self.assertIn("Never convert a cumulative pattern into a demand for one moment", writer_prompt)
-        self.assertIn("do not default to onset precision", writer_prompt)
-        self.assertIn("preserve that correction as the relationship", writer_prompt)
+        self.assertIn("Keep attempts, their result, and the later judgment separate", writer_prompt)
+        self.assertIn("never frame one action as causing the judgment", writer_prompt)
+        self.assertIn("unless the person explicitly did", writer_prompt)
+        self.assertIn("exactly one direct, neutral attribution question", writer_prompt)
+        self.assertIn("accumulated result", writer_prompt)
+        self.assertIn("one precise moment", writer_prompt)
+        self.assertIn("operation contract outranks it", writer_prompt)
 
     def test_completed_exploration_writer_defers_first_tender_understanding(self) -> None:
         request = self.request()
@@ -5339,10 +5486,10 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("projected phase is Tender", prompt)
-        self.assertIn("Briefly carry forward only the grounded", prompt)
-        self.assertIn("invite the person to continue", prompt)
-        self.assertIn("do not state a Tender distinction yet", prompt)
+        self.assertIn("Exploration is semantically complete", prompt)
+        self.assertIn("Ask no question", prompt)
+        self.assertIn("at most one brief transition sentence", prompt)
+        self.assertIn("first bounded understanding belongs to the next Tender act", prompt)
         self.assertNotIn("already-authorized first bounded Tender understanding", prompt)
         self.assertNotIn("Express that exact semantic proposition", prompt)
 

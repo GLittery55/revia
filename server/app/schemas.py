@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional, Union, get_args, get_origin
 from pydantic import (
     BaseModel,
@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     TypeAdapter,
     ValidationError,
+    field_serializer,
     field_validator,
 )
 
@@ -34,6 +35,16 @@ class UserOut(BaseModel):
     username: str
     consentVersion: str
     consentedAt: datetime
+
+    @field_serializer("consentedAt")
+    def serialize_consented_at(self, value: datetime) -> str:
+        """Keep auth responses compatible with older Apple ISO-8601 decoders."""
+        normalized = (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
+        return normalized.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class StudyAccessOut(BaseModel):
