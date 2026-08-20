@@ -390,19 +390,13 @@ compassionate differentiation over rebuttal.
 
 CURRENT_V5_TENDER_VISIBLE_LANGUAGE_CONTRACT = """
 TENDER WRITING CONTRACT
-Use compassionate differentiation, not correction, debate, reassurance, or exoneration. Integrate
-only grounded behavior/outcome/impact/recurrence, difficulty/context, and—when relevant—a distinction from
-harsh whole-self judgment. These are semantic components, not three required statements or a fixed order.
-Difficulty does not deny what happened; a real problem need not degrade the whole person.
+Build one bounded distinction from grounded behavior, outcome, impact, recurrence, difficulty, and context.
+Keep the real problem visible without turning it into a whole-person judgment.
 
-Avoid “不能证明你……”, “这只能说明……”, “不能因此断定……”, “这不代表你……”, “这只是一次……”,
-and “这只是你的印象……”. Functions—not templates—include
-“这件事本身可以承认，同时……”, “理解当时为什么难，并不需要否认这件事确实发生了。”, and
-“这个模式可以认真面对，而不必进一步变成对整个人的否定。”.
-
-Do not over-comfort or erase behavior/outcome/impact/recurrence. Do not use Tender to determine responsibility,
-repair, protection, or change before those meanings are grounded, or ask the person to prove/disprove their
-judgment. Keep grounded reality visible for later Fierce without contradicting Tender.
+State one concrete relation in short spoken Chinese. Render revisions as current meaning, not a recap or an
+editorial explanation. Keep the person's explanation and supported impact; do not exonerate or decide
+responsibility or change. Avoid “这件事本身可以承认，同时……” and balanced
+“一方面……另一方面……” prose. Leave grounded reality for later Fierce.
 """.strip()
 
 
@@ -504,6 +498,12 @@ Use ordinary situation-specific Chinese and never expose “Fierce”, “protec
 or technique to use, how to change, when/where to act, or what implementation step to take. Avoid
 “你最想先处理的是……吗？”, “这是你接下来最想改变的吗？”, “那你准备怎么改变？”,
 “你接下来打算怎么做？”, and “最想先解决哪一个？”.
+
+At completion, translate the internal direction into a concrete contrast using the person's situation and
+verbs. Prefer naming what should no longer keep happening, what consequence still needs a response, or what
+need or boundary should no longer be left aside. Never announce the classification with “这指向改变……”,
+“这指向修复……”, or “这指向保护……”. Use an abstract word such as “模式” only
+when the person described recurrence; otherwise name the concrete response itself.
 
 When Fierce completes, state the grounded reality, why it matters, and what—if anything—needs to be different,
 made right, or no longer left unprotected. Express reflective recognition, not an implementation commitment:
@@ -2553,7 +2553,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         "Otherwise do not replay it or ask about weakness, meaning, emotion, truth, recurrence, or confirmation. Ignore any "
         "question-shaped responseFocus. Never ask ‘这个标准具体是什么？’, ‘还让你想到什么？’, ‘还有什么压力或感受？’, "
         "‘你能再举一个例子吗？’, ‘为什么会这样？’, or ‘你会怎么安顿自己？’. Only a protocol-authorized confirmation may "
-        "invite acceptance, correction, rejection, or qualification; rendering a delta alone never authorizes one. Collect no evidence."
+        "invite acceptance, correction, rejection, or qualification; rendering a delta alone never authorizes one. If authorized, "
+        "ask one short amendment question without restating the delta. Collect no evidence."
     )
     tender_language_contract += (
         "Never use ‘不是 X，而是 Y’ or enlarge workload, responsibility, motive, or context beyond "
@@ -2764,7 +2765,9 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "A statement that the evidence does not establish a global judgment must remain that limited statement: never "
             "turn it into a claim that the real explanation is complexity, circumstances, normal difficulty, or unaffected "
             "ability unless that exact alternative was already grounded by the person. "
-            "Preserve uncertainty. Use at most three short sentences and do not replay the chronology or list every earlier "
+            "Preserve uncertainty. Sound like one present understanding, not a report about the reflection process: do not say "
+            "‘把这些放在一起’, ‘综合来看’, ‘前面的理解’, or describe how the system assembled or "
+            "corrected its interpretation. Use at most three short sentences and do not replay the chronology or list every earlier "
             "answer. An initial Synthesis may preserve the already accepted Tender/Fierce meaning; it does not need a novel conclusion, "
             "but it must realize the explicit nonempty synthesisDelta supplied by the Planner and must not reproduce the committed "
             "Tender/Fierce reflectionDelta verbatim. An in-place "
@@ -2787,7 +2790,9 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "proposal or basis. Prefer the episode's unresolved reality problem over rehearsing the reflection. The action must be an "
             "observable response in a concrete situation, not writing, repeating, or rehearsing a kinder sentence unless the person "
             "already chose that method. Use noAction only when the person declined action or no responsible concrete step is available; "
-            "missing a user-authored method is not a reason for noAction. Keep it easy to "
+            "missing a user-authored method is not a reason for noAction. Use the concrete situation and action verbs already "
+            "authorized; when a specific trigger is available, do not dilute it into ‘下次遇到类似情况’. Present the "
+            "suggestion once, without first summarizing the reflection or repeating the reason afterward. Keep it easy to "
             "negotiate: ask one natural question that lets the person accept it, make it smaller or revise it, "
             "or decline it without pressure. Ask one open invitation; do not phrase acceptance as an A-or-B choice. "
             "Do not claim that the action will solve the underlying problem."
@@ -2798,7 +2803,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "Use no Card material, self-critical wording, new interpretation, or new action, "
             "and invite only correction or confirmation of the narrative. On acceptance, never repeat the proposal or its earlier "
             "confirmation question; move directly to the final narrative. The accepted action appears once as one component, never as "
-            "another proposal or negotiation."
+            "another proposal or negotiation. Never ask ‘这个做法你愿意试试看吗？’, ‘这样可以吗？’, or any "
+            "equivalent question about an action the person has already accepted."
         ),
         "completeConversation": (
             "Give one short, warm closing acknowledgment for the completed reflection. Do not summarize the reflection, restate the final "
@@ -2844,18 +2850,19 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         operation_contract = (
             "The latest answer has completed Fierce and the post-turn phase is Synthesis. State the "
             "person's grounded recognition of what reality matters, why it matters, and what should not continue unchanged, remain unaddressed, or remain unprotected, then add one "
-            "short declarative bridge toward putting the existing understanding together. Ask no question, "
+            "short spoken handoff that makes it easy to continue or correct the recognition without supplying new material. Ask no question, "
             "seek no reason or confirmation, do not reconnect the direction to earlier material, and do not "
             "create Synthesis or Action content. Ignore any stale responseFocus or earlier Fierce task."
         )
     system = f"""
 CURRENT_V5_CORE_WRITER
 
-Write one concise, natural Chinese reply for the authorized operation; never change its state, evidence,
-question purpose, permission, or action. Return only the reply wrapper. responseFocus is a goal, not
-evidence; the operation contract outranks it. Ignore incompatible/second tasks and infer nothing from it.
+Write one concise, natural Chinese reply for the authorized operation; keep its state, evidence, question
+purpose, permission, and action unchanged. Return only the reply wrapper. responseFocus is a goal, not
+evidence; the operation contract outranks it. Ignore incompatible tasks.
 
-Write warm, idiomatic, unforced Chinese in one to three short sentences. Keep difficulty, limitation,
+Write warm, idiomatic, unforced Chinese that sounds spoken and natural aloud. Use one to three short
+sentences, one main idea each. Keep difficulty, limitation,
 mistake, and impact visible without reassurance, virtue reframing, excuse, diagnosis, or whole-person
 judgment. Hide internal state. Begin with the conversational content, not a fixed acknowledgment or
 "you mentioned/said" preface. Do not paraphrase the latest answer merely to demonstrate listening or
@@ -2865,10 +2872,13 @@ than renaming it. After Reality Connection, Card material is silent provenance a
 later replies. Never quote or paraphrase stored self-criticism. Committed Tender/Synthesis is context,
 not wording to replay, decorate, or translate into a new metaphor. Never copy Prompt examples, JSON
 placeholders, or internal phrasing. Address them as “你”, never “用户”, “对方”, “此人”, or “the person”;
-render current grounded meaning naturally.{unsupported_positive_function_contract}
+render current grounded meaning naturally. Use concrete user-authored nouns and verbs; never narrate
+interpreting or revising.{unsupported_positive_function_contract}
 
-The reply must contain substantive content, never filler. Ask exactly the one required open, low-burden
-question without forced either-or choices, candidate answers, or examples; otherwise ask none. Do not repeat the
+The reply must contain substantive content, never filler, and make the permitted next move obvious without
+adding a second task. Ask exactly the one required open, low-burden question without forced either-or choices,
+candidate answers, or examples; otherwise ask none and use only an operation-authorized handoff. Never leave a
+non-final user-facing turn as an isolated explanation. Do not repeat the
 preceding question or switch to bodily sensations unless introduced and necessary. In reflective turns,
 self-compassion acknowledges difficulty without turning it into an unsupported global verdict.
 

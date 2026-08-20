@@ -2418,9 +2418,14 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn('"you mentioned/said" preface', prompt.system)
         self.assertIn("Do not paraphrase the latest answer merely", prompt.system)
         self.assertIn("warm, idiomatic, unforced Chinese", prompt.system)
-        self.assertIn("without forced either-or choices, candidate answers", prompt.system)
+        self.assertIn(
+            "without forced either-or choices, candidate answers",
+            " ".join(prompt.system.split()),
+        )
         self.assertIn("switch to bodily sensations unless introduced and necessary", prompt.system)
         self.assertIn("substantive content, never filler", prompt.system)
+        self.assertIn("make the permitted next move obvious", prompt.system)
+        self.assertIn("operation-authorized handoff", prompt.system)
         self.assertIn("without turning it into an unsupported global verdict", prompt.system)
 
     def test_legacy_prompt_version_remains_available(self) -> None:
@@ -3315,19 +3320,17 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ).system
 
         self.assertIn(CURRENT_V5_TENDER_VISIBLE_LANGUAGE_CONTRACT, writer_prompt)
-        self.assertIn("compassionate differentiation, not correction, debate", writer_prompt)
         normalized_writer_prompt = " ".join(writer_prompt.split())
-        self.assertIn("Integrate only grounded behavior/outcome/impact/recurrence", normalized_writer_prompt)
-        self.assertIn("not three required statements or a fixed order", normalized_writer_prompt)
-        self.assertIn("Difficulty does not deny what happened", writer_prompt)
-        self.assertIn("不能证明你……", writer_prompt)
-        self.assertIn("这只能说明……", writer_prompt)
-        self.assertIn("不能因此断定……", writer_prompt)
-        self.assertIn("这个模式可以认真面对", writer_prompt)
-        self.assertIn("Functions—not templates", writer_prompt)
-        self.assertIn("Keep grounded reality visible for later Fierce", writer_prompt)
-        self.assertIn("Do not use Tender to determine", writer_prompt)
-        self.assertIn("responsibility, repair, protection, or change", normalized_writer_prompt)
+        self.assertIn("Build one bounded distinction", writer_prompt)
+        self.assertIn("grounded behavior, outcome, impact, recurrence", normalized_writer_prompt)
+        self.assertIn("Keep the real problem visible", writer_prompt)
+        self.assertIn("State one concrete relation in short spoken Chinese", writer_prompt)
+        self.assertIn("Render revisions as current meaning", writer_prompt)
+        self.assertIn("not a recap or an editorial explanation", normalized_writer_prompt)
+        self.assertIn("Keep the person's explanation and supported impact", normalized_writer_prompt)
+        self.assertIn("Leave grounded reality for later Fierce", writer_prompt)
+        self.assertIn("这件事本身可以承认，同时……", writer_prompt)
+        self.assertIn("one main idea each", writer_prompt)
         self.assertIn("seek no new material, recap, examples, causes, or proof", writer_prompt)
         self.assertIn("overrides only conflicting meaning", writer_prompt)
         self.assertIn("preserve unaffected evidence", writer_prompt)
@@ -3335,6 +3338,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("do not replay it or ask about weakness, meaning, emotion", writer_prompt)
         self.assertIn("Only a protocol-authorized confirmation", writer_prompt)
         self.assertIn("rendering a delta alone never authorizes one", writer_prompt)
+        self.assertIn("one short amendment question without restating the delta", writer_prompt)
         self.assertIn("Never quote or paraphrase stored self-criticism", writer_prompt)
         self.assertIn("Never assign a difficulty, painful experience, self-critical thought", writer_prompt)
         self.assertIn("hidden benefit", writer_prompt)
@@ -3440,6 +3444,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("do not create Synthesis or Action content", writer_prompt)
         self.assertIn("post-turn phase is Synthesis", writer_prompt)
         self.assertIn("Ask no question", writer_prompt)
+        self.assertIn("easy to continue or correct the recognition", writer_prompt)
         self.assertIn("Ignore any stale responseFocus", writer_prompt)
         self.assertIn("Do not add a question", writer_prompt)
 
@@ -3492,6 +3497,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertNotIn("Do not add a question.", opening_writer_prompt)
         self.assertIn("你最想先处理的是……吗？", opening_writer_prompt)
         self.assertIn("这是你接下来最想改变的吗？", opening_writer_prompt)
+        self.assertIn("这指向改变……", opening_writer_prompt)
+        self.assertIn("concrete contrast using the person's situation and verbs", normalized_opening_writer_prompt)
+        self.assertIn("otherwise name the concrete response itself", opening_writer_prompt)
         self.assertIn("reflective recognition, not an implementation commitment", opening_writer_prompt)
         self.assertIn("the person may recognize the direction without deciding how", opening_writer_prompt)
         self.assertIn("Action first asks HOW", opening_writer_prompt)
@@ -4926,6 +4934,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Never quote or paraphrase the self-critical", writer_prompt)
         self.assertIn("states only the changed qualification", writer_prompt)
         self.assertIn("the real explanation is complexity", writer_prompt)
+        self.assertIn("Sound like one present understanding", writer_prompt)
+        self.assertIn("把这些放在一起", writer_prompt)
+        self.assertIn("describe how the system assembled", writer_prompt)
         self.assertIn("Do not add a question", writer_prompt)
 
     def test_synthesis_cannot_treat_an_action_idea_as_completed_reflection(self) -> None:
@@ -5092,6 +5103,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Prefer the episode's unresolved reality problem", prompt)
         self.assertIn("not writing, repeating, or rehearsing a kinder sentence", prompt)
         self.assertIn("missing a user-authored method is not a reason for noAction", prompt)
+        self.assertIn("Use the concrete situation and action verbs already authorized", prompt)
+        self.assertIn("下次遇到类似情况", prompt)
+        self.assertIn("without first summarizing the reflection", prompt)
 
     def test_optional_action_adjustment_requests_a_replacement_before_final(self) -> None:
         request = self.request()
@@ -5212,6 +5226,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("never repeat the proposal", prompt)
         self.assertIn("move directly to the final narrative", prompt)
         self.assertIn("never as another proposal or negotiation", prompt)
+        self.assertIn("这个做法你愿意试试看吗？", prompt)
+        self.assertIn("action the person has already accepted", prompt)
         self.assertNotIn("先看看手头安排再回复临时请求", messages.user)
         self.assertIn('"content":"可以"', messages.user)
 
