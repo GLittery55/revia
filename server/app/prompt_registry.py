@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -454,22 +455,19 @@ the person face what that compassionate understanding must not obscure: an actua
 impact, user-recognized responsibility, neglected need, or unprotected boundary. Compassion does not
 excuse grounded behavior; accountability does not require self-attack.
 
-Before Synthesis, review every groundedRealityCandidates item. inspectReality opens one exact supplied
-candidate for candid examination; it does not ask which problem the person wants to solve first. A fact may
-justify opening Fierce, but Fierce completes only when user-authored material grounds all three:
+Before Synthesis, review every groundedRealityCandidates item. inspectReality opens one supplied candidate,
+not a choice of problems or solutions. Fierce completes only when user-authored material grounds all three:
 1. what reality needs to be faced—a behavior, pattern, impact, responsibility, need, or boundary;
 2. why it matters—the consequence, impact, responsibility, unmet need, violated value, unprotected boundary,
    or recurring cost that makes this reality worth facing;
 3. whether that reality genuinely calls for change, repair, or protection.
-Fierce depth is semantic, not turn-count based. Do not ask for a layer already grounded in prior or latest
-user-authored material. If all three are present, complete Fierce without another clarification or confirmation.
-The person does not need an implementation plan. change means a grounded behavior or pattern should not
-continue in the same way; repair means a grounded impact or responsibility calls for repair; protect means
-a grounded need, value, or boundary should no longer remain unprotected. These are reflective directions,
-not implementation plans. Fierce recognizes WHAT calls for a caring response; Action is the first stage
-that asks HOW the person might concretely respond. A fully resolved past event with no remaining impact,
-responsibility, recurring pattern, unmet need, or unprotected boundary does not require Fierce. The person
-may qualify, replace, reject, or decline the reality review; never manufacture Fierce material to complete the route.
+Aggregate prior and latest user-authored material; the latest answer need not repeat an earlier layer and may
+supply only the last missing one. Depth is semantic, not turn-count based. Never re-ask a grounded layer.
+All three present means completeFierce has priority over clarifyFierce, without another confirmation.
+change means a response should differ; repair means an impact or responsibility calls for repair; protect
+means a need, value, or boundary should no longer remain unprotected. Fierce identifies WHAT; Action asks HOW.
+A resolved past event without remaining impact, responsibility, recurring pattern, unmet need, or unprotected
+boundary needs no Fierce. The person may qualify, reject, or decline; never manufacture material.
 """.strip()
 
 
@@ -486,12 +484,20 @@ compassionately. Opening Fierce examines that reality rather than confirming a s
 A natural opening may ask what cannot simply be explained away, what the person genuinely needs to face, what
 impact remained, or what responsibility, need, or boundary they themselves recognize.
 
-During clarification, ask only a genuinely missing layer of the same reality: what occurred, what followed,
-what was within the person's agency, why the consequence matters, what responsibility they recognize, what
-need/value/boundary is neglected, or whether something should not continue unchanged, should be made right,
-or should no longer remain unprotected. Do not ask for a layer already grounded in prior or latest user-authored
-material. Fierce depth is semantic, not turn-count based; when reality, importance, and reflective direction
-are already grounded, add no clarification merely to prolong Fierce.
+During clarification, responseFocus identifies one exact missing layer of the same reality. Ask that layer
+directly: what response or pattern occurred; what consequence, cost, responsibility, unmet need, or boundary
+makes it matter; or whether the already-grounded reality should continue unchanged, be made right, or no
+longer remain unprotected. Do not replace that target with an abstract question about what the situation
+“means”, “shows”, or otherwise brings to mind. Do not ask for a layer already grounded anywhere in the active
+user-authored exchange, and do not require the latest answer to restate earlier layers. Fierce depth is
+semantic, not turn-count based; when reality, importance, and reflective direction are cumulatively grounded,
+add no clarification merely to prolong Fierce.
+
+Never repeat the immediately preceding Assistant question verbatim or through the same abstract function. If
+the requested layer remains missing, lower the burden: use at most one concrete user-authored anchor and ask
+directly for that consequence, responsibility, need, boundary, or direction. Do not recap the whole episode.
+Invalid Fierce clarification forms include “这件事具体意味着什么？”, “这对你来说说明了什么？”,
+“你还从中看到了什么？”, and “为什么这件事这么重要？”.
 
 Use ordinary situation-specific Chinese and never expose “Fierce”, “protect”, “repair”, “direction”,
 “candidate”, or other protocol labels. Do not ask what to handle first, which problem to solve, what solution
@@ -795,6 +801,21 @@ CURRENT_V5_PLANNER_JSON_SHAPE = (
     '"responseFocus":""}'
 )
 
+# The generic Planner shape is intentionally sparse because most acts are selected through
+# ``semanticOperation``. First Synthesis is different: its only semantic owner is the atomic
+# progression decision. Showing the generic ``reflectionProgressionDecision:null`` shape at the
+# end of an initial-Synthesis prompt conflicts with that requirement and can make the model omit
+# the very delta Swift needs to commit the first Synthesis.
+CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE = (
+    '{"semanticOperation":null,"reflectionProgressionDecision":'
+    '{"meaning":"synthesize","candidateRef":null,'
+    '"reflectionDelta":"<compact integration distinct from the committed reflectionDelta>",'
+    '"fierceDirection":null},'
+    '"semanticEvidencePatch":{"memoryUpdate":{},'
+    '"cardConnectionEvidence":null,"contextualTrackingDecision":null},'
+    '"responseFocus":""}'
+)
+
 # Stage-scoped schema for the only Event aggregate accepted by the current v5 Planner. Keeping it
 # beside the compact top-level shape makes the sparse-patch contract explicit without restoring
 # the retired all-stage Planner tuple.
@@ -933,30 +954,31 @@ When reflectionMode=fierce, one prior inspectReality has already opened exactly 
 candidate. inspectReality is one-shot and Tender-only; never choose it or reviseTender here. Choose one
 reflectionProgressionDecision, keep semanticOperation null, and let Swift compile the operation.
 
-Choose clarifyFierce when the person has identified something worth facing but the exchange does not
-yet ground all three completion layers: the reality, why it matters, and whether it calls for change,
-repair, or protection. A broad wish such as “我想改变分心” is insufficient. Clarify only a missing
-conduct/result, agency/responsibility, consequence/impact, need/value/boundary/recurring cost, or direction.
-Never re-ask grounded user-authored material; all three layers present means complete Fierce directly.
-candidateRef, reflectionDelta, and fierceDirection are null/absent;
-responseFocus is one nonempty clarification of the missing layer in that same focus. Do not ask for a
-concrete action, technique, timing, preferred solution, or what to handle first.
+Evaluate all prior and latest user-authored material together for reality, whyItMatters, and direction. One
+answer may ground several layers; the latest may supply only the last missing one. All three grounded gives
+completeFierce priority over clarifyFierce.
 
-Choose completeFierce only when user-authored material is sufficient to state what reality needs to be
-faced; why it matters through consequence, impact, responsibility, unmet need, violated value, unprotected
-boundary, or recurring cost; and whether it calls for a caring change, repair, or protection. reflectionDelta
-is one nonempty completed candid understanding;
-fierceDirection is repair|protect|change; candidateRef is absent and responseFocus is empty.
-change means the grounded response should not continue in the same way; repair means a grounded impact
-or responsibility calls for repair; protect means a grounded need/value/boundary should no longer remain
-unprotected. These are reflective directions, not implementation plans. Do not invent an implementation
-step. A declined direction uses synthesize with an explicit delta and no candidateRef/fierceDirection.
+Choose clarifyFierce only when at least one completion layer remains genuinely ungrounded. Clarify exactly one
+missing conduct/result, agency/responsibility, consequence/impact, need/value/boundary/recurring cost, or
+direction. responseFocus must identify that exact target in concrete terms: missing reality asks what response
+or pattern occurred; missing importance asks what consequence, cost, responsibility, unmet need, or boundary
+makes it matter; missing direction asks whether the already-grounded reality should continue unchanged, be
+made right, or no longer remain unprotected. Never use an abstract meaning question as a substitute. Never
+re-ask grounded user-authored material. candidateRef, reflectionDelta, and fierceDirection are null/absent;
+responseFocus is one nonempty clarification of that missing layer. Do not ask for a concrete action, technique,
+timing, preferred solution, or what to handle first.
 
-Semantic examples — classify, do not copy wording:
-- Given illness, poor sleep, paper pressure, phone use, and no paper progress, “我想改变赶论文时分心的状态”
-  is a broad desired direction without the specific response and why it matters → clarifyFierce, never completeFierce.
-- “我确实是在躲论文；论文没动，后面的压力反而更大，这种反应不能继续忽略” grounds the reality,
-  impact, and reflective direction → completeFierce(change) directly, with no extra confirmation.
+Choose completeFierce only when all three layers are grounded. reflectionDelta is one nonempty candid
+understanding; fierceDirection is repair|protect|change; candidateRef is absent and responseFocus is empty.
+Invent no implementation step. A declined direction uses synthesize with an explicit delta and no
+candidateRef/fierceDirection.
+
+Semantic examples — classify meaning across turns; do not copy wording:
+- No prior concrete response or consequence + latest “我想改变现在的工作状态” → clarifyFierce for one
+  exact missing reality or importance layer.
+- Earlier user-authored material says repeated acceptance of extra work delayed the person's own deadline;
+  latest “我觉得不能再每次都直接接下来” supplies the final direction → completeFierce(change) directly,
+  because reality and whyItMatters were already grounded. Do not ask the latest answer to repeat them.
 
 Clarify structural shape — placeholders are not output wording:
 {"semanticOperation":null,"reflectionProgressionDecision":{"meaning":"clarifyFierce",
@@ -980,15 +1002,27 @@ proposePractice and do not treat the latest acceptance of Fierce as acceptance o
 does not yet exist.
 
 Choose exactly one reflectionProgressionDecision with meaning=synthesize. Its reflectionDelta is
-the nonempty compact Synthesis for this turn. candidateRef and fierceDirection are null/absent;
-semanticOperation is null; semanticEvidencePatch.memoryUpdate is empty; responseFocus is empty.
-Never defer the Synthesis to the Writer or put it only in responseFocus. Never return a null or
-empty reflectionDelta and never reopen Tender or Fierce.
+one nonempty compact integrative understanding for this turn. Jointly carry the bounded Tender
+meaning that limits what the concrete difficulty establishes about the person's whole self and,
+when Fierce was completed, the grounded reality, why it matters, and the recognized change,
+repair, or protection direction.
+
+Synthesis is a new integrative semantic act, not a restatement of the committed reflectionFrame.
+The delta must be materially distinct from the committed reflectionDelta. A punctuation, spacing,
+formatting, or wording-only variation of that delta is still a replay, not a Synthesis.
+
+candidateRef and fierceDirection are null/absent; semanticOperation is null;
+semanticEvidencePatch.memoryUpdate is empty; responseFocus is empty. Never defer the Synthesis to
+the Writer or put it only in responseFocus. Never return a null or empty reflectionDelta and never
+reopen Tender or Fierce.
 
 Initial Synthesis structural shape — placeholders are not output wording:
 {"semanticOperation":null,"reflectionProgressionDecision":{"meaning":"synthesize",
-"candidateRef":null,"reflectionDelta":"<explicit compact synthesis>","fierceDirection":null},
-"semanticEvidencePatch":{"memoryUpdate":{}},"responseFocus":""}
+"candidateRef":null,
+"reflectionDelta":"<compact integration distinct from the committed reflectionDelta>",
+"fierceDirection":null},
+"semanticEvidencePatch":{"memoryUpdate":{},"cardConnectionEvidence":null,
+"contextualTrackingDecision":null},"responseFocus":""}
 '''.strip()
 
 CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE = (
@@ -1758,6 +1792,35 @@ def _current_v5_synthesis_state(request: dict[str, Any]) -> str:
     )
 
 
+def _current_v5_normalized_reflection_delta(value: Any) -> str:
+    """Mirror Swift's compatibility/case/alphanumeric comparison for correction routing."""
+    if not isinstance(value, str):
+        return ""
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKC", value).lower()
+        if character.isalnum()
+    )
+
+
+def _current_v5_initial_synthesis_replays_committed(
+    request: dict[str, Any],
+    rejected_progression: dict[str, Any],
+) -> bool:
+    """Identify the replay form of Swift's shared synthesisDeltaMissing failure."""
+    if _current_v5_synthesis_state(request) != "initial":
+        return False
+    semantic_memory = request.get("semanticMemory")
+    semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+    frame = semantic_memory.get("reflectionFrame")
+    frame = frame if isinstance(frame, dict) else {}
+    committed = _current_v5_normalized_reflection_delta(frame.get("reflectionDelta"))
+    rejected = _current_v5_normalized_reflection_delta(
+        rejected_progression.get("reflectionDelta")
+    )
+    return bool(committed and rejected and committed == rejected)
+
+
 def _current_v5_stage_contract(request: dict[str, Any]) -> str:
     stage = str(request.get("protocolStage") or "")
     if stage == "contextualDisclosure":
@@ -2046,6 +2109,13 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         synthesis_state = _current_v5_synthesis_state(request)
         has_committed_synthesis = synthesis_state == "committed"
         needs_initial_synthesis = synthesis_state == "initial"
+        initial_synthesis_replays_committed = (
+            projection_failure == "synthesisDeltaMissing"
+            and _current_v5_initial_synthesis_replays_committed(
+                request,
+                rejected_progression,
+            )
+        )
         exact_issue_repair = ""
         if (
             str(request.get("reflectionMode") or "") == "tender"
@@ -2125,15 +2195,31 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             and projection_failure in synthesis_repair_failures
             and needs_initial_synthesis
         ):
-            exact_issue_repair = (
-                " REQUIRED INITIAL SYNTHESIS REPAIR: preserve the first Synthesis decision and return "
-                "exactly one reflectionProgressionDecision with meaning=synthesize, a nonempty "
-                "reflectionDelta containing the current compact Synthesis, candidateRef=null, and "
-                "fierceDirection=null. semanticOperation must be null, semanticEvidencePatch.memoryUpdate "
-                "must be empty, and responseFocus must be empty. Do not put the Synthesis in "
-                "memoryUpdate.reflectionFrame or responseFocus, do not reopen Fierce, and do not choose "
-                "proposePractice because no Synthesis has been committed yet."
-            )
+            if initial_synthesis_replays_committed:
+                exact_issue_repair = (
+                    " REQUIRED INITIAL SYNTHESIS REPLAY REPAIR: the rejected reflectionDelta was "
+                    "nonempty but replayed the committed reflectionDelta after compatibility, case, "
+                    "punctuation, and spacing normalization. Return neither delta again. Preserve "
+                    "reflectionProgressionDecision.meaning=synthesize and provide one materially "
+                    "distinct compact integration that jointly carries the bounded Tender meaning "
+                    "and the completed Fierce reality, why it matters, and direction. candidateRef "
+                    "and fierceDirection must be null, semanticOperation must be null, "
+                    "semanticEvidencePatch.memoryUpdate must be empty, and responseFocus must be "
+                    "empty. Do not reopen Fierce or choose proposePractice because no Synthesis has "
+                    "been committed yet."
+                )
+            else:
+                exact_issue_repair = (
+                    " REQUIRED INITIAL SYNTHESIS REPAIR: preserve the first Synthesis decision and "
+                    "return exactly one reflectionProgressionDecision with meaning=synthesize, a "
+                    "nonempty reflectionDelta containing one compact integration of the bounded "
+                    "Tender meaning and any completed Fierce reality, importance, and direction, "
+                    "candidateRef=null, and fierceDirection=null. semanticOperation must be null, "
+                    "semanticEvidencePatch.memoryUpdate must be empty, and responseFocus must be "
+                    "empty. Do not put the Synthesis in memoryUpdate.reflectionFrame or responseFocus, "
+                    "do not replay the committed reflectionDelta, do not reopen Fierce, and do not "
+                    "choose proposePractice because no Synthesis has been committed yet."
+                )
         if (
             not exact_issue_repair
             and rejected_operation == "synthesizeDirectReflection"
@@ -2342,6 +2428,11 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
             )
         )
     )
+    output_shape = (
+        CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE
+        if uses_initial_synthesis_progression
+        else CURRENT_V5_PLANNER_JSON_SHAPE
+    )
     system = f"""
 CURRENT_V5_CORE_PLANNER
 
@@ -2371,7 +2462,7 @@ STAGE
 
 OUTPUT
 Return exactly one JSON object shaped as:
-{CURRENT_V5_PLANNER_JSON_SHAPE}
+{output_shape}
 {output_operation_contract} semanticEvidencePatch.memoryUpdate is an object and may be empty.
 Never emit kind, source, status, mode, action, phase, transactionID, confirmation state, or other
 protocol metadata; Swift compiles them from the act, committed state, and evidence provenance.
@@ -2518,7 +2609,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "detail, another example, causes, goals, or action. Add no interpretation. Use at most one brief transition sentence "
             "grounded entirely in committed user-authored material; the first bounded understanding belongs to the next Tender act."
         )
-        question_contract = "Do not add a question."
+        if operation == "continueExploratoryReflection":
+            question_contract = "Do not add a question."
 
     is_committed_tender_revision = (
         operation == "continueTenderReflection"
@@ -2649,6 +2741,7 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "When this directive opens Fierce from Tender, responseFocus is the exact Swift-validated groundedRealityCandidate content. "
             "When request.reflectionMode is fierce and this directive contains no new reflectionFrame, the inquiry is legally continuing: "
             "latestAnswerContext.referenceID preserves that same candidate and responseFocus identifies the one remaining clarification. "
+            "Treat responseFocus as the exact missing-layer target; do not replace it with a generic question about meaning or importance. "
             "Use the latest answer and only that candidate. Do not switch candidates, recap Tender, expose the reference, or turn a "
             "completed past response into evidence of a positive purpose. A tentative relation between two facts is optional, never required. "
             "Keep the question compact, without a ‘you said/mentioned’ preface or chronology recap. When a complete Fierce frame is present, "

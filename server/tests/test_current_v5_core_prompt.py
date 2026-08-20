@@ -16,6 +16,7 @@ from app.prompt_registry import (
     CURRENT_V5_FIERCE_PURPOSE_CONTRACT,
     CURRENT_V5_FIERCE_VISIBLE_LANGUAGE_CONTRACT,
     CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT,
+    CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE,
     CURRENT_V5_PLANNER_JSON_SHAPE,
     CURRENT_V5_PROPOSE_PRACTICE_CONTRACT,
     CURRENT_V5_REALITY_CONNECTION_CONTRACT,
@@ -343,25 +344,29 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("never choose it or reviseTender here", prompt)
         self.assertIn("Choose clarifyFierce", prompt)
         normalized_prompt = " ".join(prompt.split())
-        self.assertIn("does not yet ground all three completion layers", normalized_prompt)
-        self.assertIn("A broad wish", prompt)
-        self.assertIn("Never re-ask grounded user-authored material", prompt)
-        self.assertIn("all three layers present means complete Fierce directly", prompt)
+        self.assertIn(
+            "Choose clarifyFierce only when at least one completion layer remains genuinely ungrounded",
+            normalized_prompt,
+        )
+        self.assertIn("No prior concrete response or consequence", prompt)
+        self.assertIn("Never re-ask grounded user-authored material", normalized_prompt)
+        self.assertIn("Evaluate all prior and latest user-authored material together", prompt)
+        self.assertIn("the latest may supply only the last missing one", normalized_prompt)
+        self.assertIn("completeFierce priority over clarifyFierce", prompt)
         self.assertIn("responseFocus is one nonempty clarification", prompt)
         self.assertIn("Choose completeFierce only", prompt)
-        self.assertIn("what reality needs to be faced", normalized_prompt)
-        self.assertIn("why it matters through consequence, impact, responsibility", normalized_prompt)
-        self.assertIn("unmet need, violated value, unprotected boundary, or recurring cost", normalized_prompt)
-        self.assertIn("reflectionDelta is one nonempty completed candid understanding", normalized_prompt)
+        self.assertIn("reality, whyItMatters, and direction", normalized_prompt)
+        self.assertIn("missing importance asks what consequence, cost, responsibility", normalized_prompt)
+        self.assertIn("Choose completeFierce only when all three layers are grounded", normalized_prompt)
+        self.assertIn("reflectionDelta is one nonempty candid understanding", normalized_prompt)
         self.assertIn("fierceDirection is repair|protect|change", prompt)
-        self.assertIn("我想改变赶论文时分心的状态", prompt)
-        self.assertIn("is a broad desired direction", normalized_prompt)
-        self.assertIn("without the specific response and why it matters", normalized_prompt)
-        self.assertIn("→ clarifyFierce, never completeFierce", prompt)
-        self.assertIn("后面的压力反而更大", prompt)
-        self.assertIn("→ completeFierce(change)", prompt)
-        self.assertIn("with no extra confirmation", prompt)
-        self.assertIn("These are reflective directions, not implementation plans", prompt)
+        self.assertIn("我想改变现在的工作状态", prompt)
+        self.assertIn("clarifyFierce for one", normalized_prompt)
+        self.assertIn("repeated acceptance of extra work", normalized_prompt)
+        self.assertIn("supplies the final direction", normalized_prompt)
+        self.assertIn("→ completeFierce(change) directly", prompt)
+        self.assertIn("Do not ask the latest answer to repeat them", prompt)
+        self.assertIn("Invent no implementation step", prompt)
         self.assertIn('"semanticOperation":null', prompt)
         self.assertIn('"reflectionDelta":"<completed Fierce understanding>"', prompt)
 
@@ -2217,7 +2222,18 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("At the first Synthesis boundary", prompt)
         self.assertIn("reflectionProgressionDecision is required", prompt)
         self.assertIn('"meaning":"synthesize"', prompt)
-        self.assertIn('"reflectionDelta":"<explicit compact synthesis>"', prompt)
+        self.assertIn(
+            '"reflectionDelta":"<compact integration distinct from the committed reflectionDelta>"',
+            prompt,
+        )
+        self.assertIn("Jointly carry the bounded Tender", prompt)
+        self.assertIn("the grounded reality, why it matters", prompt)
+        self.assertIn("not a restatement of the committed reflectionFrame", prompt)
+        self.assertIn("wording-only variation", prompt)
+        self.assertIn(CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE, prompt)
+        output = prompt.split("OUTPUT\nReturn exactly one JSON object shaped as:\n", 1)[1]
+        self.assertTrue(output.startswith(CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE))
+        self.assertNotIn(CURRENT_V5_PLANNER_JSON_SHAPE, output)
         self.assertIn(
             "do not treat the latest acceptance of Fierce as acceptance",
             prompt,
@@ -2287,10 +2303,83 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("semanticOperation must be null", prompt)
         self.assertIn("memoryUpdate must be empty", prompt)
         self.assertIn("no Synthesis has been committed yet", prompt)
+        output = prompt.split("OUTPUT\nReturn exactly one JSON object shaped as:\n", 1)[1]
+        self.assertTrue(output.startswith(CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE))
+        self.assertNotIn(CURRENT_V5_PLANNER_JSON_SHAPE, output)
         self.assertNotIn(
             "REQUIRED SYNTHESIS REPAIR: keep semanticOperation=synthesizeDirectReflection",
             prompt,
         )
+
+    def test_post_fierce_synthesis_replay_correction_names_replay_and_requires_integration(self) -> None:
+        committed_delta = "成果归属和劳动被尊重这件事，不能继续被忽视。"
+        for rejected_delta in (
+            committed_delta,
+            "成果归属和劳动被尊重这件事不能继续被忽视",
+        ):
+            with self.subTest(rejected_delta=rejected_delta):
+                request = self.request()
+                request["protocolStage"] = "directReflection"
+                request["reflectionMode"] = "synthesis"
+                request["allowedSemanticOperations"] = ["synthesizeDirectReflection"]
+                request["semanticMemory"] = {
+                    "reflectionFrame": {
+                        "mode": "fierce",
+                        "action": "identifyProtectionDirection",
+                        "evidenceBasis": [],
+                        "dimensions": [],
+                        "reflectionDelta": committed_delta,
+                        "fierceEvidence": {
+                            "behavior": "",
+                            "impact": "",
+                            "direction": "protect",
+                        },
+                    }
+                }
+                request["correction"] = {
+                    "rejectedOperation": "synthesizeDirectReflection",
+                    "rejectedDraft": {
+                        "semanticOperation": None,
+                        "reflectionProgressionDecision": {
+                            "meaning": "synthesize",
+                            "candidateRef": None,
+                            "reflectionDelta": rejected_delta,
+                            "fierceDirection": None,
+                        },
+                        "semanticEvidencePatch": {"memoryUpdate": {}},
+                        "responseFocus": "",
+                    },
+                    "reason": "projectionInvalid",
+                    "payloadFailure": None,
+                    "projectionFailure": "synthesisDeltaMissing",
+                    "issue": {
+                        "fieldPath": "reflectionProgressionDecision.reflectionDelta",
+                        "violation": "empty",
+                        "requiredConditions": [
+                            "provideConcreteReflectionDelta",
+                            "preserveCommittedReflectionLineage",
+                        ],
+                    },
+                    "recoveryPolicy": "repairSameOperation",
+                }
+
+                prompt = build_turn_messages(
+                    LLMTurnPromptIn(
+                        promptTask="planner",
+                        promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                        payload={"request": request},
+                        maxTokens=900,
+                        temperature=0.2,
+                    )
+                ).system
+
+                self.assertIn("REQUIRED INITIAL SYNTHESIS REPLAY REPAIR", prompt)
+                self.assertIn("nonempty but replayed the committed reflectionDelta", prompt)
+                self.assertIn("Return neither delta again", prompt)
+                self.assertIn("bounded Tender meaning", prompt)
+                self.assertIn("completed Fierce reality, why it matters, and direction", prompt)
+                self.assertIn("semanticOperation must be null", prompt)
+                self.assertNotIn(" REQUIRED INITIAL SYNTHESIS REPAIR:", prompt)
 
     def test_writer_receives_swift_directive_and_only_returns_reply(self) -> None:
         directive = {
@@ -3281,19 +3370,19 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Continue only to repair explicit rejection", planner_prompt)
         self.assertIn(CURRENT_V5_FIERCE_PURPOSE_CONTRACT, planner_prompt)
         normalized_planner_prompt = " ".join(planner_prompt.split())
-        self.assertIn("A fact may justify opening Fierce", normalized_planner_prompt)
+        self.assertIn("inspectReality opens one supplied candidate", normalized_planner_prompt)
         self.assertIn("Fierce completes only when user-authored material grounds all three", normalized_planner_prompt)
         self.assertIn("what reality needs to be faced—a behavior, pattern", normalized_planner_prompt)
         self.assertIn("why it matters—the consequence, impact", normalized_planner_prompt)
-        self.assertIn("Fierce depth is semantic, not turn-count based", normalized_planner_prompt)
-        self.assertIn("complete Fierce without another clarification or confirmation", normalized_planner_prompt)
+        self.assertIn("Depth is semantic, not turn-count based", normalized_planner_prompt)
+        self.assertIn("without another confirmation", normalized_planner_prompt)
         self.assertIn("Compassion does not excuse grounded behavior", normalized_planner_prompt)
         self.assertIn("accountability does not require self-attack", normalized_planner_prompt)
-        self.assertIn("The person does not need an implementation plan", normalized_planner_prompt)
-        self.assertIn("change means a grounded behavior or pattern", normalized_planner_prompt)
-        self.assertIn("repair means a grounded impact or responsibility", normalized_planner_prompt)
-        self.assertIn("protect means a grounded need, value, or boundary", normalized_planner_prompt)
-        self.assertIn("A fully resolved past event", normalized_planner_prompt)
+        self.assertIn("Fierce identifies WHAT; Action asks HOW", normalized_planner_prompt)
+        self.assertIn("change means a response should differ", normalized_planner_prompt)
+        self.assertIn("repair means an impact or responsibility", normalized_planner_prompt)
+        self.assertIn("protect means a need, value, or boundary", normalized_planner_prompt)
+        self.assertIn("A resolved past event", normalized_planner_prompt)
         self.assertIn("responsibility, recurring pattern, unmet need", normalized_planner_prompt)
         self.assertIn("candidate", planner_prompt)
         self.assertIn("reflectionDelta\":null", planner_prompt)
@@ -3381,13 +3470,26 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Fierce language is candid without becoming coaching", opening_writer_prompt)
         self.assertIn("rather than confirming a system-selected change target", opening_writer_prompt)
         self.assertIn("what impact remained", normalized_opening_writer_prompt)
-        self.assertIn("ask only a genuinely missing layer", opening_writer_prompt)
-        self.assertIn("what was within the person's agency", opening_writer_prompt)
-        self.assertIn("what responsibility they recognize", opening_writer_prompt)
-        self.assertIn("what need/value/boundary is neglected", normalized_opening_writer_prompt)
+        self.assertIn("responseFocus identifies one exact missing layer", opening_writer_prompt)
+        self.assertIn("what response or pattern occurred", opening_writer_prompt)
+        self.assertIn("what consequence, cost, responsibility", opening_writer_prompt)
+        self.assertIn("unmet need, or boundary", normalized_opening_writer_prompt)
         self.assertIn("Do not ask for a layer already grounded", normalized_opening_writer_prompt)
         self.assertIn("not turn-count based", normalized_opening_writer_prompt)
         self.assertIn("add no clarification merely to prolong Fierce", normalized_opening_writer_prompt)
+        self.assertIn("responseFocus identifies one exact missing layer", opening_writer_prompt)
+        self.assertIn("Do not replace that target with an abstract question", opening_writer_prompt)
+        self.assertIn("Never repeat the immediately preceding Assistant question", opening_writer_prompt)
+        self.assertIn("lower the burden", opening_writer_prompt)
+        self.assertIn("这件事具体意味着什么？", opening_writer_prompt)
+        self.assertIn("这对你来说说明了什么？", opening_writer_prompt)
+        self.assertIn("Treat responseFocus as the exact missing-layer target", opening_writer_prompt)
+        self.assertIn("do not replace it with a generic question", opening_writer_prompt)
+        self.assertIn(
+            "End with exactly one natural, easy-to-answer question",
+            opening_writer_prompt,
+        )
+        self.assertNotIn("Do not add a question.", opening_writer_prompt)
         self.assertIn("你最想先处理的是……吗？", opening_writer_prompt)
         self.assertIn("这是你接下来最想改变的吗？", opening_writer_prompt)
         self.assertIn("reflective recognition, not an implementation commitment", opening_writer_prompt)

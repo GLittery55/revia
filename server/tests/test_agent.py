@@ -2046,6 +2046,99 @@ class ProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_current_v5_synthesis_diagnostic_logs_shape_and_normalized_equality_only(self) -> None:
+        private_committed_delta = "分心后自责，让学习更难继续。"
+        private_model_delta = "分心后自责让学习更难继续"
+        private_transcript = "private synthesis transcript must not enter logs"
+        planner_result = Completion(
+            json.dumps(
+                {
+                    "semanticOperation": None,
+                    "reflectionProgressionDecision": {
+                        "meaning": "synthesize",
+                        "candidateRef": None,
+                        "reflectionDelta": private_model_delta,
+                        "fierceDirection": None,
+                    },
+                    "semanticEvidencePatch": {
+                        "memoryUpdate": {},
+                        "cardConnectionEvidence": None,
+                        "contextualTrackingDecision": None,
+                    },
+                    "responseFocus": "",
+                },
+                ensure_ascii=False,
+            ),
+            "deepseek",
+            "deepseek-v4-pro",
+            finish_reason="stop",
+        )
+        request_message = {
+            "role": "user",
+            "content": "CURRENT V5 TURN REQUEST JSON:\n"
+            + json.dumps(
+                {
+                    "protocolStage": "directReflection",
+                    "reflectionMode": "synthesis",
+                    "allowedSemanticOperations": ["synthesizeDirectReflection"],
+                    "semanticMemory": {
+                        "reflectionFrame": {
+                            "action": "identifyChangeDirection",
+                            "reflectionDelta": private_committed_delta,
+                        }
+                    },
+                    "recentMessages": [
+                        {"role": "user", "content": private_transcript}
+                    ],
+                    "correction": {
+                        "rejectedOperation": "synthesizeDirectReflection"
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+        with patch("app.config.CURRENT_V5_SYNTHESIS_DIAGNOSTICS", True), \
+            patch("app.config.DEEPSEEK_API_KEY", "deepseek-key"), \
+            patch("app.config.DEEPSEEK_BASE_URL", "https://api.deepseek.com"), \
+            patch("app.config.DEEPSEEK_WRITER_MODEL", "deepseek-v4-pro"), \
+            patch("app.config.OPENAI_API_KEY", ""), \
+            patch.object(
+                self.gateway,
+                "_complete_deepseek",
+                new=AsyncMock(return_value=planner_result),
+            ), \
+            self.assertLogs("uvicorn.error", level="INFO") as captured:
+            result = await self.gateway.complete(
+                role="writer",
+                agent_task="current_v5_core_planner",
+                request_id="synthesis-diagnostic",
+                messages=[request_message],
+                max_tokens=1300,
+                temperature=0.28,
+            )
+
+        logs = "\n".join(captured.output)
+        self.assertIn("current_v5_synthesis_diag", logs)
+        self.assertIn("stage=raw_initial", logs)
+        self.assertIn("stage=canonical_initial", logs)
+        self.assertIn('"isCorrection":true', logs)
+        self.assertIn('"decisionPresent":true', logs)
+        self.assertIn('"decisionType":"object"', logs)
+        self.assertIn('"meaning":"synthesize"', logs)
+        self.assertIn('"deltaPresent":true', logs)
+        self.assertIn('"deltaType":"string"', logs)
+        self.assertIn('"equalsCommittedNormalized":true', logs)
+        self.assertNotIn(private_committed_delta, logs)
+        self.assertNotIn(private_model_delta, logs)
+        self.assertNotIn(private_transcript, logs)
+        self.assertEqual(
+            json.loads(result.content)["reflectionProgressionDecision"][
+                "reflectionDelta"
+            ],
+            private_model_delta,
+        )
+
     async def test_current_v5_planner_repair_does_not_receive_original_request_metadata(self) -> None:
         repaired = Completion(
             (

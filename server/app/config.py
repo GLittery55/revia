@@ -91,6 +91,13 @@ AGENT_CRITIC_ENABLED = os.getenv("AGENT_CRITIC_ENABLED", "true").lower() == "tru
 CURRENT_V5_TRACKING_DIAGNOSTICS = (
     os.getenv("CURRENT_V5_TRACKING_DIAGNOSTICS", "false").lower() == "true"
 )
+# Temporary, privacy-bounded diagnostics for the first current-v5 Synthesis transaction. Disabled
+# by default. The diagnostic records only JSON field presence/types, character counts, and whether
+# Swift-style normalized deltas are equal; it never logs either delta, the transcript, semantic
+# memory, a complete prompt, or a model body.
+CURRENT_V5_SYNTHESIS_DIAGNOSTICS = (
+    os.getenv("CURRENT_V5_SYNTHESIS_DIAGNOSTICS", "false").lower() == "true"
+)
 
 
 def validate_production_config() -> None:

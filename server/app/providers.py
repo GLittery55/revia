@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
@@ -192,6 +193,140 @@ def _log_current_v5_tracking_decision(
         stage,
         json.dumps(
             _current_v5_tracking_decision_summary(content),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def _current_v5_synthesis_diagnostic_request(
+    messages: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    """Return the request only at the first post-Fierce Synthesis boundary."""
+    request = _current_v5_request(messages)
+    if (
+        request.get("protocolStage") != "directReflection"
+        or request.get("reflectionMode") != "synthesis"
+        or "synthesizeDirectReflection"
+        not in _current_v5_allowed_operations(messages)
+    ):
+        return None
+    memory = request.get("semanticMemory")
+    memory = memory if isinstance(memory, dict) else {}
+    frame = memory.get("reflectionFrame")
+    frame = frame if isinstance(frame, dict) else {}
+    if frame.get("action") == "synthesizeUnderstanding":
+        return None
+    return request
+
+
+def _current_v5_synthesis_normalized_length(value: Any) -> tuple[int | None, str | None]:
+    """Mirror Swift's compatibility/case/alphanumeric normalization without exposing text."""
+    if not isinstance(value, str):
+        return None, None
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKC", value).lower()
+        if character.isalnum()
+    )
+    return len(normalized), normalized
+
+
+def _current_v5_json_type(*, present: bool, value: Any) -> str:
+    if not present:
+        return "absent"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "unknown"
+
+
+def _current_v5_synthesis_decision_summary(
+    *,
+    content: str,
+    messages: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Summarize Synthesis transport shape without retaining any reflection content."""
+    request = _current_v5_synthesis_diagnostic_request(messages) or {}
+    try:
+        decoded = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        decoded = None
+
+    decision_present = isinstance(decoded, dict) and "reflectionProgressionDecision" in decoded
+    decision = decoded.get("reflectionProgressionDecision") if isinstance(decoded, dict) else None
+    decision_is_object = isinstance(decision, dict)
+    delta_present = decision_is_object and "reflectionDelta" in decision
+    delta = decision.get("reflectionDelta") if decision_is_object else None
+
+    meaning = decision.get("meaning") if decision_is_object else None
+    if meaning not in {
+        "reviseTender",
+        "inspectReality",
+        "clarifyFierce",
+        "completeFierce",
+        "synthesize",
+    }:
+        meaning = "other" if meaning is not None else None
+
+    memory = request.get("semanticMemory")
+    memory = memory if isinstance(memory, dict) else {}
+    frame = memory.get("reflectionFrame")
+    frame = frame if isinstance(frame, dict) else {}
+    committed_delta = frame.get("reflectionDelta")
+
+    normalized_length, normalized_delta = _current_v5_synthesis_normalized_length(delta)
+    committed_normalized_length, committed_normalized = (
+        _current_v5_synthesis_normalized_length(committed_delta)
+    )
+    equals_committed: bool | None = None
+    if normalized_delta is not None and committed_normalized is not None:
+        equals_committed = normalized_delta == committed_normalized
+
+    return {
+        "isCorrection": isinstance(request.get("correction"), dict),
+        "decisionPresent": decision_present,
+        "decisionType": _current_v5_json_type(
+            present=decision_present,
+            value=decision,
+        ),
+        "meaning": meaning,
+        "deltaPresent": delta_present,
+        "deltaType": _current_v5_json_type(present=delta_present, value=delta),
+        "deltaLength": len(delta) if isinstance(delta, str) else None,
+        "trimmedDeltaLength": len(delta.strip()) if isinstance(delta, str) else None,
+        "normalizedDeltaLength": normalized_length,
+        "committedDeltaPresent": isinstance(committed_delta, str),
+        "committedNormalizedDeltaLength": committed_normalized_length,
+        "equalsCommittedNormalized": equals_committed,
+    }
+
+
+def _log_current_v5_synthesis_decision(
+    *,
+    request_id: Optional[str],
+    stage: str,
+    content: str,
+    messages: list[dict[str, str]],
+) -> None:
+    logger.info(
+        "current_v5_synthesis_diag request_id=%s stage=%s summary=%s",
+        request_id,
+        stage,
+        json.dumps(
+            _current_v5_synthesis_decision_summary(
+                content=content,
+                messages=messages,
+            ),
             ensure_ascii=True,
             separators=(",", ":"),
         ),
@@ -558,6 +693,11 @@ class ProviderGateway:
             agent_task=agent_task,
             messages=messages,
         )
+        synthesis_diagnostic_active = (
+            config.CURRENT_V5_SYNTHESIS_DIAGNOSTICS
+            and agent_task == "current_v5_core_planner"
+            and _current_v5_synthesis_diagnostic_request(messages) is not None
+        )
         try:
             normalized = self._normalize_completion(
                 result,
@@ -571,6 +711,13 @@ class ProviderGateway:
                     stage="raw_initial",
                     content=normalized,
                 )
+            if synthesis_diagnostic_active:
+                _log_current_v5_synthesis_decision(
+                    request_id=request_id,
+                    stage="raw_initial",
+                    content=normalized,
+                    messages=messages,
+                )
             normalized = self._validate_current_v5_contract(
                 normalized,
                 provider=result.provider,
@@ -583,6 +730,13 @@ class ProviderGateway:
                     request_id=request_id,
                     stage="canonical_initial",
                     content=normalized,
+                )
+            if synthesis_diagnostic_active:
+                _log_current_v5_synthesis_decision(
+                    request_id=request_id,
+                    stage="canonical_initial",
+                    content=normalized,
+                    messages=messages,
                 )
         except ProviderError as error:
             if (
@@ -647,6 +801,13 @@ class ProviderGateway:
                         stage="raw_repair",
                         content=normalized,
                     )
+                if synthesis_diagnostic_active:
+                    _log_current_v5_synthesis_decision(
+                        request_id=request_id,
+                        stage="raw_repair",
+                        content=normalized,
+                        messages=messages,
+                    )
                 normalized = self._validate_current_v5_contract(
                     normalized,
                     provider=result.provider,
@@ -659,6 +820,13 @@ class ProviderGateway:
                         request_id=request_id,
                         stage="canonical_repair",
                         content=normalized,
+                    )
+                if synthesis_diagnostic_active:
+                    _log_current_v5_synthesis_decision(
+                        request_id=request_id,
+                        stage="canonical_repair",
+                        content=normalized,
+                        messages=messages,
                     )
             else:
                 raise
