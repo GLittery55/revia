@@ -400,6 +400,19 @@ responsibility or change. Avoid “这件事本身可以承认，同时……”
 """.strip()
 
 
+CURRENT_V5_DIALOGUE_CONTINUITY_LANGUAGE_CONTRACT = """
+CONVERSATIONAL CONTINUITY CONTRACT
+Treat recent Assistant meaning as already spoken and accepted meaning as shared context. Add only the
+operation's new function and at most one anchor; carry unchanged material silently instead of rebuilding
+the event, difficulty, judgment, explanation, direction, and next step.
+
+Ask only about one unresolved user decision. Invite correction by asking what needs changing, not with another
+“贴切吗/对吗/符合吗” agreement check. Acceptance closes that decision; later stages do not revalidate it. Keep
+prior whole-self limits implicit. A revision states only its
+changed axis, Synthesis its new integrated relation, Action its action, and Final Narrative a compressed result.
+""".strip()
+
+
 CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT = """
 COMMITTED TENDER DECISION ORDER
 Classify the latest user answer before reviewing any Fierce candidate. First compare it with the
@@ -438,6 +451,17 @@ ask which problem the person wants to solve first, or ask them to invent a solut
 
 3. ONLY WITHOUT A TENDER REVISION OR A QUALIFYING REALITY CANDIDATE, choose synthesize with an explicit
 nonempty synthesis delta. The person's decline of further reality review also permits synthesis.
+
+TENDER PROGRESSION STRUCTURES — placeholders describe structure, not output wording:
+- reviseTender: reflectionProgressionDecision={"meaning":"reviseTender","candidateRef":null,
+  "reflectionDelta":"<complete revised bounded understanding>","fierceDirection":null}.
+- inspectReality: reflectionProgressionDecision={"meaning":"inspectReality",
+  "candidateRef":"<exact supplied groundedRealityCandidates.id>","reflectionDelta":null,
+  "fierceDirection":null}.
+- synthesize: reflectionProgressionDecision={"meaning":"synthesize","candidateRef":null,
+  "reflectionDelta":"<explicit compact synthesis distinct from the committed delta>",
+  "fierceDirection":null}.
+For all three, semanticOperation is null and semanticEvidencePatch.memoryUpdate is empty.
 """.strip()
 
 
@@ -816,6 +840,20 @@ CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE = (
     '"responseFocus":""}'
 )
 
+# A committed Tender turn has three legal semantic branches. Its final example must therefore show
+# the progression object as present rather than ending with the generic null-decision shape. Branch-
+# specific requirements remain in the executable Tender progression contract and Swift Gate.
+CURRENT_V5_TENDER_PROGRESSION_OUTPUT_SHAPE = (
+    '{"semanticOperation":null,"reflectionProgressionDecision":'
+    '{"meaning":"<reviseTender|inspectReality|synthesize>",'
+    '"candidateRef":"<exact candidate id for inspectReality; otherwise null>",'
+    '"reflectionDelta":"<nonempty for reviseTender/synthesize; null for inspectReality>",'
+    '"fierceDirection":null},'
+    '"semanticEvidencePatch":{"memoryUpdate":{},'
+    '"cardConnectionEvidence":null,"contextualTrackingDecision":null},'
+    '"responseFocus":""}'
+)
+
 # Stage-scoped schema for the only Event aggregate accepted by the current v5 Planner. Keeping it
 # beside the compact top-level shape makes the sparse-patch contract explicit without restoring
 # the retired all-stage Planner tuple.
@@ -1122,6 +1160,9 @@ source, status, category, transaction, and provenance metadata.
 Grounding rule: preserve the person's already-established reflection direction and make it only as
 concrete as the conversation safely supports. Compress that direction into one small observable
 experiment; do not replace it with a productivity system or a method imported from general advice.
+Anchor the action to the current unresolved situation or to an exact future cue the person already
+supplied. When no such future cue exists, state the observable action directly; do not invent a generic
+“next time”, “later”, or “when something similar happens” frame.
 By default, do not introduce an exact duration, frequency, location, device placement, named technique,
 arbitrary numeric target, tool, reminder, or environmental arrangement. Such an implementation detail
 is allowed only when the person explicitly supplied it or explicitly asked the assistant to help design
@@ -1792,6 +1833,31 @@ def _current_v5_synthesis_state(request: dict[str, Any]) -> str:
     )
 
 
+def _current_v5_is_uncommitted_synthesis_decision(
+    request: dict[str, Any],
+    progression: dict[str, Any],
+) -> bool:
+    """Recognize first-Synthesis repair before Swift has projected the Synthesis phase.
+
+    A legal Tender-boundary ``synthesize`` decision is evaluated against the pre-turn Tender state.
+    It is therefore still ``reflectionMode=tender`` during correction even though the rejected act
+    was the first Synthesis. Correction routing must follow the rejected atomic decision rather than
+    wait for a post-commit phase that cannot exist after Gate rejection.
+    """
+
+    if str(request.get("protocolStage") or "") != "directReflection":
+        return False
+    if str(progression.get("meaning") or "") != "synthesize":
+        return False
+    if str(request.get("reflectionMode") or "") not in {"tender", "fierce", "synthesis"}:
+        return False
+    semantic_memory = request.get("semanticMemory")
+    semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+    frame = semantic_memory.get("reflectionFrame")
+    frame = frame if isinstance(frame, dict) else {}
+    return str(frame.get("action") or "") != "synthesizeUnderstanding"
+
+
 def _current_v5_normalized_reflection_delta(value: Any) -> str:
     """Mirror Swift's compatibility/case/alphanumeric comparison for correction routing."""
     if not isinstance(value, str):
@@ -1808,7 +1874,10 @@ def _current_v5_initial_synthesis_replays_committed(
     rejected_progression: dict[str, Any],
 ) -> bool:
     """Identify the replay form of Swift's shared synthesisDeltaMissing failure."""
-    if _current_v5_synthesis_state(request) != "initial":
+    if not _current_v5_is_uncommitted_synthesis_decision(
+        request,
+        rejected_progression,
+    ):
         return False
     semantic_memory = request.get("semanticMemory")
     semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
@@ -2088,6 +2157,7 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
     allowed = allowed if isinstance(allowed, list) else []
     correction = request.get("correction")
     correction_contract = ""
+    correction_needs_initial_synthesis = False
     if isinstance(correction, dict):
         rejected_operation = str(correction.get("rejectedOperation") or "unknown")
         payload_failure = str(correction.get("payloadFailure") or "none")
@@ -2108,7 +2178,14 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         rejected_progression_meaning = str(rejected_progression.get("meaning") or "")
         synthesis_state = _current_v5_synthesis_state(request)
         has_committed_synthesis = synthesis_state == "committed"
-        needs_initial_synthesis = synthesis_state == "initial"
+        needs_initial_synthesis = (
+            synthesis_state == "initial"
+            or _current_v5_is_uncommitted_synthesis_decision(
+                request,
+                rejected_progression,
+            )
+        )
+        correction_needs_initial_synthesis = needs_initial_synthesis
         initial_synthesis_replays_committed = (
             projection_failure == "synthesisDeltaMissing"
             and _current_v5_initial_synthesis_replays_committed(
@@ -2120,6 +2197,10 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         if (
             str(request.get("reflectionMode") or "") == "tender"
             and rejected_progression_meaning in {"reviseTender", "synthesize"}
+            and not (
+                rejected_progression_meaning == "synthesize"
+                and needs_initial_synthesis
+            )
             and projection_failure
             in {"tenderFrameMissing", "tenderDeltaMissing", "synthesisFrameMissing", "synthesisDeltaMissing"}
         ):
@@ -2346,7 +2427,7 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
     synthesis_state = _current_v5_synthesis_state(request)
     initial_synthesis_contract = (
         "\n" + CURRENT_V5_INITIAL_SYNTHESIS_CONTRACT
-        if synthesis_state == "initial"
+        if (synthesis_state == "initial" or correction_needs_initial_synthesis)
         and "synthesizeDirectReflection" in allowed
         else ""
     )
@@ -2370,24 +2451,27 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         and synthesis_state == "committed"
         and "synthesizeDirectReflection" in allowed
     )
+    uses_initial_synthesis_transaction = (
+        uses_initial_synthesis_progression or correction_needs_initial_synthesis
+    )
     uses_reflection_progression = (
         uses_tender_progression
         or uses_fierce_progression
-        or uses_initial_synthesis_progression
+        or uses_initial_synthesis_transaction
     )
     authority_contract = (
-        "At this committed Tender boundary, choose exactly one reflectionProgressionDecision from "
-        "reviseTender, inspectReality, or synthesize and omit semanticOperation. Swift compiles that decision into one allowed operation."
-        if uses_tender_progression
+        "At the first Synthesis boundary, choose exactly one reflectionProgressionDecision "
+        "with meaning=synthesize and a nonempty reflectionDelta; omit semanticOperation. Swift "
+        "compiles that atomic decision into the first committed Synthesis."
+        if uses_initial_synthesis_transaction
         else (
-            "At this active Fierce boundary, choose exactly one reflectionProgressionDecision from "
-            "clarifyFierce, completeFierce, or synthesize and omit semanticOperation. Swift compiles that decision into the existing operation."
-            if uses_fierce_progression
+            "At this committed Tender boundary, choose exactly one reflectionProgressionDecision from "
+            "reviseTender, inspectReality, or synthesize and omit semanticOperation. Swift compiles that decision into one allowed operation."
+            if uses_tender_progression
             else (
-                "At the first Synthesis boundary, choose exactly one reflectionProgressionDecision "
-                "with meaning=synthesize and a nonempty reflectionDelta; omit semanticOperation. Swift "
-                "compiles that atomic decision into the first committed Synthesis."
-                if uses_initial_synthesis_progression
+                "At this active Fierce boundary, choose exactly one reflectionProgressionDecision from "
+                "clarifyFierce, completeFierce, or synthesize and omit semanticOperation. Swift compiles that decision into the existing operation."
+                if uses_fierce_progression
                 else (
                     "At committed Synthesis, an explicit correction or qualification uses "
                     "reflectionProgressionDecision={\"meaning\":\"synthesize\",\"reflectionDelta\":\"materially revised synthesis\"} "
@@ -2413,7 +2497,7 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
         "At the first Synthesis boundary, all meaning belongs only to "
         "reflectionProgressionDecision.reflectionDelta; do not emit "
         "semanticEvidencePatch.memoryUpdate.reflectionFrame, and keep responseFocus empty."
-        if uses_initial_synthesis_progression
+        if uses_initial_synthesis_transaction
         else (
             "At committed Tender or active Fierce progression, all progression meaning belongs only to "
             "reflectionProgressionDecision; do not also emit semanticEvidencePatch.memoryUpdate.reflectionFrame. "
@@ -2430,8 +2514,12 @@ def _current_v5_planner(payload: dict[str, Any]) -> PromptMessages:
     )
     output_shape = (
         CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE
-        if uses_initial_synthesis_progression
-        else CURRENT_V5_PLANNER_JSON_SHAPE
+        if uses_initial_synthesis_transaction
+        else (
+            CURRENT_V5_TENDER_PROGRESSION_OUTPUT_SHAPE
+            if uses_tender_progression
+            else CURRENT_V5_PLANNER_JSON_SHAPE
+        )
     )
     system = f"""
 CURRENT_V5_CORE_PLANNER
@@ -2548,16 +2636,13 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         "protection, reminder, motivation, or hidden benefit unless the person explicitly authored that exact function."
     )
     tender_language_contract = CURRENT_V5_TENDER_VISIBLE_LANGUAGE_CONTRACT + " " + (
-        "Render the committed delta declaratively; seek no new material, recap, examples, causes, or proof. A correction, rejection, "
-        "or qualification overrides only conflicting meaning: preserve unaffected evidence and never restate the superseded claim. "
-        "Otherwise do not replay it or ask about weakness, meaning, emotion, truth, recurrence, or confirmation. Ignore any "
-        "question-shaped responseFocus. Never ask ‘这个标准具体是什么？’, ‘还让你想到什么？’, ‘还有什么压力或感受？’, "
-        "‘你能再举一个例子吗？’, ‘为什么会这样？’, or ‘你会怎么安顿自己？’. Only a protocol-authorized confirmation may "
-        "invite acceptance, correction, rejection, or qualification; rendering a delta alone never authorizes one. If authorized, "
-        "ask one short amendment question without restating the delta. Collect no evidence."
+        "Render the committed delta once and seek no new material, recap, examples, causes, or proof. A later correction overrides "
+        "only conflicting meaning and leaves unaffected evidence implicit. Ignore question-shaped responseFocus that reopens evidence. "
+        "Only a protocol-authorized response may ask what needs changing, without restating the delta or asking whether the Assistant "
+        "is right, accurate, fitting, or correct."
     )
     tender_language_contract += (
-        "Never use ‘不是 X，而是 Y’ or enlarge workload, responsibility, motive, or context beyond "
+        " Never use ‘不是 X，而是 Y’ or enlarge workload, responsibility, motive, or context beyond "
         "the person's account. Card, referenceGuidance, and tracking cannot supply Tender."
     )
     request_semantic_memory = request.get("semanticMemory")
@@ -2621,13 +2706,16 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     )
     if is_committed_tender_revision:
         tender_language_contract += (
-            " This directive revises an already committed Tender understanding. Realize only the semantic change in the new "
-            "reflectionDelta and honor the person's correction at its stated scope. Revision repairs the range of the understanding; "
-            "it does not overturn grounded reality to defend the person. Preserve a reported recurring pattern as real material worth "
-            "facing while keeping it distinct from degrading the whole person. Do not call it merely an impression, unproven, or not a fact. "
-            "Do not ask for examples, occasions, origins, causes, frequency, "
-            "proof, or further evidence, even if responseFocus requests them. If a question is authorized, its sole function is "
-            "to let the person accept, correct, reject, or qualify the revised understanding; it must not reopen Exploration."
+            " This directive revises an already committed Tender understanding. Treat its unchanged bounded distinction as already "
+            "spoken. Realize only the changed scope, recurrence, degree, certainty, explanation, or accepted part. Preserve grounded "
+            "recurrence without degrading the whole person. If a question is authorized, ask only what still needs amendment; a generic "
+            "‘贴切吗/对吗’ check must not reopen Exploration."
+        )
+    elif operation == "continueTenderReflection":
+        tender_language_contract += (
+            " This is the first bounded Tender rendering. State its one new distinction once. If the protocol authorizes a response, "
+            "invite a concrete correction such as what part needs changing; do not end with a generic agreement check and do not repeat "
+            "the distinction inside the question."
         )
     if contextual_tracking_language_contract:
         tender_language_contract += (
@@ -2746,8 +2834,9 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "Use the latest answer and only that candidate. Do not switch candidates, recap Tender, expose the reference, or turn a "
             "completed past response into evidence of a positive purpose. A tentative relation between two facts is optional, never required. "
             "Keep the question compact, without a ‘you said/mentioned’ preface or chronology recap. When a complete Fierce frame is present, "
-            "reflect only the grounded candid recognition: what reality the person faced, why it matters, and what genuinely should not "
-            "continue unchanged, remain unaddressed, or remain unprotected. That recognition completes Fierce: do not ask "
+            "use one necessary concrete anchor and state only the newly grounded candid relation between what matters, why it matters, "
+            "and what genuinely should not continue unchanged, remain unaddressed, or remain unprotected. Do not enumerate the earlier "
+            "difficulty, self-judgment, explanation, impact, and direction as a new summary. That recognition completes Fierce: do not ask "
             "another Fierce question, request more detail, or open a second direction. Use one short natural bridge that "
             "lets the next turn put the existing reflection together, while leaving room for a spontaneous correction. Do not quote, emphasize, paraphrase, or otherwise "
             "replay the person's self-critical judgment, replay the Tender distinction, or repackage either through the Card "
@@ -2765,7 +2854,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "A statement that the evidence does not establish a global judgment must remain that limited statement: never "
             "turn it into a claim that the real explanation is complexity, circumstances, normal difficulty, or unaffected "
             "ability unless that exact alternative was already grounded by the person. "
-            "Preserve uncertainty. Sound like one present understanding, not a report about the reflection process: do not say "
+            "Preserve uncertainty. Express the one relation created by integrating the accepted components; do not enumerate those components "
+            "or replay the earlier whole-self limitation as a standalone reassurance. Sound like one present understanding, not a report about the reflection process: do not say "
             "‘把这些放在一起’, ‘综合来看’, ‘前面的理解’, or describe how the system assembled or "
             "corrected its interpretation. Use at most three short sentences and do not replay the chronology or list every earlier "
             "answer. An initial Synthesis may preserve the already accepted Tender/Fierce meaning; it does not need a novel conclusion, "
@@ -2773,8 +2863,9 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "Tender/Fierce reflectionDelta verbatim. An in-place "
             "revision states only the changed qualification supported by the latest answer; it must not restate the full prior "
             "Synthesis or the same Tender conclusion. Do not ask what the distinction means or ask the person to judge again whether "
-            "their self-criticism is true, weak, or less convincing. Ask only for acceptance, correction, or qualification of this synthesis; "
-            "do not invite an Action in the same reply. When revising an already committed Synthesis, never repeat or paraphrase the committed "
+            "their self-criticism is true, weak, or less convincing. When a response is required, ask only what part of this synthesis needs "
+            "correction or qualification; never append ‘这样理解贴切吗/对吗’ or another generic agreement check. Do not invite an Action in "
+            "the same reply. When revising an already committed Synthesis, never repeat or paraphrase the committed "
             "reflectionDelta or the previous reply as if that were a revision."
         ),
         "proposePractice": (
@@ -2791,7 +2882,8 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
             "observable response in a concrete situation, not writing, repeating, or rehearsing a kinder sentence unless the person "
             "already chose that method. Use noAction only when the person declined action or no responsible concrete step is available; "
             "missing a user-authored method is not a reason for noAction. Use the concrete situation and action verbs already "
-            "authorized; when a specific trigger is available, do not dilute it into ‘下次遇到类似情况’. Present the "
+            "authorized. Start with the action itself and anchor it to the current unresolved situation or an exact future cue already "
+            "provided by the person. Do not manufacture a future cue with ‘下次……’, ‘以后……’, or ‘再遇到类似情况……’. Present the "
             "suggestion once, without first summarizing the reflection or repeating the reason afterward. Keep it easy to "
             "negotiate: ask one natural question that lets the person accept it, make it smaller or revise it, "
             "or decline it without pressure. Ask one open invitation; do not phrase acceptance as an A-or-B choice. "
@@ -2799,9 +2891,11 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
         ),
         "resolvePractice": (
             "Swift has compiled directive.memoryUpdate.finalNarrative from the already committed Synthesis and resolved Action. Realize those "
-            "two components once as a compact final account; do not decide or reconstruct them from transcript, and do not negotiate the action again. "
+            "two components once as a compact final account: compress the accepted Synthesis to one clause and state the settled Action once, "
+            "without its rationale or another reframe. Do not decide or reconstruct them from transcript, and do not negotiate the action again. "
             "Use no Card material, self-critical wording, new interpretation, or new action, "
-            "and invite only correction or confirmation of the narrative. On acceptance, never repeat the proposal or its earlier "
+            "and invite only a factual correction to the narrative. Ask what, if anything, needs changing; do not end with a generic ‘对吗/贴切吗’ "
+            "agreement check. On acceptance, never repeat the proposal or its earlier "
             "confirmation question; move directly to the final narrative. The accepted action appears once as one component, never as "
             "another proposal or negotiation. Never ask ‘这个做法你愿意试试看吗？’, ‘这样可以吗？’, or any "
             "equivalent question about an action the person has already accepted."
@@ -2857,30 +2951,24 @@ def _current_v5_writer(payload: dict[str, Any]) -> PromptMessages:
     system = f"""
 CURRENT_V5_CORE_WRITER
 
-Write one concise, natural Chinese reply for the authorized operation; keep its state, evidence, question
-purpose, permission, and action unchanged. Return only the reply wrapper. responseFocus is a goal, not
-evidence; the operation contract outranks it. Ignore incompatible tasks.
+Write one concise, natural Chinese reply for the authorized operation without changing its state, evidence,
+question purpose, permission, or action. Return only the reply wrapper. responseFocus is a goal, not evidence;
+the operation contract outranks it.
 
-Write warm, idiomatic, unforced Chinese that sounds spoken and natural aloud. Use one to three short
-sentences, one main idea each. Keep difficulty, limitation,
-mistake, and impact visible without reassurance, virtue reframing, excuse, diagnosis, or whole-person
-judgment. Hide internal state. Begin with the conversational content, not a fixed acknowledgment or
-"you mentioned/said" preface. Do not paraphrase the latest answer merely to demonstrate listening or
-narrate progress. Use at most one necessary factual anchor or one compact relation between two grounded facts. Avoid recap–progress–question templates,
-"new understanding" claims, meta imagery, and em-dash reveals. Once a relation is stated, use it rather
-than renaming it. After Reality Connection, Card material is silent provenance and never appears in
-later replies. Never quote or paraphrase stored self-criticism. Committed Tender/Synthesis is context,
-not wording to replay, decorate, or translate into a new metaphor. Never copy Prompt examples, JSON
-placeholders, or internal phrasing. Address them as “你”, never “用户”, “对方”, “此人”, or “the person”;
-render current grounded meaning naturally. Use concrete user-authored nouns and verbs; never narrate
-interpreting or revising.{unsupported_positive_function_contract}
+Write warm, idiomatic, unforced Chinese that sounds natural aloud: one to three short sentences, one main idea
+each. Begin with content, not a fixed acknowledgment or "you mentioned/said" preface. Use at most one necessary
+factual anchor or one compact grounded relation. Avoid recap–progress–question templates. Keep supported
+difficulty and impact visible without reassurance, excuse, diagnosis, or whole-person judgment. Hide internal
+state; Card provenance never reappears after Reality Connection. Never quote or paraphrase stored self-criticism.
+Never copy Prompt examples, JSON placeholders, or internal phrasing. Address them as “你”, never “用户”, “对方”,
+“此人”, or “the person”; use concrete user-authored nouns and verbs and render current grounded meaning naturally.{unsupported_positive_function_contract}
 
-The reply must contain substantive content, never filler, and make the permitted next move obvious without
-adding a second task. Ask exactly the one required open, low-burden question without forced either-or choices,
-candidate answers, or examples; otherwise ask none and use only an operation-authorized handoff. Never leave a
-non-final user-facing turn as an isolated explanation. Do not repeat the
-preceding question or switch to bodily sensations unless introduced and necessary. In reflective turns,
-self-compassion acknowledges difficulty without turning it into an unsupported global verdict.
+{CURRENT_V5_DIALOGUE_CONTINUITY_LANGUAGE_CONTRACT}
+
+The reply must contain substantive content, never filler, and make the permitted next move obvious. Ask exactly
+one required low-burden question without forced either-or choices, candidate answers, or examples; otherwise use
+only an operation-authorized handoff. Do not repeat the preceding question or switch to bodily sensations unless
+introduced and necessary. Acknowledge difficulty without turning it into an unsupported global verdict.
 
 OPERATION-SPECIFIC LANGUAGE
 {operation_contract}

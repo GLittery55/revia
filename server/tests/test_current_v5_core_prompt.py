@@ -11,6 +11,7 @@ from app.prompt_registry import (
     CURRENT_V5_COMMITTED_TENDER_PROGRESSION_CONTRACT,
     CURRENT_V5_CONTEXT_HYPOTHESIS_PATCH_SHAPE,
     CURRENT_V5_CORE_PROMPT_VERSION,
+    CURRENT_V5_DIALOGUE_CONTINUITY_LANGUAGE_CONTRACT,
     CURRENT_V5_EVENT_EPISODE_PATCH_SHAPE,
     CURRENT_V5_EVENT_SELF_CRITICISM_ACCEPTANCE_CONTRACT,
     CURRENT_V5_FIERCE_PURPOSE_CONTRACT,
@@ -22,6 +23,7 @@ from app.prompt_registry import (
     CURRENT_V5_REALITY_CONNECTION_CONTRACT,
     CURRENT_V5_TENDER_PURPOSE_CONTRACT,
     CURRENT_V5_TENDER_REFLECTION_CONTRACT,
+    CURRENT_V5_TENDER_PROGRESSION_OUTPUT_SHAPE,
     CURRENT_V5_TENDER_VISIBLE_LANGUAGE_CONTRACT,
     PLANNER_SEMANTIC_OPERATION_VALUES,
     TURN_PROMPT_VERSION,
@@ -2171,6 +2173,76 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("rather than copy the committed reflectionDelta exactly", prompt)
         self.assertIn("Swift never fills it", prompt)
         self.assertIn("explicit synthesis", prompt)
+        self.assertIn("TENDER PROGRESSION STRUCTURES", prompt)
+        self.assertIn('"meaning":"synthesize"', prompt)
+        output = prompt.split("OUTPUT\nReturn exactly one JSON object shaped as:\n", 1)[1]
+        self.assertTrue(output.startswith(CURRENT_V5_TENDER_PROGRESSION_OUTPUT_SHAPE))
+        self.assertNotIn(CURRENT_V5_PLANNER_JSON_SHAPE, output)
+
+    def test_tender_boundary_synthesis_correction_uses_initial_synthesis_repair(self) -> None:
+        request = self.request()
+        request["protocolStage"] = "directReflection"
+        request["reflectionMode"] = "tender"
+        request["allowedSemanticOperations"] = [
+            "continueTenderReflection",
+            "continueTenderGroundedFierceReflection",
+            "synthesizeDirectReflection",
+        ]
+        request["semanticMemory"] = {
+            "reflectionFrame": {
+                "mode": "tender",
+                "action": "softenGlobalSelfJudgment",
+                "evidenceBasis": [{"source": "episode", "content": "对话会卡住"}],
+                "dimensions": [],
+                "reflectionDelta": "当前体验问题不等于整体开发能力差",
+                "fierceEvidence": None,
+            }
+        }
+        request["correction"] = {
+            "rejectedOperation": "synthesizeDirectReflection",
+            "rejectedDraft": {
+                "semanticOperation": None,
+                "reflectionProgressionDecision": {
+                    "meaning": "synthesize",
+                    "candidateRef": None,
+                    "reflectionDelta": None,
+                    "fierceDirection": None,
+                },
+                "semanticEvidencePatch": {"memoryUpdate": {}},
+                "responseFocus": "",
+            },
+            "reason": "projectionInvalid",
+            "payloadFailure": None,
+            "projectionFailure": "synthesisDeltaMissing",
+            "issue": {
+                "fieldPath": "reflectionProgressionDecision.reflectionDelta",
+                "violation": "empty",
+                "requiredConditions": ["provideConcreteReflectionDelta"],
+            },
+            "recoveryPolicy": "repairSameOperation",
+        }
+
+        prompt = build_turn_messages(
+            LLMTurnPromptIn(
+                promptTask="planner",
+                promptVersion=CURRENT_V5_CORE_PROMPT_VERSION,
+                payload={"request": request},
+                maxTokens=900,
+                temperature=0.2,
+            )
+        ).system
+
+        self.assertIn("REQUIRED INITIAL SYNTHESIS REPAIR", prompt)
+        self.assertNotIn("REQUIRED ATOMIC PROGRESSION REPAIR", prompt)
+        self.assertIn("At the first Synthesis boundary", prompt)
+        self.assertIn("reflectionProgressionDecision is required", prompt)
+        self.assertNotIn(
+            "semanticOperation is required and reflectionProgressionDecision is null",
+            prompt,
+        )
+        output = prompt.split("OUTPUT\nReturn exactly one JSON object shaped as:\n", 1)[1]
+        self.assertTrue(output.startswith(CURRENT_V5_INITIAL_SYNTHESIS_OUTPUT_SHAPE))
+        self.assertNotIn(CURRENT_V5_TENDER_PROGRESSION_OUTPUT_SHAPE, output)
 
     def test_post_fierce_first_synthesis_has_one_atomic_progression_contract(self) -> None:
         request = self.request()
@@ -2416,13 +2488,13 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("exactly one natural", prompt.system)
         self.assertIn("not a fixed acknowledgment", prompt.system)
         self.assertIn('"you mentioned/said" preface', prompt.system)
-        self.assertIn("Do not paraphrase the latest answer merely", prompt.system)
+        self.assertIn("Treat recent Assistant meaning as already spoken", prompt.system)
         self.assertIn("warm, idiomatic, unforced Chinese", prompt.system)
         self.assertIn(
             "without forced either-or choices, candidate answers",
             " ".join(prompt.system.split()),
         )
-        self.assertIn("switch to bodily sensations unless introduced and necessary", prompt.system)
+        self.assertIn("switch to bodily sensations", prompt.system)
         self.assertIn("substantive content, never filler", prompt.system)
         self.assertIn("make the permitted next move obvious", prompt.system)
         self.assertIn("operation-authorized handoff", prompt.system)
@@ -2843,14 +2915,13 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("REQUIRED ATOMIC PROGRESSION REPAIR", prompt)
-        self.assertIn("reflectionProgressionDecision.meaning=synthesize", prompt)
-        self.assertIn("same object's nonempty reflectionDelta", prompt)
-        self.assertIn("Omit semanticOperation and memoryUpdate.reflectionFrame", prompt)
-        self.assertIn("may preserve the same bounded semantic meaning", prompt)
-        self.assertIn("different wording rather than copy", prompt)
-        self.assertIn("must still submit it explicitly", prompt)
-        self.assertNotIn("distinct Synthesis meaning", prompt)
+        self.assertIn("REQUIRED INITIAL SYNTHESIS REPAIR", prompt)
+        self.assertIn("reflectionProgressionDecision with meaning=synthesize", prompt)
+        self.assertIn("nonempty reflectionDelta", prompt)
+        self.assertIn("semanticOperation must be null", prompt)
+        self.assertIn("memoryUpdate must be empty", prompt)
+        self.assertIn("no Synthesis has been committed yet", prompt)
+        self.assertNotIn("REQUIRED ATOMIC PROGRESSION REPAIR", prompt)
         self.assertNotIn("REQUIRED SYNTHESIS REPAIR", prompt)
 
     def test_fierce_correction_completes_or_removes_a_partial_contribution(self) -> None:
@@ -3330,15 +3401,19 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("Keep the person's explanation and supported impact", normalized_writer_prompt)
         self.assertIn("Leave grounded reality for later Fierce", writer_prompt)
         self.assertIn("这件事本身可以承认，同时……", writer_prompt)
-        self.assertIn("one main idea each", writer_prompt)
+        self.assertIn("one main idea", writer_prompt)
         self.assertIn("seek no new material, recap, examples, causes, or proof", writer_prompt)
-        self.assertIn("overrides only conflicting meaning", writer_prompt)
-        self.assertIn("preserve unaffected evidence", writer_prompt)
-        self.assertIn("never restate the superseded claim", writer_prompt)
-        self.assertIn("do not replay it or ask about weakness, meaning, emotion", writer_prompt)
-        self.assertIn("Only a protocol-authorized confirmation", writer_prompt)
-        self.assertIn("rendering a delta alone never authorizes one", writer_prompt)
-        self.assertIn("one short amendment question without restating the delta", writer_prompt)
+        self.assertIn("correction overrides only conflicting meaning", writer_prompt)
+        self.assertIn("leaves unaffected evidence implicit", writer_prompt)
+        self.assertIn("ask what needs changing", writer_prompt)
+        self.assertIn("without restating the delta", writer_prompt)
+        self.assertIn(CURRENT_V5_DIALOGUE_CONTINUITY_LANGUAGE_CONTRACT, writer_prompt)
+        self.assertIn("Treat recent Assistant meaning as already spoken", writer_prompt)
+        self.assertIn("Acceptance closes that decision", writer_prompt)
+        self.assertIn(
+            "Keep prior whole-self limits implicit",
+            " ".join(writer_prompt.split()),
+        )
         self.assertIn("Never quote or paraphrase stored self-criticism", writer_prompt)
         self.assertIn("Never assign a difficulty, painful experience, self-critical thought", writer_prompt)
         self.assertIn("hidden benefit", writer_prompt)
@@ -3664,18 +3739,15 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         ).system
 
         self.assertIn("revises an already committed Tender understanding", writer_prompt)
-        self.assertIn("Realize only the semantic change", writer_prompt)
-        self.assertIn("Preserve a reported recurring pattern as real material worth", writer_prompt)
-        self.assertIn("it does not overturn grounded reality to defend the person", writer_prompt)
-        self.assertIn("keeping it distinct from degrading the whole person", writer_prompt)
-        self.assertIn("Do not call it merely an impression", writer_prompt)
-        self.assertIn("Do not ask for examples, occasions, origins", writer_prompt)
-        self.assertIn("even if responseFocus requests them", writer_prompt)
+        self.assertIn("Realize only the changed scope, recurrence, degree", writer_prompt)
+        self.assertIn("Preserve grounded recurrence without degrading", writer_prompt)
+        self.assertIn("ask only what still needs amendment", writer_prompt)
         self.assertIn("must not reopen Exploration", writer_prompt)
         self.assertIn("Never copy Prompt examples, JSON", writer_prompt)
         self.assertIn("placeholders, or internal phrasing", writer_prompt)
         self.assertIn("Address them as “你”", writer_prompt)
-        self.assertIn("never “用户”, “对方”, “此人”", writer_prompt)
+        self.assertIn("never “用户”, “对方”", writer_prompt)
+        self.assertIn("“此人”, or “the person”", writer_prompt)
         self.assertIn("render current grounded meaning naturally", writer_prompt)
 
     def test_supporting_examples_do_not_reconsume_an_existing_recurrence_revision(self) -> None:
@@ -3916,14 +3988,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
 
         self.assertIn("exactly one direct, neutral attribution question", prompt)
         self.assertIn("Do not seek another example", prompt)
-        self.assertIn("Do not paraphrase the latest answer merely", prompt)
+        self.assertIn("Treat recent Assistant meaning as already spoken", prompt)
         self.assertIn("Avoid recap–progress–question templates", prompt)
-        self.assertIn("Once a relation is stated, use it rather", prompt)
-        self.assertIn("than renaming it", prompt)
-        self.assertIn("Ask exactly the one required open, low-burden", prompt)
-        self.assertIn("otherwise ask none", prompt)
+        self.assertIn("carry unchanged material silently", prompt)
+        self.assertIn("one required low-burden question", prompt)
+        self.assertIn("operation-authorized handoff", prompt)
         self.assertIn("without forced either-or choices", prompt)
-        self.assertIn("em-dash reveals", prompt)
 
     def test_card_consent_resolves_brief_unqualified_acceptance_once(self) -> None:
         request = self.request()
@@ -4153,7 +4223,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("preselect a similarity/difference/tension", prompt)
         self.assertIn("target a particular episode element", prompt)
         self.assertIn("The person authors the first connection", prompt)
-        self.assertIn("Do not paraphrase the latest answer merely", prompt)
+        self.assertIn("Treat recent Assistant meaning as already spoken", prompt)
 
     def test_writer_does_not_routinely_restate_the_latest_user_answer(self) -> None:
         request = self.request()
@@ -4179,11 +4249,11 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Do not paraphrase the latest answer merely", prompt)
+        self.assertIn("Treat recent Assistant meaning as already spoken", prompt)
         self.assertIn("The committed selfCriticalStatement is missing", prompt)
         self.assertIn("one direct, neutral", prompt)
         self.assertIn("recap the emotional or Card discussion", prompt)
-        self.assertIn("Use at most one necessary factual anchor", prompt)
+        self.assertIn("factual anchor or one compact grounded relation", prompt)
 
     def test_exploration_completion_writer_carries_link_without_tender_distinction(self) -> None:
         request = self.request()
@@ -4450,7 +4520,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("must not invite, confirm, select, describe, predict, or interpret", prompt)
         self.assertIn("responseFocus is a", prompt)
         self.assertIn("responseFocus is a goal", prompt)
-        self.assertIn("evidence; the operation contract outranks it", prompt)
+        self.assertIn("responseFocus is a goal, not evidence", prompt)
+        self.assertIn("operation contract outranks it", prompt)
         self.assertIn("operation contract outranks it", prompt)
         self.assertNotIn("End with exactly one natural, easy-to-answer question", prompt)
 
@@ -4926,9 +4997,12 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Ask only for acceptance, correction, or qualification", writer_prompt)
-        self.assertIn("do not invite an Action in the same reply", writer_prompt)
+        self.assertIn("ask only what part of this synthesis needs", writer_prompt)
+        self.assertIn("never append ‘这样理解贴切吗/对吗’", writer_prompt)
+        self.assertIn("Do not invite an Action in the same reply", writer_prompt)
         self.assertIn("Preserve uncertainty", writer_prompt)
+        self.assertIn("Express the one relation created by integrating", writer_prompt)
+        self.assertIn("do not enumerate those components", writer_prompt)
         self.assertIn("never repeat or paraphrase the committed", writer_prompt)
         self.assertIn("Card is provenance only", writer_prompt)
         self.assertIn("Never quote or paraphrase the self-critical", writer_prompt)
@@ -5008,7 +5082,7 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("real explanation is complexity", writer_prompt)
         self.assertIn("normal difficulty", writer_prompt)
         self.assertIn("Avoid recap–progress–question templates", writer_prompt)
-        self.assertIn("em-dash reveals", writer_prompt)
+        self.assertIn("carry unchanged material silently", writer_prompt)
 
     def test_practice_writer_presents_one_negotiable_action(self) -> None:
         request = self.request()
@@ -5104,7 +5178,8 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("not writing, repeating, or rehearsing a kinder sentence", prompt)
         self.assertIn("missing a user-authored method is not a reason for noAction", prompt)
         self.assertIn("Use the concrete situation and action verbs already authorized", prompt)
-        self.assertIn("下次遇到类似情况", prompt)
+        self.assertIn("Do not manufacture a future cue", prompt)
+        self.assertIn("‘下次……’, ‘以后……’", prompt)
         self.assertIn("without first summarizing the reflection", prompt)
 
     def test_optional_action_adjustment_requests_a_replacement_before_final(self) -> None:
@@ -5228,6 +5303,9 @@ class CurrentV5CorePromptTests(unittest.TestCase):
         self.assertIn("never as another proposal or negotiation", prompt)
         self.assertIn("这个做法你愿意试试看吗？", prompt)
         self.assertIn("action the person has already accepted", prompt)
+        self.assertIn("compress the accepted Synthesis to one clause", prompt)
+        self.assertIn("Ask what, if anything, needs changing", prompt)
+        self.assertIn("do not end with a generic ‘对吗/贴切吗’", prompt)
         self.assertNotIn("先看看手头安排再回复临时请求", messages.user)
         self.assertIn('"content":"可以"', messages.user)
 
@@ -5743,15 +5821,13 @@ class CurrentV5CorePromptTests(unittest.TestCase):
             )
         ).system
 
-        self.assertIn("Render the committed delta declaratively", writer_prompt)
+        self.assertIn("Render the committed delta once", writer_prompt)
         self.assertIn("seek no new material, recap, examples", writer_prompt)
-        self.assertIn("Ignore any question-shaped responseFocus", writer_prompt)
-        self.assertIn("还有什么压力或感受", writer_prompt)
-        self.assertIn("你能再举一个例子吗", writer_prompt)
-        self.assertIn("为什么会这样", writer_prompt)
-        self.assertIn("你会怎么安顿自己", writer_prompt)
-        self.assertIn("rendering a delta alone never authorizes one", writer_prompt)
-        self.assertIn("Collect no evidence", writer_prompt)
+        self.assertIn("Ignore question-shaped responseFocus that reopens evidence", writer_prompt)
+        self.assertIn("ask what needs changing", writer_prompt)
+        self.assertIn("Only a protocol-authorized response", writer_prompt)
+        self.assertIn("without restating the delta", writer_prompt)
+        self.assertIn("right, accurate, fitting, or correct", writer_prompt)
 
 
 if __name__ == "__main__":
