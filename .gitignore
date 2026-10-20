@@ -22,3 +22,7 @@ server/**/*.db
 server/**/__pycache__/
 server-deploy/.env
 tmp/reflection-scenario-results/
+
+# Temporary files and test results
+/tmp/
+*.xcresult/
